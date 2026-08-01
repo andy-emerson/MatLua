@@ -12,7 +12,7 @@ rust-version = "1.85"
 
 [features]
 default = []
-# Hand-rolled Lua 5.4 registration helpers (host-owned lua_State). Empty in M0.
+# Hand-rolled Lua 5.4 registration helpers (host-owned lua_State). Empty until M3.
 lua = []
 
 [dependencies]

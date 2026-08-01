@@ -4,8 +4,11 @@
 //! The Lua face is feature-gated (`lua`) and registers into a host-owned
 //! PUC Lua 5.4 state. See `DESIGN.md` for product rules and closed decisions.
 //!
-//! M0 is scaffolding only: module layout, dependencies, and a public error
-//! type. Array and linalg APIs are not implemented yet.
+//! # Status
+//!
+//! - **M0** — crate skeleton, error type.
+//! - **M1** — owned `f64` n-D arrays, views, constructors, element-wise ops,
+//!   Arrow float64 interchange. Linear algebra and Lua face are not implemented yet.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
@@ -18,4 +21,5 @@ pub mod linalg;
 #[cfg_attr(docsrs, doc(cfg(feature = "lua")))]
 pub mod lua;
 
+pub use array::{Array, ArrayView, ArrayViewMut, Shape};
 pub use error::{Error, Result};
