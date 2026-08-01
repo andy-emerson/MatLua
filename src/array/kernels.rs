@@ -223,12 +223,45 @@ pub(crate) fn min_slice(a: &[f64]) -> Option<f64> {
     Some(m)
 }
 
+/// Maximum over a dense slice (chunked compares for ILP / auto-vectorization).
 #[inline]
 pub(crate) fn max_slice(a: &[f64]) -> Option<f64> {
-    let (&first, rest) = a.split_first()?;
-    let mut m = first;
-    for &x in rest {
-        m = m.max(x);
+    if a.is_empty() {
+        return None;
+    }
+    let mut m0 = f64::NEG_INFINITY;
+    let mut m1 = f64::NEG_INFINITY;
+    let mut m2 = f64::NEG_INFINITY;
+    let mut m3 = f64::NEG_INFINITY;
+    let mut chunks = a.chunks_exact(4);
+    for c in chunks.by_ref() {
+        if c[0] > m0 {
+            m0 = c[0];
+        }
+        if c[1] > m1 {
+            m1 = c[1];
+        }
+        if c[2] > m2 {
+            m2 = c[2];
+        }
+        if c[3] > m3 {
+            m3 = c[3];
+        }
+    }
+    let mut m = m0;
+    if m1 > m {
+        m = m1;
+    }
+    if m2 > m {
+        m = m2;
+    }
+    if m3 > m {
+        m = m3;
+    }
+    for &x in chunks.remainder() {
+        if x > m {
+            m = x;
+        }
     }
     Some(m)
 }
