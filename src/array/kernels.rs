@@ -180,6 +180,27 @@ pub(crate) fn sum_slice(a: &[f64]) -> f64 {
     s
 }
 
+/// Sum of squares (for Frobenius norm).
+#[inline]
+pub(crate) fn sum_sq_slice(a: &[f64]) -> f64 {
+    let mut s0 = 0.0;
+    let mut s1 = 0.0;
+    let mut s2 = 0.0;
+    let mut s3 = 0.0;
+    let mut chunks = a.chunks_exact(4);
+    for c in chunks.by_ref() {
+        s0 += c[0] * c[0];
+        s1 += c[1] * c[1];
+        s2 += c[2] * c[2];
+        s3 += c[3] * c[3];
+    }
+    let mut s = s0 + s1 + s2 + s3;
+    for &x in chunks.remainder() {
+        s += x * x;
+    }
+    s
+}
+
 /// Minimum over a dense slice (chunked compares for ILP / auto-vectorization).
 #[inline]
 pub(crate) fn min_slice(a: &[f64]) -> Option<f64> {

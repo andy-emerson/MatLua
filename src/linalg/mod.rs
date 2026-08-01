@@ -202,7 +202,7 @@ pub fn svd(a: &Array) -> Result<(Array, Array, Array)> {
 /// Frobenius norm of a rank-1 or rank-2 array.
 pub fn norm(a: &Array) -> Result<f64> {
     let _ = array_as_matrix_dims(a)?;
-    Ok(kernels::dot_slice(a.as_slice(), a.as_slice()).sqrt())
+    Ok(kernels::sum_sq_slice(a.as_slice()).sqrt())
 }
 
 /// Identity matrix of order `n`.
