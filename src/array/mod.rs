@@ -30,3 +30,9 @@ pub use array::Array;
 pub use ops::TryElemwise;
 pub use shape::Shape;
 pub use view::{ArrayView, ArrayViewMut};
+
+/// Pooled uninitialized buffer for sibling modules (linalg kernels).
+#[inline]
+pub(crate) fn pool_take_uninit(len: usize) -> Vec<f64> {
+    pool::take_uninit(len)
+}

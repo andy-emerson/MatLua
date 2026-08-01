@@ -29,7 +29,7 @@ impl Clone for Array {
     /// Deep copy of values (unique buffer). Prefer [`Self::reshape`] for
     /// zero-copy shape changes that intentionally share storage.
     fn clone(&self) -> Self {
-        let mut data = pool::take_zeroed(self.len());
+        let mut data = pool::take_uninit(self.len());
         data.copy_from_slice(self.as_slice());
         Self::from_parts(self.shape.clone(), data)
     }
@@ -70,6 +70,12 @@ impl Array {
     #[inline]
     pub fn as_slice(&self) -> &[f64] {
         self.data.as_ref()
+    }
+
+    /// `Arc` strong count for the value buffer (1 = uniquely owned payload).
+    #[inline]
+    pub(crate) fn buffer_strong_count(&self) -> usize {
+        Arc::strong_count(&self.data)
     }
 
     /// Contiguous row-major values (mutable).
@@ -173,7 +179,7 @@ impl Array {
             return Err(Error::Shape("arange length overflow".into()));
         }
         let n = n_f as usize;
-        let mut data = pool::take_zeroed(n);
+        let mut data = pool::take_uninit(n);
         let mut x = start;
         let mut written = 0usize;
         for i in 0..n {
@@ -333,7 +339,7 @@ impl Array {
     {
         self.same_shape(other)?;
         let n = self.len();
-        let mut data = pool::take_zeroed(n);
+        let mut data = pool::take_uninit(n);
         f(self.as_slice(), other.as_slice(), &mut data);
         Ok(Self::from_parts(self.shape.clone(), data))
     }
@@ -343,7 +349,7 @@ impl Array {
         F: FnOnce(&[f64], &mut [f64]),
     {
         let n = self.len();
-        let mut data = pool::take_zeroed(n);
+        let mut data = pool::take_uninit(n);
         f(self.as_slice(), &mut data);
         Self::from_parts(self.shape.clone(), data)
     }

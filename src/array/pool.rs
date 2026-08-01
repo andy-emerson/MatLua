@@ -19,7 +19,10 @@ pub(crate) fn take_filled(len: usize, fill: f64) -> Vec<f64> {
         return Vec::new();
     }
     let mut v = take_capacity(len);
-    v.resize(len, fill);
+    // Single touch: set_len then fill once (no zero-then-overwrite).
+    unsafe {
+        v.set_len(len);
+    }
     v.fill(fill);
     v
 }
@@ -28,6 +31,19 @@ pub(crate) fn take_filled(len: usize, fill: f64) -> Vec<f64> {
 #[inline]
 pub(crate) fn take_zeroed(len: usize) -> Vec<f64> {
     take_filled(len, 0.0)
+}
+
+/// Length `len`, contents uninitialized — caller must write every element.
+#[inline]
+pub(crate) fn take_uninit(len: usize) -> Vec<f64> {
+    if len == 0 {
+        return Vec::new();
+    }
+    let mut v = take_capacity(len);
+    unsafe {
+        v.set_len(len);
+    }
+    v
 }
 
 #[inline]
