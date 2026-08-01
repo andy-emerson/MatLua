@@ -78,7 +78,6 @@ impl<'a> ArrayView<'a> {
     /// Copy into an owned [`Array`].
     pub fn to_owned_array(&self) -> Array {
         Array::from_parts(self.shape.clone(), self.data.to_vec())
-            .expect("view shape and data already validated")
     }
 }
 
@@ -177,6 +176,5 @@ impl<'a> ArrayViewMut<'a> {
     /// Copy into an owned [`Array`].
     pub fn to_owned_array(&self) -> Array {
         Array::from_parts(self.shape.clone(), self.data.to_vec())
-            .expect("view shape and data already validated")
     }
 }
