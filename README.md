@@ -104,9 +104,9 @@ Closed decisions and milestones: [DESIGN.md](DESIGN.md).
 MatLua and scripts can do ordinary dense array and linear-algebra work
 end-to-end. Crate version remains **`0.0.1`** until a formal `0.1.0` cut.
 
-**Performance (P0–P5):** optimizations and NumPy comparison harness are in.
+**Performance (P0–P6):** three-way compare (Lua product face, Rust core, NumPy bar).
 Contract: [DESIGN.md §7.2](DESIGN.md#72-performance-program-p0p5). Run
-`python3 benches/compare.py`; snapshot in [benches/RESULTS.md](benches/RESULTS.md).
+`python3 benches/compare.py`; snapshot [benches/RESULTS.md](benches/RESULTS.md).
 
 Known thin spots vs a full “leave late” desk (column views, richer slicing,
 broadcasting, host zero-copy *from* Lua) are intentional feature follow-ups,

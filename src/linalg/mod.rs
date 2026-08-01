@@ -2,7 +2,8 @@
 //!
 //! Public functions take and return MatLua [`Array`]s. Inputs are viewed as
 //! faer [`MatRef`](faer::MatRef) over contiguous row-major storage (zero-copy).
-//! Results are copied into owned row-major arrays.
+//! [`matmul`] writes GEMM output straight into a row-major buffer; other
+//! results still pack out from faer into owned row-major arrays.
 //!
 //! # Rank conventions
 //!
@@ -16,14 +17,47 @@
 
 mod convert;
 
+use faer::linalg::matmul::matmul as faer_matmul;
 use faer::linalg::solvers::Solve;
-use faer::Side;
+use faer::{get_global_parallelism, Accum, MatMut, Par, Side};
 
 use crate::array::kernels;
-use crate::array::Array;
+use crate::array::{Array, Shape};
 use crate::error::{Error, Result};
 
 use convert::{array_as_mat_ref, array_as_matrix_dims, mat_to_array, matref_to_array};
+
+/// Parallelism for GEMM: sequential for tiny products, otherwise faer's global
+/// setting (Rayon by default when the `rayon` feature is on).
+#[inline]
+fn matmul_par(m: usize, n: usize, k: usize) -> Par {
+    // ~ n³ work proxy; below ~128³ rayon overhead often dominates.
+    let work = (m as u64)
+        .saturating_mul(n as u64)
+        .saturating_mul(k as u64);
+    if work < 128u64 * 128 * 128 {
+        Par::Seq
+    } else {
+        get_global_parallelism()
+    }
+}
+
+/// Build an owned Array from a filled row-major buffer produced by GEMM.
+#[inline]
+fn matmul_result(
+    data: Vec<f64>,
+    nrows: usize,
+    ncols: usize,
+    prefer_vector: bool,
+) -> Result<Array> {
+    if prefer_vector && ncols == 1 {
+        Ok(Array::from_parts(Shape::from_len(nrows), data))
+    } else if prefer_vector && nrows == 1 {
+        Ok(Array::from_parts(Shape::from_len(ncols), data))
+    } else {
+        Ok(Array::from_parts(Shape::matrix(nrows, ncols)?, data))
+    }
+}
 
 /// Transpose a rank-1 or rank-2 array.
 ///
@@ -37,6 +71,10 @@ pub fn transpose(a: &Array) -> Result<Array> {
 ///
 /// Shapes: `(m, k) × (k, n) → (m, n)`. Rank-1 operands are treated as columns.
 /// A matrix–vector product returns a rank-1 vector.
+///
+/// Implementation (P6): GEMM writes **directly** into a pre-sized row-major
+/// buffer (no intermediate owned faer `Mat` + pack-out). Large products use
+/// faer's global parallelism (Rayon by default).
 pub fn matmul(a: &Array, b: &Array) -> Result<Array> {
     let (am, an) = array_as_matrix_dims(a)?;
     let (bm, bn) = array_as_matrix_dims(b)?;
@@ -45,12 +83,25 @@ pub fn matmul(a: &Array, b: &Array) -> Result<Array> {
             "matmul shape mismatch: ({am}, {an}) vs ({bm}, {bn})"
         )));
     }
-    let am_mat = array_as_mat_ref(a)?;
-    let bm_mat = array_as_mat_ref(b)?;
-    let c = am_mat * bm_mat;
+    let lhs = array_as_mat_ref(a)?;
+    let rhs = array_as_mat_ref(b)?;
     // Collapse n×1 (or 1×1 from row@col) to rank-1 when an operand was a vector.
     let prefer_vec = b.rank() == 1 || (a.rank() == 1 && bn == 1);
-    mat_to_array(&c, prefer_vec)
+
+    let n_out = am.saturating_mul(bn);
+    let mut data = vec![0.0; n_out];
+    if n_out > 0 {
+        let mut dst = MatMut::from_row_major_slice_mut(&mut data, am, bn);
+        faer_matmul(
+            &mut dst,
+            Accum::Replace,
+            lhs,
+            rhs,
+            1.0,
+            matmul_par(am, bn, an),
+        );
+    }
+    matmul_result(data, am, bn, prefer_vec)
 }
 
 /// Dot product of two rank-1 arrays of equal length.
