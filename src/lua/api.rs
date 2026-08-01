@@ -102,6 +102,22 @@ pub unsafe extern "C" fn l_matmul(L: *mut lua_State) -> c_int {
     1
 }
 
+pub unsafe extern "C" fn l_matmul_at(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let b = unsafe { &*check_array(L, 2) };
+    let c = lua_try!(L, linalg::matmul_at(&a.array, &b.array));
+    unsafe { push_array(L, c) };
+    1
+}
+
+pub unsafe extern "C" fn l_normal_eq(L: *mut lua_State) -> c_int {
+    let x = unsafe { &*check_array(L, 1) };
+    let y = unsafe { &*check_array(L, 2) };
+    let b = lua_try!(L, linalg::normal_eq(&x.array, &y.array));
+    unsafe { push_array(L, b) };
+    1
+}
+
 pub unsafe extern "C" fn l_solve(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
     let b = unsafe { &*check_array(L, 2) };
@@ -436,7 +452,7 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
         lua_pop(L, 1);
 
         lua_newtable(L);
-        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 14] = [
+        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 16] = [
             (c"zeros", l_zeros),
             (c"ones", l_ones),
             (c"full", l_full),
@@ -444,6 +460,8 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
             (c"array", l_array),
             (c"eye", l_eye),
             (c"matmul", l_matmul),
+            (c"matmul_at", l_matmul_at),
+            (c"normal_eq", l_normal_eq),
             (c"solve", l_solve),
             (c"transpose", l_transpose),
             (c"dot", l_dot),
