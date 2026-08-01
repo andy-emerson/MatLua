@@ -1,15 +1,15 @@
 //! MatLua — dense numeric arrays and linear algebra for Lua 5.4.
 //!
-//! This crate is the Rust core: Arrow-shaped buffers and faer-backed dense LA.
-//! The Lua face is feature-gated (`lua`) and registers into a host-owned
-//! PUC Lua 5.4 state. See `DESIGN.md` for product rules and closed decisions.
+//! Rust core: Arrow-shaped `f64` buffers and faer-backed dense LA. Optional
+//! Lua face (`lua` feature) registers into a host-owned PUC Lua 5.4 state.
+//!
+//! - Visitors / users: repository `README.md`
+//! - Implementer rulings: repository `DESIGN.md`
 //!
 //! # Status
 //!
-//! - **M0** — crate skeleton, error type.
-//! - **M1** — owned `f64` n-D arrays, views, constructors, element-wise ops.
-//! - **M2** — dense linear algebra via faer.
-//! - **M3** — Lua 5.4 face (`lua` feature): `require "matlua"`, 1-based API.
+//! M0–M3 complete (arrays, dense LA, Lua face). Package version is `0.0.1`
+//! until a formal v0.1 release cut.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]

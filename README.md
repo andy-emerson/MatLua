@@ -1,79 +1,113 @@
 # MatLua
 
-MatLua is a general-purpose dense array and linear-algebra library for Rust and Lua 5.4 — deep enough that analytic engines and quant workflows stay in-process for ordinary matrix work, portable enough that no single host owns the API.
+Dense numeric arrays and linear algebra for **Lua 5.4**, implemented as a
+**Rust crate**. Scripts see a Lua library; hosts embed the crate and register
+it into a PUC Lua 5.4 state.
 
-MatLua is the architectural counterpart to NumPy for the Lua ecosystem: a high-level language in front, a systems language in the core. Python is replaced by Lua 5.4, C by Rust, `ndarray` by Apache Arrow, and BLAS/LAPACK by [faer](https://github.com/sarah-quinones/faer-rs).
+Architectural counterpart to NumPy for the Lua world: high-level language in
+front, systems language in the core. Python → Lua 5.4, C → Rust, `ndarray` →
+[Apache Arrow](https://arrow.apache.org/), BLAS/LAPACK →
+[faer](https://github.com/sarah-quinones/faer-rs).
 
-This repository ships **a Rust crate**. Hosts embed it; ports compile it.
+| You are… | You get… |
+|----------|----------|
+| **Lua author** (inside a host) | `require "matlua"`, 1-based arrays, operators, `matmul` / `solve` / factorizations |
+| **Host / embedder** | Rust crate: owned `f64` n-D arrays, faer LA, optional `lua` feature + `matlua::lua::register` |
+| **Rust-only consumer** | Same arrays + LA without linking Lua |
 
-## High-level stack
+Implementer rulings, scope, and architecture: [DESIGN.md](DESIGN.md).  
+Process: [AGENTS.md](AGENTS.md).
 
-| Layer | NumPy world | MatLua world |
-|-------|-------------|--------------|
-| Scripting language | Python | **Lua 5.4** |
-| Core implementation | C (C++/Fortran) | **Rust** |
-| Binding / extension API | Python C API, Cython | **Hand-rolled Lua C API** (no mlua) |
-| Primary array / buffer model | `ndarray` | **Apache Arrow** |
-| Dense linear algebra | BLAS / LAPACK | **faer** |
-| **Deliverable** | wheels / `pip` package | **Rust crate** |
+## Quick feel (Lua)
 
-```text
-Lua 5.4  ← scripts / embedders
-   ↓
-Hand-rolled Lua C API  (optional feature)
-   ↓
-Rust crate (MatLua)
-   ├── Arrow arrays / batches   ← data model & interchange
-   └── faer                     ← dense matmul, factorizations, solvers
+After the host registers MatLua:
+
+```lua
+local ml = require "matlua"
+
+local A = ml.array({{3, 1}, {1, 2}})
+local b = ml.array({9, 8})
+local x = ml.solve(A, b)          -- ≈ {2, 3}
+
+-- one expression, one result (no forced temps for subexpressions)
+local X = ml.array({{1, 0}, {1, 1}, {1, 2}, {1, 3}})
+local y = ml.array({1, 3, 5, 7})
+local beta = ml.solve(
+  ml.matmul(X:transpose(), X),
+  ml.matmul(X:transpose(), y:reshape(4, 1))
+)
 ```
 
-Arrow owns the **data model**. faer owns **dense linear algebra**. They meet at explicit boundaries (views, gathers, copies)—the same separation NumPy has between `ndarray` and BLAS.
+**Indexing is 1-based on the Lua face.** Elementwise `+ - * /` and unary `-`
+work on arrays (and array ↔ number). Matrix product is always explicit:
+`ml.matmul(a, b)` — Lua has a single `*`, so it stays elementwise.
 
-## Goals
+## What works today
 
-- Provide a **NumPy-shaped** numeric layer for Lua: arrays/matrices, elementwise ops, and linear algebra
-- Ship as an **embeddable Rust library** with an optional Lua face
-- Use **pure-Rust LA** via faer (no system BLAS/LAPACK, no Fortran toolchain)
-- Use **Arrow** as the primary in-memory layout and interchange format
-- Keep the surface **curated**: dense numerics and linear algebra first; grow by deliberate addition
+| Area | Surface |
+|------|---------|
+| **Constructors** | `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`, half-open), `array` (nested tables → dense `f64`), `eye` |
+| **Array methods** | `shape`, `rank`, `get` / `set`, `sum` / `mean` / `min` / `max`, `copy`, `reshape`, `transpose`, `fill`, `#a` |
+| **Elementwise** | `+`, `-`, `*`, `/`, unary `-` (array–array or array–number) |
+| **Linear algebra** | `matmul`, `solve`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd` |
+| **Rust core** | `Array` (row-major n-D `f64`), views over host buffers, Arrow `Float64Array` interchange, same LA under `matlua::linalg` |
 
-## Who it is for
+Quality bar is **`f64`**. Storage is a dense buffer, not nested Lua tables
+(tables are constructor sugar only).
 
-| Audience | How they use MatLua |
-|----------|---------------------|
-| **Embedded analytic / database hosts** | Depend on the crate; adapt host buffers and Lua to MatLua’s API |
-| **WASM and other constrained targets** | Compile the crate for the target; supply their own Lua runtime and glue |
-| **Rust developers** shipping Lua-scriptable tools | Embed MatLua + Lua; expose matrices and arrays to scripts |
-| **Lua users** who need fast dense numeric work | Use a host that embeds MatLua (or a future module build) |
-
-### Downstream contract
-
-- **Hosts fit to MatLua.** The crate defines buffer and API contracts. Downstream engines adapt at the boundary rather than the reverse.
-- **MatLua stays portable.** This is not a WASM project, but the core avoids non-portable native LA dependencies so a separate port can target `wasm32` (and similar) without a rewrite.
-
-## Design principles
-
-1. **Rust crate first** — the library is the product; system-Lua modules and finished WASM binaries are downstream packaging.
-2. **Lua 5.4** (PUC reference family) — hand-rolled C API bindings; no mlua, no LuaJIT in-tree.
-3. **Arrow for arrays** — primary in-memory model and interchange.
-4. **faer for dense LA** — solve, QR, SVD, Cholesky, and related ops without BLAS/LAPACK.
-5. **Thin Lua, hot path in Rust** — scripts orchestrate; kernels run in compiled code.
-6. **Embeddable and explicit** — clear ownership, documented view/copy rules, feature-gated Lua bindings.
-
-## Crate features (intended)
+### Crate features
 
 | Feature | Purpose |
 |---------|---------|
-| default | Core arrays + faer LA (Rust API) |
-| `lua` | Hand-rolled Lua 5.4 bindings / registration helpers |
-| lean / target-friendly flags | Trim unnecessary `std` extras where practical |
+| *(default)* | Arrays + faer LA (Rust API only) |
+| `lua` | Hand-rolled Lua 5.4 bindings; vendors PUC 5.4.7 for tests/tools |
 
-Exact feature names will be fixed as the crate is scaffolded.
+Hosts keep their own `lua_State` and call `unsafe { matlua::lua::register(L) }`.
+The vendored interpreter is for MatLua’s own tests and simple tools.
+
+```text
+cargo test
+cargo test --features lua
+```
+
+## Host sketch (Rust)
+
+```rust
+// L: *mut lua_State owned by the host (PUC Lua 5.4)
+unsafe { matlua::lua::register(L) };
+// scripts: local ml = require "matlua"
+```
+
+Rust-side desk math without Lua:
+
+```rust
+use matlua::{Array, linalg};
+
+let a = Array::from_shape_slice(vec![2, 2], &[3., 1., 1., 2.])?;
+let b = Array::from_shape_slice(vec![2], &[9., 8.])?;
+let x = linalg::solve(&a, &b)?;
+```
+
+## Design in one breath
+
+- **User product:** Lua library. **Ship form:** Rust crate.
+- **Hosts fit to MatLua** — engines adapt buffers and embed to MatLua’s contracts.
+- **Portable dense LA** — faer in-tree; no system BLAS/LAPACK default.
+- **Arrow** for buffer model and interchange; faer at an explicit copy boundary today.
+- Curated dense surface first — not full NumPy/SciPy parity.
+
+Closed decisions and milestones: [DESIGN.md](DESIGN.md).
 
 ## Status
 
-Design-phase. API surface, indexing convention, and first milestones are still being locked.
+**M0–M3 are on `main`.** The tree is a **v0.1 candidate**: a host can embed
+MatLua and scripts can do ordinary dense array and linear-algebra work
+end-to-end. Crate version remains **`0.0.1`** until a formal `0.1.0` cut.
+
+Known thin spots vs a full “leave late” desk (column views, richer slicing,
+broadcasting, host zero-copy *from* Lua) are intentional follow-ups, not
+blockers for basic embed + bulk math.
 
 ## License
 
-MIT (intended; finalize when the repo is published).
+[MIT](LICENSE) © 2026 Andy Emerson

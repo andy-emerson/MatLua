@@ -3,7 +3,7 @@
 //! # Layout
 //!
 //! Contiguous **row-major (C-order)** storage. Rust indices are **0-based**.
-//! The Lua face (M3) will present 1-based indexing.
+//! The Lua face (`lua` feature) presents **1-based** indexing.
 //!
 //! # Ownership
 //!

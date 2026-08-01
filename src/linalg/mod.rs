@@ -1,9 +1,8 @@
 //! Dense linear algebra on rank-1/2 [`Array`] values (faer-backed).
 //!
-//! All public functions take and return MatLua [`Array`]s. Internally values are
-//! copied into faer [`Mat`](faer::Mat) (column-major) and results are copied
-//! back to row-major owned arrays. View/copy rules for zero-copy faer views can
-//! be refined later; M2 prioritizes a correct owned API.
+//! Public functions take and return MatLua [`Array`]s. Values are copied into
+//! faer [`Mat`](faer::Mat) (column-major) and results back to row-major owned
+//! arrays. Zero-copy faer views may come later without changing this API.
 //!
 //! # Rank conventions
 //!
@@ -12,6 +11,7 @@
 //! | rank 2, shape `(m, n)` | `m × n` matrix |
 //! | rank 1, shape `(n,)` | `n × 1` column vector |
 //!
+//! Matrix×vector [`matmul`] returns rank-1. [`solve`] preserves the rank style of `b`.
 //! Use [`dot`] for the inner product of two equal-length vectors.
 
 mod convert;
