@@ -2,8 +2,8 @@
 
 #![allow(non_snake_case)]
 
-use std::ffi::{CStr, CString};
-use std::os::raw::c_int;
+use std::ffi::CStr;
+use std::os::raw::{c_char, c_int};
 use std::ptr;
 
 use crate::array::Array;
@@ -37,34 +37,47 @@ pub unsafe fn push_array(L: *mut lua_State, array: Array) {
 }
 
 /// Raise a Lua error (longjmp). Marked as returning `c_int` for `lua_try!`.
+///
+/// Uses `lua_pushlstring` so we do not allocate a `CString` on the error path.
 pub unsafe fn lua_error_msg(L: *mut lua_State, msg: &str) -> c_int {
-    let c = CString::new(msg).unwrap_or_else(|_| CString::new("matlua error").unwrap());
     unsafe {
-        lua_pushstring(L, c.as_ptr());
+        // Lua copies the bytes; embedded NULs are allowed via pushlstring.
+        lua_pushlstring(L, msg.as_ptr() as *const c_char, msg.len());
         lua_error(L)
     }
 }
 
-/// Convert 1-based Lua multi-index (stack args `from..=to` inclusive) to 0-based indices.
+/// Max rank for stack-backed multi-index decoding (no heap on get/set).
+pub const MAX_INDEX_RANK: usize = 8;
+
+/// Convert 1-based Lua multi-index (stack args `from..=to` inclusive) into `buf`.
+///
+/// Returns the filled prefix of `buf` (length `rank`). Uses no heap allocation
+/// when `rank <= MAX_INDEX_RANK` and `buf` is stack-provided.
 pub unsafe fn indices_1_based(
     L: *mut lua_State,
     from: c_int,
     to: c_int,
     rank: usize,
-) -> Result<Vec<usize>, String> {
+    buf: &mut [usize; MAX_INDEX_RANK],
+) -> Result<usize, String> {
     let n = (to - from + 1) as usize;
     if n != rank {
         return Err(format!("expected {rank} indices, got {n}"));
     }
-    let mut out = Vec::with_capacity(rank);
+    if rank > MAX_INDEX_RANK {
+        return Err(format!(
+            "rank {rank} exceeds Lua face index limit {MAX_INDEX_RANK}"
+        ));
+    }
     for i in 0..rank {
         let v = unsafe { luaL_checkinteger(L, from + i as c_int) };
         if v < 1 {
             return Err(format!("index must be >= 1, got {v}"));
         }
-        out.push((v as usize) - 1);
+        buf[i] = (v as usize) - 1;
     }
-    Ok(out)
+    Ok(rank)
 }
 
 /// Read a shape from Lua: either a single integer-list table, or consecutive numbers.
@@ -126,17 +139,18 @@ pub unsafe fn array_from_table(L: *mut lua_State, idx: c_int) -> Result<Array, S
         return Err("array() expects a table".into());
     }
 
-    let shape = unsafe { infer_shape(L, idx)? };
-    let numel: usize = shape.iter().copied().product();
-    let mut data = Vec::with_capacity(numel);
-    unsafe { fill_row_major(L, idx, &shape, 0, &mut data)? };
-    if data.len() != numel {
+    let dims = unsafe { infer_shape(L, idx)? };
+    let shape = crate::array::Shape::new(dims).map_err(|e| e.to_string())?;
+    let mut data = Vec::with_capacity(shape.numel());
+    unsafe { fill_row_major(L, idx, shape.dims(), 0, &mut data)? };
+    if data.len() != shape.numel() {
         return Err(format!(
-            "ragged table: expected {numel} numbers, got {}",
+            "ragged table: expected {} numbers, got {}",
+            shape.numel(),
             data.len()
         ));
     }
-    Array::from_shape_vec(shape, data).map_err(|e| e.to_string())
+    Ok(Array::from_parts(shape, data))
 }
 
 /// Infer rectangular shape by following the first element at each nesting level.
