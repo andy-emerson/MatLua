@@ -1,5 +1,7 @@
 //! Dense n-D `f64` arrays: owned buffers, views, constructors, element-wise ops.
 //!
+//! Elementwise arithmetic and reductions use contiguous slice kernels (`kernels`).
+//!
 //! # Layout
 //!
 //! Contiguous **row-major (C-order)** storage. Rust indices are **0-based**.
@@ -18,6 +20,7 @@
 //! [`arrow_array::Float64Array`] values with an explicit shape.
 
 mod array;
+pub(crate) mod kernels;
 mod ops;
 mod shape;
 mod view;

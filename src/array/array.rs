@@ -3,6 +3,7 @@
 use arrow_array::{Array as ArrowArray, Float64Array};
 use arrow_buffer::Buffer;
 
+use super::kernels;
 use super::shape::{numel_checked, Shape};
 use super::view::{ArrayView, ArrayViewMut};
 use crate::error::{Error, Result};
@@ -211,7 +212,7 @@ impl Array {
 
     /// Sum of all elements.
     pub fn sum(&self) -> f64 {
-        self.data.iter().copied().sum()
+        kernels::sum_slice(self.as_slice())
     }
 
     /// Mean of all elements.
@@ -228,19 +229,13 @@ impl Array {
 
     /// Minimum element.
     pub fn min(&self) -> Result<f64> {
-        self.data
-            .iter()
-            .copied()
-            .reduce(f64::min)
+        kernels::min_slice(self.as_slice())
             .ok_or_else(|| Error::Shape("min of empty array".into()))
     }
 
     /// Maximum element.
     pub fn max(&self) -> Result<f64> {
-        self.data
-            .iter()
-            .copied()
-            .reduce(f64::max)
+        kernels::max_slice(self.as_slice())
             .ok_or_else(|| Error::Shape("max of empty array".into()))
     }
 
@@ -276,85 +271,124 @@ impl Array {
         Buffer::from_vec(self.data.clone())
     }
 
-    /// Element-wise binary op with shape check; result is owned.
-    pub(crate) fn binary_op<F>(&self, other: &Array, op: F) -> Result<Array>
-    where
-        F: Fn(f64, f64) -> f64,
-    {
+    fn same_shape(&self, other: &Array) -> Result<()> {
         if !self.shape.same_as(other.shape()) {
             return Err(Error::Shape(format!(
                 "shape mismatch: {} vs {}",
                 self.shape, other.shape
             )));
         }
-        let data = self
-            .data
-            .iter()
-            .zip(other.data.iter())
-            .map(|(&a, &b)| op(a, b))
-            .collect();
+        Ok(())
+    }
+
+    fn owned_from_kernel<F>(&self, other: &Array, f: F) -> Result<Array>
+    where
+        F: FnOnce(&[f64], &[f64], &mut [f64]),
+    {
+        self.same_shape(other)?;
+        let n = self.len();
+        let mut data = vec![0.0; n];
+        f(self.as_slice(), other.as_slice(), &mut data);
         Ok(Array {
             shape: self.shape.clone(),
             data,
         })
     }
 
-    /// Element-wise op with a scalar; result is owned.
-    pub(crate) fn scalar_op<F>(&self, scalar: f64, op: F) -> Array
+    fn owned_unary_kernel<F>(&self, f: F) -> Array
     where
-        F: Fn(f64, f64) -> f64,
+        F: FnOnce(&[f64], &mut [f64]),
     {
-        let data = self.data.iter().map(|&a| op(a, scalar)).collect();
+        let n = self.len();
+        let mut data = vec![0.0; n];
+        f(self.as_slice(), &mut data);
         Array {
             shape: self.shape.clone(),
             data,
         }
-    }
-
-    /// In-place element-wise binary op with shape check.
-    pub(crate) fn binary_op_assign<F>(&mut self, other: &Array, op: F) -> Result<()>
-    where
-        F: Fn(f64, f64) -> f64,
-    {
-        if !self.shape.same_as(other.shape()) {
-            return Err(Error::Shape(format!(
-                "shape mismatch: {} vs {}",
-                self.shape, other.shape
-            )));
-        }
-        for (a, &b) in self.data.iter_mut().zip(other.data.iter()) {
-            *a = op(*a, b);
-        }
-        Ok(())
     }
 
     /// Element-wise addition.
     pub fn add(&self, other: &Array) -> Result<Array> {
-        self.binary_op(other, |a, b| a + b)
+        self.owned_from_kernel(other, kernels::add_slices)
     }
 
     /// Element-wise subtraction.
     pub fn sub(&self, other: &Array) -> Result<Array> {
-        self.binary_op(other, |a, b| a - b)
+        self.owned_from_kernel(other, kernels::sub_slices)
     }
 
     /// Element-wise multiplication.
     pub fn mul(&self, other: &Array) -> Result<Array> {
-        self.binary_op(other, |a, b| a * b)
+        self.owned_from_kernel(other, kernels::mul_slices)
     }
 
     /// Element-wise division.
     pub fn div(&self, other: &Array) -> Result<Array> {
-        self.binary_op(other, |a, b| a / b)
+        self.owned_from_kernel(other, kernels::div_slices)
     }
 
     /// Element-wise negation.
     pub fn neg(&self) -> Array {
-        let data = self.data.iter().map(|&a| -a).collect();
-        Array {
-            shape: self.shape.clone(),
-            data,
-        }
+        self.owned_unary_kernel(kernels::neg_slice)
+    }
+
+    /// In-place element-wise addition.
+    pub fn add_assign_arr(&mut self, other: &Array) -> Result<()> {
+        self.same_shape(other)?;
+        kernels::add_assign_slices(self.as_mut_slice(), other.as_slice());
+        Ok(())
+    }
+
+    /// In-place element-wise subtraction.
+    pub fn sub_assign_arr(&mut self, other: &Array) -> Result<()> {
+        self.same_shape(other)?;
+        kernels::sub_assign_slices(self.as_mut_slice(), other.as_slice());
+        Ok(())
+    }
+
+    /// In-place element-wise multiplication.
+    pub fn mul_assign_arr(&mut self, other: &Array) -> Result<()> {
+        self.same_shape(other)?;
+        kernels::mul_assign_slices(self.as_mut_slice(), other.as_slice());
+        Ok(())
+    }
+
+    /// In-place element-wise division.
+    pub fn div_assign_arr(&mut self, other: &Array) -> Result<()> {
+        self.same_shape(other)?;
+        kernels::div_assign_slices(self.as_mut_slice(), other.as_slice());
+        Ok(())
+    }
+
+    /// `self + scalar` (owned).
+    pub(crate) fn add_scalar(&self, scalar: f64) -> Array {
+        self.owned_unary_kernel(|a, out| kernels::add_scalar(a, scalar, out))
+    }
+
+    /// `self - scalar` (owned).
+    pub(crate) fn sub_scalar(&self, scalar: f64) -> Array {
+        self.owned_unary_kernel(|a, out| kernels::sub_scalar(a, scalar, out))
+    }
+
+    /// `scalar - self` (owned).
+    pub(crate) fn scalar_sub(&self, scalar: f64) -> Array {
+        self.owned_unary_kernel(|a, out| kernels::scalar_sub(a, scalar, out))
+    }
+
+    /// `self * scalar` (owned).
+    pub(crate) fn mul_scalar(&self, scalar: f64) -> Array {
+        self.owned_unary_kernel(|a, out| kernels::mul_scalar(a, scalar, out))
+    }
+
+    /// `self / scalar` (owned).
+    pub(crate) fn div_scalar(&self, scalar: f64) -> Array {
+        self.owned_unary_kernel(|a, out| kernels::div_scalar(a, scalar, out))
+    }
+
+    /// `scalar / self` (owned).
+    pub(crate) fn scalar_div(&self, scalar: f64) -> Array {
+        self.owned_unary_kernel(|a, out| kernels::scalar_div(a, scalar, out))
     }
 }
 
