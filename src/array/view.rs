@@ -77,8 +77,7 @@ impl<'a> ArrayView<'a> {
 
     /// Copy into an owned [`Array`].
     pub fn to_owned_array(&self) -> Array {
-        Array::from_shape_vec(self.shape.dims().to_vec(), self.data.to_vec())
-            .expect("view shape and data already validated")
+        Array::from_parts(self.shape.clone(), self.data.to_vec())
     }
 }
 
@@ -176,7 +175,6 @@ impl<'a> ArrayViewMut<'a> {
 
     /// Copy into an owned [`Array`].
     pub fn to_owned_array(&self) -> Array {
-        Array::from_shape_vec(self.shape.dims().to_vec(), self.data.to_vec())
-            .expect("view shape and data already validated")
+        Array::from_parts(self.shape.clone(), self.data.to_vec())
     }
 }

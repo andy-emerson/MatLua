@@ -5,9 +5,11 @@ use crate::error::{Error, Result};
 /// Logical shape of an n-D array (length of each axis).
 ///
 /// Layout is always **row-major (C-order)**: the last axis varies fastest.
+/// `numel` is cached at construction so hot paths avoid re-multiplying dims.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Shape {
     dims: Box<[usize]>,
+    numel: usize,
 }
 
 impl Shape {
@@ -18,9 +20,10 @@ impl Shape {
     /// Returns [`Error::Shape`] if the product of dimensions overflows `usize`.
     pub fn new(dims: impl Into<Vec<usize>>) -> Result<Self> {
         let dims = dims.into();
-        let _ = numel_checked(&dims)?;
+        let numel = numel_checked(&dims)?;
         Ok(Self {
             dims: dims.into_boxed_slice(),
+            numel,
         })
     }
 
@@ -28,14 +31,28 @@ impl Shape {
     pub fn scalar() -> Self {
         Self {
             dims: Box::new([]),
+            numel: 1,
         }
     }
 
     /// Rank-1 shape.
+    #[inline]
     pub fn from_len(n: usize) -> Self {
         Self {
             dims: Box::new([n]),
+            numel: n,
         }
+    }
+
+    /// Rank-2 matrix shape `(rows, cols)` with overflow check.
+    pub fn matrix(rows: usize, cols: usize) -> Result<Self> {
+        let numel = rows
+            .checked_mul(cols)
+            .ok_or_else(|| Error::Shape("shape numel overflow".into()))?;
+        Ok(Self {
+            dims: Box::new([rows, cols]),
+            numel,
+        })
     }
 
     /// Axis lengths.
@@ -50,11 +67,10 @@ impl Shape {
         self.dims.len()
     }
 
-    /// Total number of elements.
+    /// Total number of elements (cached).
     #[inline]
     pub fn numel(&self) -> usize {
-        // Invariant: constructed only via checked paths.
-        numel_checked(&self.dims).expect("shape numel overflowed after construction")
+        self.numel
     }
 
     /// Row-major strides (elements, not bytes).
@@ -63,6 +79,8 @@ impl Shape {
     }
 
     /// Flat offset for a multi-index (0-based per axis).
+    ///
+    /// Computes the offset without allocating a strides buffer.
     pub fn offset(&self, indices: &[usize]) -> Result<usize> {
         if indices.len() != self.rank() {
             return Err(Error::Shape(format!(
@@ -72,9 +90,11 @@ impl Shape {
                 indices.len()
             )));
         }
-        let strides = self.strides();
+        // Row-major: last axis varies fastest.
         let mut off = 0usize;
-        for (i, (&idx, &stride)) in indices.iter().zip(strides.iter()).enumerate() {
+        let mut stride = 1usize;
+        for i in (0..self.rank()).rev() {
+            let idx = indices[i];
             let dim = self.dims[i];
             if idx >= dim {
                 return Err(Error::Index(format!(
@@ -82,9 +102,13 @@ impl Shape {
                 )));
             }
             off = off
-                .checked_add(idx.checked_mul(stride).ok_or_else(|| {
-                    Error::Shape("offset overflow".into())
-                })?)
+                .checked_add(
+                    idx.checked_mul(stride)
+                        .ok_or_else(|| Error::Shape("offset overflow".into()))?,
+                )
+                .ok_or_else(|| Error::Shape("offset overflow".into()))?;
+            stride = stride
+                .checked_mul(dim)
                 .ok_or_else(|| Error::Shape("offset overflow".into()))?;
         }
         Ok(off)
@@ -162,5 +186,13 @@ mod tests {
         assert_eq!(s.rank(), 0);
         assert_eq!(s.numel(), 1);
         assert_eq!(s.offset(&[]).unwrap(), 0);
+    }
+
+    #[test]
+    fn matrix_and_from_len() {
+        let m = Shape::matrix(3, 4).unwrap();
+        assert_eq!(m.dims(), &[3, 4]);
+        assert_eq!(m.numel(), 12);
+        assert_eq!(Shape::from_len(7).numel(), 7);
     }
 }

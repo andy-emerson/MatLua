@@ -144,7 +144,7 @@ pub fn svd(a: &Array) -> Result<(Array, Array, Array)> {
     for i in 0..n {
         s.push(col[i]);
     }
-    let s = Array::from_shape_vec(vec![n], s)?;
+    let s = Array::from_parts(crate::array::Shape::from_len(n), s);
     Ok((u, s, v))
 }
 
@@ -155,12 +155,9 @@ pub fn norm(a: &Array) -> Result<f64> {
 }
 
 /// Identity matrix of order `n`.
+#[inline]
 pub fn eye(n: usize) -> Result<Array> {
-    let mut a = Array::zeros(vec![n, n])?;
-    for i in 0..n {
-        a.set(&[i, i], 1.0)?;
-    }
-    Ok(a)
+    Array::eye(n)
 }
 
 #[cfg(test)]

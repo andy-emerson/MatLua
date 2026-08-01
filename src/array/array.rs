@@ -94,6 +94,13 @@ impl Array {
         Ok(Self { shape, data })
     }
 
+    /// Assemble an array when shape and length are already known to match.
+    #[inline]
+    pub(crate) fn from_parts(shape: Shape, data: Vec<f64>) -> Self {
+        debug_assert_eq!(data.len(), shape.numel());
+        Self { shape, data }
+    }
+
     /// Build from shape and a flat row-major slice (copies).
     pub fn from_shape_slice(shape: impl Into<Vec<usize>>, data: &[f64]) -> Result<Self> {
         Self::from_shape_vec(shape, data.to_vec())
@@ -102,28 +109,22 @@ impl Array {
     /// Zeros with the given shape.
     pub fn zeros(shape: impl Into<Vec<usize>>) -> Result<Self> {
         let shape = Shape::new(shape)?;
-        Ok(Self {
-            data: vec![0.0; shape.numel()],
-            shape,
-        })
+        let n = shape.numel();
+        Ok(Self::from_parts(shape, vec![0.0; n]))
     }
 
     /// Ones with the given shape.
     pub fn ones(shape: impl Into<Vec<usize>>) -> Result<Self> {
         let shape = Shape::new(shape)?;
-        Ok(Self {
-            data: vec![1.0; shape.numel()],
-            shape,
-        })
+        let n = shape.numel();
+        Ok(Self::from_parts(shape, vec![1.0; n]))
     }
 
     /// Fill every element with `value`.
     pub fn full(shape: impl Into<Vec<usize>>, value: f64) -> Result<Self> {
         let shape = Shape::new(shape)?;
-        Ok(Self {
-            data: vec![value; shape.numel()],
-            shape,
-        })
+        let n = shape.numel();
+        Ok(Self::from_parts(shape, vec![value; n]))
     }
 
     /// Rank-1 range `[start, stop)` with step `1.0` (NumPy-style, exclusive stop).
@@ -141,7 +142,7 @@ impl Array {
             return Err(Error::Shape("arange step must be non-zero".into()));
         }
         if (step > 0.0 && start >= stop) || (step < 0.0 && start <= stop) {
-            return Self::from_shape_vec(vec![0], Vec::new());
+            return Ok(Self::from_parts(Shape::from_len(0), Vec::new()));
         }
         let n_f = ((stop - start) / step).ceil();
         if !n_f.is_finite() || n_f < 0.0 {
@@ -160,7 +161,7 @@ impl Array {
             data.push(x);
             x += step;
         }
-        Self::from_shape_vec(vec![data.len()], data)
+        Ok(Self::from_parts(Shape::from_len(data.len()), data))
     }
 
     /// Read one element at a multi-index (0-based).
@@ -190,10 +191,20 @@ impl Array {
                 shape
             )));
         }
-        Ok(Self {
-            shape,
-            data: self.data.clone(),
-        })
+        Ok(Self::from_parts(shape, self.data.clone()))
+    }
+
+    /// Consume `self` and reshape without copying the value buffer.
+    pub fn into_reshape(self, shape: impl Into<Vec<usize>>) -> Result<Self> {
+        let shape = Shape::new(shape)?;
+        if shape.numel() != self.len() {
+            return Err(Error::Shape(format!(
+                "cannot reshape array of {} elements into {}",
+                self.len(),
+                shape
+            )));
+        }
+        Ok(Self::from_parts(shape, self.data))
     }
 
     /// Reshape in place without copying if the element count matches.
@@ -208,6 +219,17 @@ impl Array {
         }
         self.shape = shape;
         Ok(())
+    }
+
+    /// Identity matrix of order `n` (row-major), diagonal written in one pass.
+    pub fn eye(n: usize) -> Result<Self> {
+        let shape = Shape::matrix(n, n)?;
+        let mut data = vec![0.0; shape.numel()];
+        // Row-major: diagonal at i * n + i.
+        for i in 0..n {
+            data[i * n + i] = 1.0;
+        }
+        Ok(Self::from_parts(shape, data))
     }
 
     /// Sum of all elements.
@@ -289,10 +311,7 @@ impl Array {
         let n = self.len();
         let mut data = vec![0.0; n];
         f(self.as_slice(), other.as_slice(), &mut data);
-        Ok(Array {
-            shape: self.shape.clone(),
-            data,
-        })
+        Ok(Self::from_parts(self.shape.clone(), data))
     }
 
     fn owned_unary_kernel<F>(&self, f: F) -> Array
@@ -302,10 +321,7 @@ impl Array {
         let n = self.len();
         let mut data = vec![0.0; n];
         f(self.as_slice(), &mut data);
-        Array {
-            shape: self.shape.clone(),
-            data,
-        }
+        Self::from_parts(self.shape.clone(), data)
     }
 
     /// Element-wise addition.
@@ -413,6 +429,17 @@ pub(crate) fn check_shape(dims: &[usize]) -> Result<usize> {
 mod tests {
     use super::*;
     use crate::array::{ArrayView, ArrayViewMut};
+
+    #[test]
+    fn eye_and_into_reshape() {
+        let e = Array::eye(3).unwrap();
+        assert_eq!(e.dims(), &[3, 3]);
+        assert_eq!(e.as_slice(), &[1., 0., 0., 0., 1., 0., 0., 0., 1.]);
+        let v = Array::arange(0.0, 6.0).unwrap();
+        let m = v.into_reshape(vec![2, 3]).unwrap();
+        assert_eq!(m.dims(), &[2, 3]);
+        assert_eq!(m.as_slice(), &[0., 1., 2., 3., 4., 5.]);
+    }
 
     #[test]
     fn zeros_and_get_set() {
