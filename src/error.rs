@@ -6,8 +6,6 @@ use thiserror::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors returned by MatLua.
-///
-/// Variants will grow with the API. M0 only reserves the surface.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum Error {
@@ -28,6 +26,16 @@ impl Error {
     /// Build a [`Error::Message`] from anything displayable.
     pub fn message(msg: impl Into<String>) -> Self {
         Self::Message(msg.into())
+    }
+
+    /// Build a [`Error::Shape`].
+    pub fn shape(msg: impl Into<String>) -> Self {
+        Self::Shape(msg.into())
+    }
+
+    /// Build a [`Error::Index`].
+    pub fn index(msg: impl Into<String>) -> Self {
+        Self::Index(msg.into())
     }
 }
 
