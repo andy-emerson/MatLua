@@ -6,7 +6,6 @@
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
 use super::Array;
-use crate::error::Result;
 
 fn panic_shape(op: &str, err: crate::error::Error) -> ! {
     panic!("matlua array {op}: {err}");
@@ -298,32 +297,6 @@ impl Div<Array> for f64 {
     }
 }
 
-/// Fallible element-wise helpers (aliases of the inherent methods).
-pub trait TryElemwise {
-    /// Fallible add.
-    fn try_add(&self, other: &Array) -> Result<Array>;
-    /// Fallible sub.
-    fn try_sub(&self, other: &Array) -> Result<Array>;
-    /// Fallible mul.
-    fn try_mul(&self, other: &Array) -> Result<Array>;
-    /// Fallible div.
-    fn try_div(&self, other: &Array) -> Result<Array>;
-}
-
-impl TryElemwise for Array {
-    fn try_add(&self, other: &Array) -> Result<Array> {
-        Array::add(self, other)
-    }
-    fn try_sub(&self, other: &Array) -> Result<Array> {
-        Array::sub(self, other)
-    }
-    fn try_mul(&self, other: &Array) -> Result<Array> {
-        Array::mul(self, other)
-    }
-    fn try_div(&self, other: &Array) -> Result<Array> {
-        Array::div(self, other)
-    }
-}
 
 #[cfg(test)]
 mod tests {

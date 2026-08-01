@@ -11,7 +11,7 @@ use crate::linalg;
 use super::ffi::*;
 use super::ud::{
     array_from_table, check_array, indices_1_based, push_array, push_shape_table, shape_from_args,
-    test_array, ARRAY_MT, MAX_INDEX_RANK,
+    test_array, ARRAY_MT,
 };
 
 macro_rules! lua_try {
@@ -230,9 +230,8 @@ pub unsafe extern "C" fn a_get(L: *mut lua_State) -> c_int {
         unsafe { lua_pushnumber(L, v) };
         return 1;
     }
-    let mut buf = [0usize; MAX_INDEX_RANK];
-    let n = lua_try!(L, unsafe { indices_1_based(L, 2, top, rank, &mut buf) });
-    let v = lua_try!(L, a.array.get(&buf[..n]));
+    let idx = lua_try!(L, unsafe { indices_1_based(L, 2, top, rank) });
+    let v = lua_try!(L, a.array.get(&idx));
     unsafe { lua_pushnumber(L, v) };
     1
 }
@@ -253,12 +252,8 @@ pub unsafe extern "C" fn a_set(L: *mut lua_State) -> c_int {
         lua_try!(L, a.array.set(&[(v as usize) - 1], value));
         return 0;
     }
-    let mut buf = [0usize; MAX_INDEX_RANK];
-    let n = lua_try!(
-        L,
-        unsafe { indices_1_based(L, 2, top - 1, rank, &mut buf) }
-    );
-    lua_try!(L, a.array.set(&buf[..n], value));
+    let idx = lua_try!(L, unsafe { indices_1_based(L, 2, top - 1, rank) });
+    lua_try!(L, a.array.set(&idx, value));
     0
 }
 

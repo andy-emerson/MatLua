@@ -125,8 +125,8 @@ Matrix×vector `matmul` returns **rank-1**. `solve` preserves the rank style of 
 
 1. **Owned arrays** — MatLua-managed results own their buffer.
 2. **Borrowed views (Rust)** — `ArrayView` / `ArrayViewMut` over contiguous host or parent memory; **caller guarantees lifetime**.
-3. **LA results** — matmul / factorizations / solvers return **owned** arrays (faer path currently copies at the Mat boundary).
-4. **Rule of thumb:** views share memory until the user **copies**; bulk math results are new arrays unless documented otherwise.
+3. **LA results** — always **owned** row-major arrays. **Inputs** are zero-copy faer `MatRef` when contiguous. **Outputs:** `matmul` / `matmul_at` / blocked `transpose` write dest buffers; `solve` factors then solves in place on a row-major RHS copy. **Factorizations** (`cholesky`, `qr`, `svd`) still pack out from faer views into owned buffers.
+4. **Rule of thumb:** views share memory until the user **copies**; bulk math results are new arrays unless documented otherwise. `reshape` may share an owned buffer until a write (copy-on-write).
 
 Lua userdata today holds **owned** arrays. Host zero-copy *into* scripts remains a host/Rust-side concern until a view face is exposed to Lua.
 
@@ -151,7 +151,7 @@ Arrays are **not** plain Lua tables at runtime.
 - Metamethods: elementwise `+`, `-`, `*`, `/`, unary `-` (array–array or array–number).
 - **Matrix multiplication:** module function `ml.matmul(a, b)` only (not `*`, no `@`).
 - **Transpose:** `ml.transpose(a)` and method `a:transpose()`.
-- Other LA: module functions `solve`, `dot`, `norm`, `cholesky`, `qr`, `svd`.
+- Other LA: `matmul_at`, `normal_eq`, `solve`, `dot`, `norm`, `cholesky`, `qr`, `svd`.
 
 Rationale: Lua has a single `*`; naming matmul avoids silent confusion.
 
@@ -166,6 +166,7 @@ Rationale: Lua has a single `*`; naming matmul avoids silent confusion.
 - User product: **Lua library** (`require "matlua"` after host registration).
 - Feature **`lua`**: hand-rolled bindings + vendored PUC 5.4.7 for tests/tools. Hosts may link their own 5.4.
 - Public host entry: `unsafe fn matlua::lua::register(*mut lua_State)`.
+- Hosts should call `enable_generational_gc` on allocate-heavy workloads (see README host sketch).
 - Product-complete for the README promise means real **bulk** numeric work on the Lua face, not a single demo op.
 
 ### 3.9 Binding stack
@@ -195,8 +196,22 @@ Explicitly not defaults: nalgebra, system BLAS/LAPACK, mlua, ndarray as data mod
 
 - Owned `Array` storage is contiguous **row-major (C-order)** `f64`.
 - Dense LA **inputs** are faer `MatRef` views over that storage when the buffer is contiguous row-major (**zero-copy in**). The public `Array` model stays row-major; we do not re-store matrices column-major.
-- Dense LA **results** are **owned** row-major `Array`s (**copy out**), unless an explicit out-parameter / view API is added later.
+- Dense LA **results** are **owned** row-major `Array`s (see §3.4 for dest-write vs factorization pack-out). Out-parameter APIs are not frozen yet.
 - faer’s native owned `Mat` remains column-major internally where faer allocates; that is an implementation detail of kernels, not MatLua’s user-facing layout.
+
+### 3.13 Reshape buffer sharing
+
+Value storage is `Arc<Vec<f64>>`. `reshape` (Rust and Lua) shares the buffer
+(metadata + `Arc` clone). In-place mutation copy-on-writes when the buffer is
+still shared (`Arc::make_mut`). `Clone`, `to_owned_array`, and Lua `copy` are
+**deep** unique copies.
+
+### 3.14 Composed dense paths
+
+Prefer `matmul_at(A, B)` for `AᵀB` and `normal_eq(X, y)` for `solve(XᵀX, Xᵀy)`
+over materializing `transpose` then `matmul`. Same numerics as the long
+composition. Large same-buffer `AᵀA` (`k ≥ 512`) may materialize `Aᵀ` once
+internally. Measurement: `tests/bench/compare_compose.py`.
 
 ---
 
@@ -208,7 +223,7 @@ Names match the `lua` feature on `main`. Tutorial samples live in
 ### 4.1 Module functions
 
 `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`), `array`, `eye`,
-`matmul`, `matmul_at` (AᵀB without materializing Aᵀ), `normal_eq`, `solve`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd`
+`matmul`, `matmul_at` (AᵀB; large same-buffer AᵀA may materialize Aᵀ once), `normal_eq`, `solve`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd`
 
 ### 4.2 Array methods and metamethods
 
@@ -289,7 +304,7 @@ explicit boundaries (zero-copy views in, owned results out).
 Feature follow-ups (not the performance program): richer indexing/views from Lua,
 broadcasting policy, host buffer handles in Lua, docs.rs polish, more reductions.
 
-### 7.2 Performance program (P0–P5)
+### 7.2 Performance program (P0–P6)
 
 Goal: make the **current** surface competitive with NumPy for ordinary dense
 `f64` desk work, then **prove** it. Optimize structural costs first; formal
@@ -304,11 +319,10 @@ NumPy comparison is the **gate**, not the driver of every change.
 | **Faces** | Always **three-way**: **NumPy** (baseline **1.00×**), **Rust** (critical path), **Lua** (product) |
 | **Reporting** | Relative wall time to NumPy (NumPy column is always 1.00×); absolute ms secondary |
 | **Bar** | On medium+ matmul/solve (release, same shapes), MatLua wall time within about **1–2×** of NumPy on the same machine |
-| **Method** | During P1–P4: internal release timings only. **P5**: fixed harness + NumPy scripts; publish a table |
+| **Method** | Fixed harness + NumPy scripts under `tests/bench/`; publish tables in `tests/README.md` |
 | **Non-goals** | Beat MKL/OpenBLAS on every micro-op; research kernels; replace faer with system BLAS; full broadcasting engine |
 
-Tiny ops and pure Lua call overhead may lag NumPy; document residual gaps at P5
-with reasons rather than expanding scope indefinitely.
+**Residuals vs bar (present tense):** medium+ matmul and many bulk kernels sit near the band; large pure `XᵀX` and some micro-ops can exceed 1–2× (OpenBLAS residual / noise). Lua bulk paths track Rust when hosts use generational GC. Prefer `tests/README.md` for measured numbers, not success language here.
 
 | Milestone | Intent | Status |
 |-----------|--------|--------|
@@ -367,22 +381,15 @@ Human is always **author** of record; agent may be **co-author** when allowed fo
 
 ## 10. Status
 
-**Implementation through M3 is on `main`.** Closed rulings above match the product surface:
-
-- Rust: row-major owned `f64` n-D arrays, views, elementwise, Arrow interchange, faer LA.
-- Lua (`lua` feature): 1-based userdata, constructors, metamethods, linalg module functions.
-
-**Composed paths (2026-08-01):** `solve` dest-packs (in-place on row-major RHS). `matmul_at` adaptive `AᵀA` for large `k`.  Prefer `matmul_at(A,B)` ≡ `AᵀB` and `normal_eq(X,y)` ≡ `solve(XᵀX, Xᵀy)` over materializing `transpose` then `matmul`. Same numerics as the long composition; fewer temps. End-to-end numbers: `tests/bench/compare_compose.py` / `tests/README.md`.
-
-**Reshape (closed 2026-08-01, issue #12):** value buffer is `Arc<Vec<f64>>`. `reshape` / Lua `reshape` share the buffer (metadata + `Arc` clone). In-place mutation uses copy-on-write (`Arc::make_mut`) when the buffer is still shared. `Clone`, `to_owned_array`, and Lua `copy` remain **deep** unique copies.
-
-**Performance program:** structural P0–P6 work is on `main`. Measurement and
-follow-up optimization use the **fair** three-way suite under `tests/bench/`.
-Active function-level work is tracked in Issues (#12 reshape, #13 min, #14 max,
-#15 norm). Do not claim a function “done” in this file until its issue is closed.
+**Shipped surface** matches §3–§4: row-major `f64` arrays, views, elementwise,
+Arrow interchange, faer LA, Lua face with 1-based indexing, composed paths
+(`matmul_at`, `normal_eq`), reshape buffer sharing (§3.13).
 
 Package version is **`0.0.1`**. Call **v0.1** when the human tags a release;
 until then treat the tree as a **v0.1 candidate** per §7.1.
+
+Open work and measured tables live in **GitHub Issues** and
+[`tests/README.md`](tests/README.md) — not as a living log in this file.
 
 Update this document when rulings or the frozen public face change — not on
 every internal refactor.

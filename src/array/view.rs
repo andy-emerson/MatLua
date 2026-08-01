@@ -15,8 +15,18 @@ pub struct ArrayView<'a> {
 
 impl<'a> ArrayView<'a> {
     /// Construct a view; `data.len()` must equal `shape.numel()`.
+    /// # Panics
+    ///
+    /// Panics if `data.len() != shape.numel()`. Prefer [`try_from_dims`] at
+    /// fallible boundaries.
     pub fn from_shape_slice(shape: Shape, data: &'a [f64]) -> Self {
-        debug_assert_eq!(data.len(), shape.numel());
+        assert_eq!(
+            data.len(),
+            shape.numel(),
+            "view data length {} != shape numel {}",
+            data.len(),
+            shape.numel()
+        );
         Self { shape, data }
     }
 
@@ -77,7 +87,9 @@ impl<'a> ArrayView<'a> {
 
     /// Copy into an owned [`Array`].
     pub fn to_owned_array(&self) -> Array {
-        Array::from_parts(self.shape.clone(), self.data.to_vec())
+        let mut data = super::pool::take_uninit(self.data.len());
+        data.copy_from_slice(self.data);
+        Array::from_parts(self.shape.clone(), data)
     }
 }
 
@@ -90,8 +102,18 @@ pub struct ArrayViewMut<'a> {
 
 impl<'a> ArrayViewMut<'a> {
     /// Construct a mutable view; `data.len()` must equal `shape.numel()`.
+    /// # Panics
+    ///
+    /// Panics if `data.len() != shape.numel()`. Prefer [`try_from_dims`] at
+    /// fallible boundaries.
     pub fn from_shape_slice(shape: Shape, data: &'a mut [f64]) -> Self {
-        debug_assert_eq!(data.len(), shape.numel());
+        assert_eq!(
+            data.len(),
+            shape.numel(),
+            "view data length {} != shape numel {}",
+            data.len(),
+            shape.numel()
+        );
         Self { shape, data }
     }
 
@@ -175,6 +197,8 @@ impl<'a> ArrayViewMut<'a> {
 
     /// Copy into an owned [`Array`].
     pub fn to_owned_array(&self) -> Array {
-        Array::from_parts(self.shape.clone(), self.data.to_vec())
+        let mut data = super::pool::take_uninit(self.data.len());
+        data.copy_from_slice(self.data);
+        Array::from_parts(self.shape.clone(), data)
     }
 }

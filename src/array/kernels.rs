@@ -1,4 +1,4 @@
-//! Contiguous `f64` kernels for elementwise ops and reductions (P2).
+//! Contiguous `f64` kernels for elementwise ops and reductions.
 //!
 //! Specialized arithmetic (no `Fn` closures) and index loops over dense
 //! slices so LLVM can auto-vectorize. Slices must be the same length where
@@ -203,6 +203,9 @@ pub(crate) fn sum_sq_slice(a: &[f64]) -> f64 {
 
 /// Minimum over a dense slice.
 ///
+/// NaN values are skipped relative to a `+∞` seed (not full IEEE `minNum`
+/// semantics).
+///
 /// Cache-blocked reduction (same structure as [`max_slice`]): O(n) with
 /// L1-friendly tiles so large n does not thrash on a single accumulator chain.
 #[inline]
@@ -255,6 +258,9 @@ pub(crate) fn min_slice(a: &[f64]) -> Option<f64> {
 }
 
 /// Maximum over a dense slice.
+///
+/// NaN values are skipped relative to a `−∞` seed (not full IEEE `maxNum`
+/// semantics).
 ///
 /// Cache-blocked reduction: maxima within L1-friendly blocks, then max of
 /// block maxima. Still O(n); blocking helps large n (better cache use), not a
