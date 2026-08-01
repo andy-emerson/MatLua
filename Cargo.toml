@@ -31,3 +31,8 @@ cc = "1.2"
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[[example]]
+name = "bench_dense"
+path = "examples/bench_dense.rs"
+
