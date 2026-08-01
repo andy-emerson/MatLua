@@ -29,17 +29,24 @@ pub unsafe fn test_array(L: *mut lua_State, idx: c_int) -> *mut ArrayUd {
 }
 
 /// Push a new Array userdata (moves the array).
+///
+/// GC debt is stepped only when this array **uniquely owns** its `f64` buffer
+/// (new allocation / deep copy). Shared buffers (`reshape`) do not re-account
+/// the full payload. Step size is capped so mid-size and large-n pushes scale.
 pub unsafe fn push_array(L: *mut lua_State, array: Array) {
     unsafe {
-        // External f64 buffer is invisible to Lua's GC debt. Step GC by the
-        // payload size so large arrays are collected promptly (otherwise
-        // memory balloons and major GC / allocator churn destroy face times).
-        let nbytes = array.len().saturating_mul(8);
+        let account = if array.buffer_strong_count() == 1 {
+            array.len().saturating_mul(8)
+        } else {
+            0
+        };
         let p = lua_newuserdatauv(L, std::mem::size_of::<ArrayUd>(), 0) as *mut ArrayUd;
         ptr::write(p, ArrayUd { array });
         luaL_setmetatable(L, ARRAY_MT.as_ptr());
-        if nbytes >= 4096 {
-            let step_kb = (nbytes / 1024) as c_int;
+        // Skip tiny results; cap step so very large matrices do not pause ~O(nbytes)
+        // on every face return (still prompts collection of dead userdata).
+        if account >= 64 * 1024 {
+            let step_kb = ((account / 1024) as c_int).min(256);
             let _ = lua_gc(L, LUA_GCSTEP, step_kb);
         }
     }
