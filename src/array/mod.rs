@@ -21,6 +21,7 @@
 
 mod array;
 pub(crate) mod kernels;
+mod pool;
 mod ops;
 mod shape;
 mod view;

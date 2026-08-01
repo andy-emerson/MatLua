@@ -6,6 +6,7 @@ use arrow_array::{Array as ArrowArray, Float64Array};
 use arrow_buffer::Buffer;
 
 use super::kernels;
+use super::pool;
 use super::shape::{numel_checked, Shape};
 use super::view::{ArrayView, ArrayViewMut};
 use crate::error::{Error, Result};
@@ -28,7 +29,9 @@ impl Clone for Array {
     /// Deep copy of values (unique buffer). Prefer [`Self::reshape`] for
     /// zero-copy shape changes that intentionally share storage.
     fn clone(&self) -> Self {
-        Self::from_parts(self.shape.clone(), self.as_slice().to_vec())
+        let mut data = pool::take_zeroed(self.len());
+        data.copy_from_slice(self.as_slice());
+        Self::from_parts(self.shape.clone(), data)
     }
 }
 
@@ -93,7 +96,7 @@ impl Array {
     /// Deep copy of shape and values (unique buffer).
     #[inline]
     pub fn to_owned_array(&self) -> Array {
-        Self::from_parts(self.shape.clone(), self.as_slice().to_vec())
+        self.clone()
     }
 
     /// Build from shape and a flat row-major buffer.
@@ -132,21 +135,21 @@ impl Array {
     pub fn zeros(shape: impl Into<Vec<usize>>) -> Result<Self> {
         let shape = Shape::new(shape)?;
         let n = shape.numel();
-        Ok(Self::from_parts(shape, vec![0.0; n]))
+        Ok(Self::from_parts(shape, pool::take_zeroed(n)))
     }
 
     /// Ones with the given shape.
     pub fn ones(shape: impl Into<Vec<usize>>) -> Result<Self> {
         let shape = Shape::new(shape)?;
         let n = shape.numel();
-        Ok(Self::from_parts(shape, vec![1.0; n]))
+        Ok(Self::from_parts(shape, pool::take_filled(n, 1.0)))
     }
 
     /// Fill every element with `value`.
     pub fn full(shape: impl Into<Vec<usize>>, value: f64) -> Result<Self> {
         let shape = Shape::new(shape)?;
         let n = shape.numel();
-        Ok(Self::from_parts(shape, vec![value; n]))
+        Ok(Self::from_parts(shape, pool::take_filled(n, value)))
     }
 
     /// Rank-1 range `[start, stop)` with step `1.0` (NumPy-style, exclusive stop).
@@ -170,15 +173,18 @@ impl Array {
             return Err(Error::Shape("arange length overflow".into()));
         }
         let n = n_f as usize;
-        let mut data = Vec::with_capacity(n);
+        let mut data = pool::take_zeroed(n);
         let mut x = start;
-        for _ in 0..n {
+        let mut written = 0usize;
+        for i in 0..n {
             if (step > 0.0 && x >= stop) || (step < 0.0 && x <= stop) {
                 break;
             }
-            data.push(x);
+            data[i] = x;
+            written = i + 1;
             x += step;
         }
+        data.truncate(written);
         Ok(Self::from_parts(Shape::from_len(data.len()), data))
     }
 
@@ -220,7 +226,7 @@ impl Array {
     }
 
     /// Consume `self` and reshape without copying the value buffer.
-    pub fn into_reshape(self, shape: impl Into<Vec<usize>>) -> Result<Self> {
+    pub fn into_reshape(mut self, shape: impl Into<Vec<usize>>) -> Result<Self> {
         let shape = Shape::new(shape)?;
         if shape.numel() != self.len() {
             return Err(Error::Shape(format!(
@@ -229,10 +235,9 @@ impl Array {
                 shape
             )));
         }
-        Ok(Self {
-            shape,
-            data: self.data,
-        })
+        // Move Arc out without running Drop recycle on the buffer.
+        let data = std::mem::replace(&mut self.data, Arc::new(Vec::new()));
+        Ok(Self { shape, data })
     }
 
     /// Reshape in place without copying if the element count matches.
@@ -252,7 +257,7 @@ impl Array {
     /// Identity matrix of order `n` (row-major), diagonal written in one pass.
     pub fn eye(n: usize) -> Result<Self> {
         let shape = Shape::matrix(n, n)?;
-        let mut data = vec![0.0; shape.numel()];
+        let mut data = pool::take_zeroed(shape.numel());
         for i in 0..n {
             data[i * n + i] = 1.0;
         }
@@ -328,7 +333,7 @@ impl Array {
     {
         self.same_shape(other)?;
         let n = self.len();
-        let mut data = vec![0.0; n];
+        let mut data = pool::take_zeroed(n);
         f(self.as_slice(), other.as_slice(), &mut data);
         Ok(Self::from_parts(self.shape.clone(), data))
     }
@@ -338,7 +343,7 @@ impl Array {
         F: FnOnce(&[f64], &mut [f64]),
     {
         let n = self.len();
-        let mut data = vec![0.0; n];
+        let mut data = pool::take_zeroed(n);
         f(self.as_slice(), &mut data);
         Self::from_parts(self.shape.clone(), data)
     }
@@ -429,6 +434,16 @@ impl PartialEq for Array {
                 .iter()
                 .zip(other.as_slice().iter())
                 .all(|(a, b)| a == b || (a.is_nan() && b.is_nan()))
+    }
+}
+
+impl Drop for Array {
+    fn drop(&mut self) {
+        // Recycle only uniquely owned buffers (not reshape-shared Arcs).
+        if let Some(inner) = Arc::get_mut(&mut self.data) {
+            let buf = std::mem::take(inner);
+            pool::recycle(buf);
+        }
     }
 }
 
