@@ -20,6 +20,10 @@ pub enum Error {
     /// An index was out of bounds (reported in the face that raised it).
     #[error("index error: {0}")]
     Index(String),
+
+    /// Dense linear algebra failure (e.g. Cholesky of a non-SPD matrix).
+    #[error("linear algebra error: {0}")]
+    Linalg(String),
 }
 
 impl Error {
@@ -36,6 +40,11 @@ impl Error {
     /// Build a [`Error::Index`].
     pub fn index(msg: impl Into<String>) -> Self {
         Self::Index(msg.into())
+    }
+
+    /// Build a [`Error::Linalg`].
+    pub fn linalg(msg: impl Into<String>) -> Self {
+        Self::Linalg(msg.into())
     }
 }
 

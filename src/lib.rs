@@ -8,7 +8,9 @@
 //!
 //! - **M0** — crate skeleton, error type.
 //! - **M1** — owned `f64` n-D arrays, views, constructors, element-wise ops,
-//!   Arrow float64 interchange. Linear algebra and Lua face are not implemented yet.
+//!   Arrow float64 interchange.
+//! - **M2** — dense linear algebra via faer (`matmul`, `solve`, Cholesky, QR,
+//!   SVD, …). Lua face is not implemented yet.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
