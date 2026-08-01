@@ -134,16 +134,16 @@ python3 tests/bench/compare_compose.py --sizes 64,256,1024
 
 `k` is features; design matrix is tall `m=4k`. **short** = `matmul_at` / `normal_eq`. **long** = `transpose` + `matmul` (+ `solve`). NumPy short uses view `.T` (already short).
 
-### Snapshot (2026-08-01)
+### Snapshot (2026-08-01, dest-pack solve + adaptive AᵀA)
 
 | op | k | NumPy short (ms) | Rust long | Rust short | Lua long | Lua short | Rshort/N | Lshort/N | L/R short |
 |----|--:|-----------------:|----------:|-----------:|---------:|----------:|---------:|---------:|----------:|
-| xtx | 64 | 0.0487 | 0.0974 | 0.0340 | 0.0937 | 0.0374 | 0.70× | 0.77× | 1.10× |
-| xtx | 256 | 1.2914 | 2.5935 | 1.5248 | 2.7286 | 1.4873 | 1.18× | 1.15× | 0.98× |
-| xtx | 1024 | 45.7494 | 116.9466 | 121.0909 | 115.5839 | 124.8423 | 2.65× | 2.73× | 1.03× |
-| normal_eq | 64 | 0.0933 | 0.2444 | 0.1163 | 0.2496 | 0.1134 | 1.25× | 1.21× | 0.97× |
-| normal_eq | 256 | 1.9461 | 6.5689 | 2.8917 | 6.0426 | 2.9223 | 1.49× | 1.50× | 1.01× |
-| normal_eq | 1024 | 76.1760 | 182.4769 | 148.8388 | 188.2865 | 157.9065 | 1.95× | 2.07× | 1.06× |
+| xtx | 64 | 0.0491 | 0.1000 | 0.0337 | 0.0901 | 0.0371 | 0.69× | 0.76× | 1.10× |
+| xtx | 256 | 1.2565 | 2.5032 | 1.4692 | 3.3646 | 1.4366 | 1.17× | 1.14× | 0.98× |
+| xtx | 1024 | 43.6407 | 100.7139 | 101.3016 | 114.9898 | 106.9934 | 2.32× | 2.45× | 1.06× |
+| normal_eq | 64 | 0.0924 | 0.2681 | 0.1338 | 0.2451 | 0.1211 | 1.45× | 1.31× | 0.90× |
+| normal_eq | 256 | 1.8753 | 5.1909 | 2.8412 | 6.8682 | 2.9601 | 1.52× | 1.58× | 1.04× |
+| normal_eq | 1024 | 75.3366 | 152.8941 | 133.7190 | 184.5319 | 134.9339 | 1.77× | 1.79× | 1.01× |
 
-**Read:** At k≤256, short beats long on both faces. Full `normal_eq` short helps at k=1024 (~1.2× vs long) even when lone `XᵀX` GEMM-with-transpose is within noise of materialize+GEMM. Lua tracks Rust (~1.0× L/R). NumPy still ahead on large `XᵀX` (~2.6×) — residual GEMM/OpenBLAS, next lever is structure-aware SYRK / better packed T-GEMM, not more per-op polish.
+**Read:** Short path wins the full `normal_eq` chain at all sizes (Lua ≈ Rust). Large pure `XᵀX` still ~2.3× NumPy (OpenBLAS residual). Adaptive `AᵀA`: view-transpose GEMM for `k<512`, blocked materialize+GEMM for larger `k`. `solve` writes the RHS in place (no faer-owned Mat pack-out).
 

@@ -2,8 +2,8 @@
 //!
 //! Public functions take and return MatLua [`Array`]s. Inputs are viewed as
 //! faer [`MatRef`](faer::MatRef) over contiguous row-major storage (zero-copy).
-//! [`matmul`] writes GEMM output straight into a row-major buffer; other
-//! results still pack out from faer into owned row-major arrays.
+//! [`matmul`] / [`matmul_at`] write GEMM into row-major buffers; [`solve`]
+//! factors then solves **in place** on a row-major RHS copy (no faer-owned Mat out).
 //!
 //! # Rank conventions
 //!
@@ -134,7 +134,7 @@ pub fn matmul(a: &Array, b: &Array) -> Result<Array> {
     let prefer_vec = b.rank() == 1 || (a.rank() == 1 && bn == 1);
 
     let n_out = am.saturating_mul(bn);
-    let mut data = vec![0.0; n_out];
+    let mut data = crate::array::pool_take_uninit(n_out);
     if n_out > 0 {
         let mut dst = MatMut::from_row_major_slice_mut(&mut data, am, bn);
         faer_matmul(
@@ -163,6 +163,18 @@ pub fn matmul_at(a: &Array, b: &Array) -> Result<Array> {
         return Err(Error::shape(format!(
             "matmul_at shape mismatch: a is ({am}, {an}) so aᵀ is ({an}, {am}), b is ({bm}, {bn})"
         )));
+    }
+    // AᵀA (same buffer): for large feature count, materialize Aᵀ (blocked) then
+    // dest-GEMM. Small k keeps a pure transposed MatRef GEMM (cheaper).
+    if std::ptr::eq(a.as_slice().as_ptr(), b.as_slice().as_ptr())
+        && a.len() == b.len()
+        && a.rank() == 2
+        && b.rank() == 2
+        && an == bn
+        && an >= 512
+    {
+        let at = transpose(a)?;
+        return matmul(&at, a);
     }
     let lhs = array_as_mat_ref(a)?.transpose();
     let rhs = array_as_mat_ref(b)?;
@@ -233,10 +245,18 @@ pub fn solve(a: &Array, b: &Array) -> Result<Array> {
         )));
     }
     let am = array_as_mat_ref(a)?;
-    let bm = array_as_mat_ref(b)?;
     let lu = am.partial_piv_lu();
-    let x = lu.solve(bm);
-    mat_to_array(&x, b.rank() == 1 && bk == 1)
+    // Dest-pack: copy RHS into owned row-major buffer and solve in place
+    // (avoids faer-owned Mat + second pack-out).
+    let prefer_vec = b.rank() == 1 && bk == 1;
+    let n_out = bn.saturating_mul(bk);
+    let mut data = crate::array::pool_take_uninit(n_out);
+    if n_out > 0 {
+        data.copy_from_slice(b.as_slice());
+        let mut rhs = MatMut::from_row_major_slice_mut(&mut data, bn, bk);
+        lu.solve_in_place(&mut rhs);
+    }
+    matmul_result(data, bn, bk, prefer_vec)
 }
 
 /// Cholesky factor `L` of a symmetric positive-definite matrix (`A = L Lᵀ`).
