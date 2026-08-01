@@ -11,9 +11,16 @@
 //!
 //! ```ignore
 //! // L: *mut lua_State owned by the host
-//! unsafe { matlua::lua::register(L) };
+//! unsafe {
+//!     matlua::lua::register(L);
+//!     matlua::lua::enable_generational_gc(L); // recommended for large arrays
+//! }
 //! // scripts: local ml = require "matlua"
 //! ```
+//!
+//! Prefer [`enable_generational_gc`] on allocate-heavy scripts: array payloads live
+//! on the Rust heap, so Lua's GC needs a debt hint (also applied in `push_array`).
+//! Error paths use Lua longjmp; see the note on [`ud::lua_error_msg`].
 //!
 //! For tests and tools, [`Lua`] creates a private state with standard libraries
 //! and MatLua preloaded (using the vendored PUC 5.4 build).

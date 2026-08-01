@@ -43,7 +43,7 @@ Host: Linux x86_64, 2 CPUs, MatLua **release**, NumPy + OpenBLAS.
 Run date: 2026-08-01 (session closeout: GCSTEP policy, single-touch buffers, blocked min/transpose).  
 Re-run: `python3 tests/bench/compare_fair.py`.
 
-**Caveats:** Micro-ops under ~0.01 ms are noisy (ratios can look large). Blocked kernels are O(n)/O(mn) and meant to **help** large n via cache, not only n≤1024. Hosts with their own `lua_State` should call `matlua::lua::enable_generational_gc`.
+**Caveats:** Micro-ops under ~0.01 ms are noisy (ratios can look large). Blocked kernels are O(n)/O(mn) and meant to **help** large n via cache, not only n≤1024. Hosts with their own `lua_State` should call `matlua::lua::enable_generational_gc` (also in the README host sketch).
 
 | op | n | NumPy (ms) | MatLua Rust (ms) | MatLua Lua (ms) | Rust/NumPy | Lua/NumPy | Lua/Rust |
 |----|---:|-----------:|-----------------:|----------------:|-----------:|----------:|---------:|
@@ -66,7 +66,6 @@ Re-run: `python3 tests/bench/compare_fair.py`.
 | norm | 64 | 0.0026 | 0.0007 | 0.0009 | 0.28× | 0.35× | 1.26× |
 | ones | 64 | 0.0029 | 0.0009 | 0.0015 | 0.30× | 0.53× | 1.78× |
 | qr | 64 | 0.1216 | 0.2748 | 0.2875 | 2.26× | 2.36× | 1.05× |
-| reshape | 64 | 0.0003 | 0.0001 | 0.0004 | 0.27× | 1.23× | 4.48× |
 | solve | 64 | 0.0361 | 0.0763 | 0.0743 | 2.11× | 2.06× | 0.97× |
 | sum | 64 | 0.0023 | 0.0007 | 0.0009 | 0.32× | 0.40× | 1.25× |
 | svd | 64 | 0.3005 | 0.4758 | 0.4308 | 1.58× | 1.43× | 0.91× |

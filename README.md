@@ -32,8 +32,8 @@ local x = ml.solve(A, b)          -- ≈ {2, 3}
 -- one expression, one result (no forced temps for subexpressions)
 local X = ml.array({{1, 0}, {1, 1}, {1, 2}, {1, 3}})
 local y = ml.array({1, 3, 5, 7})
-local beta = ml.normal_eq(X, y:reshape(4, 1))  -- short: no materializing Xᵀ
--- or: ml.solve(ml.matmul_at(X, X), ml.matmul_at(X, y:reshape(4, 1)))
+local beta = ml.normal_eq(X, y)  -- short path: matmul_at + solve (see DESIGN)
+-- or: ml.solve(ml.matmul_at(X, X), ml.matmul_at(X, y))
 ```
 
 **Indexing is 1-based on the Lua face.** Elementwise `+ - * /` and unary `-`
@@ -45,7 +45,7 @@ work on arrays (and array ↔ number). Matrix product is always explicit:
 | Area | Surface |
 |------|---------|
 | **Constructors** | `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`, half-open), `array` (nested tables → dense `f64`), `eye` |
-| **Array methods** | `shape`, `rank`, `get` / `set`, `sum` / `mean` / `min` / `max`, `copy`, `reshape`, `transpose`, `fill`, `#a` |
+| **Array methods** | `shape`, `rank`, `get` / `set`, `sum` / `mean` / `min` / `max`, `copy`, `reshape` (may share buffer; write COWs), `transpose`, `fill`, `#a` |
 | **Elementwise** | `+`, `-`, `*`, `/`, unary `-` (array–array or array–number) |
 | **Linear algebra** | `matmul`, `matmul_at`, `normal_eq`, `solve`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd` |
 | **Rust core** | `Array` (row-major n-D `f64`), views over host buffers, Arrow `Float64Array` interchange, same LA under `matlua::linalg` |
@@ -73,7 +73,11 @@ python3 tests/bench/compare_fair.py   # fair perf table (release)
 
 ```rust
 // L: *mut lua_State owned by the host (PUC Lua 5.4)
-unsafe { matlua::lua::register(L) };
+unsafe {
+    matlua::lua::register(L);
+    // Recommended: large f64 buffers live on the Rust heap; help Lua GC.
+    matlua::lua::enable_generational_gc(L);
+}
 // scripts: local ml = require "matlua"
 ```
 
