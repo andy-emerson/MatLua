@@ -7,10 +7,9 @@
 //! # Status
 //!
 //! - **M0** — crate skeleton, error type.
-//! - **M1** — owned `f64` n-D arrays, views, constructors, element-wise ops,
-//!   Arrow float64 interchange.
-//! - **M2** — dense linear algebra via faer (`matmul`, `solve`, Cholesky, QR,
-//!   SVD, …). Lua face is not implemented yet.
+//! - **M1** — owned `f64` n-D arrays, views, constructors, element-wise ops.
+//! - **M2** — dense linear algebra via faer.
+//! - **M3** — Lua 5.4 face (`lua` feature): `require "matlua"`, 1-based API.
 
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![deny(missing_docs)]
