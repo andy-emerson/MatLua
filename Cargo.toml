@@ -32,7 +32,20 @@ cc = "1.2"
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
-[[example]]
-name = "bench_dense"
-path = "examples/bench_dense.rs"
+# Integration correctness (public API)
+[[test]]
+name = "correctness_public_api"
+path = "tests/correctness/public_api.rs"
+
+[[test]]
+name = "correctness_lua_face"
+path = "tests/correctness/lua_face.rs"
+required-features = ["lua"]
+
+# Fair three-face microbench (harness = false binary)
+[[test]]
+name = "fair_all"
+path = "tests/bench/fair_all.rs"
+harness = false
+required-features = ["lua"]
 
