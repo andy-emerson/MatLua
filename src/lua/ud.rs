@@ -9,6 +9,7 @@ use std::ptr;
 use crate::array::Array;
 
 use super::ffi::*;
+// lua_gc / LUA_GC* from ffi
 
 pub const ARRAY_MT: &CStr = c"matlua.Array";
 
@@ -30,9 +31,17 @@ pub unsafe fn test_array(L: *mut lua_State, idx: c_int) -> *mut ArrayUd {
 /// Push a new Array userdata (moves the array).
 pub unsafe fn push_array(L: *mut lua_State, array: Array) {
     unsafe {
+        // External f64 buffer is invisible to Lua's GC debt. Step GC by the
+        // payload size so large arrays are collected promptly (otherwise
+        // memory balloons and major GC / allocator churn destroy face times).
+        let nbytes = array.len().saturating_mul(8);
         let p = lua_newuserdatauv(L, std::mem::size_of::<ArrayUd>(), 0) as *mut ArrayUd;
         ptr::write(p, ArrayUd { array });
         luaL_setmetatable(L, ARRAY_MT.as_ptr());
+        if nbytes >= 4096 {
+            let step_kb = (nbytes / 1024) as c_int;
+            let _ = lua_gc(L, LUA_GCSTEP, step_kb);
+        }
     }
 }
 

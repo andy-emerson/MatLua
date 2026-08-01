@@ -30,6 +30,13 @@ pub const LUA_TTABLE: c_int = 5;
 pub const LUA_TFUNCTION: c_int = 6;
 pub const LUA_TUSERDATA: c_int = 7;
 
+pub const LUA_GCSTOP: c_int = 0;
+pub const LUA_GCRESTART: c_int = 1;
+pub const LUA_GCCOLLECT: c_int = 2;
+pub const LUA_GCSTEP: c_int = 5;
+pub const LUA_GCGEN: c_int = 10;
+pub const LUA_GCINC: c_int = 11;
+
 /// Lua 5.4 registry index (`-LUAI_MAXSTACK - 1000` with default maxstack).
 pub const LUA_REGISTRYINDEX: c_int = -1_001_000;
 
@@ -104,7 +111,9 @@ unsafe extern "C" {
         glb: c_int,
     );
     pub fn luaL_len(L: *mut lua_State, idx: c_int) -> lua_Integer;
+    pub fn lua_gc(L: *mut lua_State, what: c_int, ...) -> c_int;
 }
+
 
 #[inline]
 pub unsafe fn lua_pop(L: *mut lua_State, n: c_int) {
