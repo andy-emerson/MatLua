@@ -35,6 +35,7 @@ pub fn transpose(a: &Array) -> Result<Array> {
 /// Matrix product `a @ b` (math notation).
 ///
 /// Shapes: `(m, k) × (k, n) → (m, n)`. Rank-1 operands are treated as columns.
+/// A matrix–vector product returns a rank-1 vector.
 pub fn matmul(a: &Array, b: &Array) -> Result<Array> {
     let (am, an) = array_as_matrix_dims(a)?;
     let (bm, bn) = array_as_matrix_dims(b)?;
@@ -46,7 +47,8 @@ pub fn matmul(a: &Array, b: &Array) -> Result<Array> {
     let am_mat = array_to_mat(a)?;
     let bm_mat = array_to_mat(b)?;
     let c = &am_mat * &bm_mat;
-    let prefer_vec = a.rank() == 1 && b.rank() == 2 && bn == 1;
+    // Collapse n×1 (or 1×1 from row@col) to rank-1 when an operand was a vector.
+    let prefer_vec = b.rank() == 1 || (a.rank() == 1 && bn == 1);
     mat_to_array(&c, prefer_vec)
 }
 
@@ -179,6 +181,15 @@ mod tests {
         let at = transpose(&a).unwrap();
         assert_eq!(at.dims(), &[3, 2]);
         assert_eq!(at.get(&[2, 1]).unwrap(), 6.);
+    }
+
+    #[test]
+    fn matmul_matrix_vector_is_rank1() {
+        let m = Array::from_shape_slice(vec![2, 2], &[1., 2., 3., 4.]).unwrap();
+        let v = Array::from_shape_slice(vec![2], &[1., 1.]).unwrap();
+        let y = matmul(&m, &v).unwrap();
+        assert_eq!(y.rank(), 1);
+        assert_eq!(y.as_slice(), &[3., 7.]);
     }
 
     #[test]

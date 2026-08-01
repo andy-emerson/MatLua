@@ -9,10 +9,11 @@ readme = "README.md"
 keywords = ["lua", "array", "linear-algebra", "arrow", "faer"]
 categories = ["science", "mathematics", "api-bindings"]
 rust-version = "1.85"
+exclude = ["vendor/lua/doc/**"]
 
 [features]
 default = []
-# Hand-rolled Lua 5.4 registration helpers (host-owned lua_State). Empty until M3.
+# Hand-rolled Lua 5.4 face + vendored PUC interpreter for tests/embed convenience.
 lua = []
 
 [dependencies]
@@ -21,6 +22,9 @@ arrow-buffer = { version = "59.1.0", default-features = false }
 arrow-schema = { version = "59.1.0", default-features = false }
 faer = "0.24.4"
 thiserror = "2.0.19"
+
+[build-dependencies]
+cc = "1.2"
 
 [dev-dependencies]
 
