@@ -11,7 +11,7 @@ use crate::linalg;
 use super::ffi::*;
 use super::ud::{
     array_from_table, check_array, indices_1_based, push_array, push_shape_table, shape_from_args,
-    test_array, ARRAY_MT,
+    test_array, ARRAY_MT, MAX_INDEX_RANK,
 };
 
 macro_rules! lua_try {
@@ -177,8 +177,7 @@ pub unsafe extern "C" fn a_tostring(L: *mut lua_State) -> c_int {
         a.array.len()
     );
     unsafe {
-        let c = std::ffi::CString::new(s).unwrap();
-        lua_pushstring(L, c.as_ptr());
+        lua_pushlstring(L, s.as_ptr() as *const _, s.len());
     }
     1
 }
@@ -204,8 +203,20 @@ pub unsafe extern "C" fn a_rank(L: *mut lua_State) -> c_int {
 pub unsafe extern "C" fn a_get(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
     let top = unsafe { lua_gettop(L) };
-    let idx = lua_try!(L, unsafe { indices_1_based(L, 2, top, a.array.rank()) });
-    let v = lua_try!(L, a.array.get(&idx));
+    let rank = a.array.rank();
+    // Fast path: rank-1 single index (no multi-index buffer walk).
+    if rank == 1 && top == 2 {
+        let v = unsafe { luaL_checkinteger(L, 2) };
+        if v < 1 {
+            return super::ud::lua_error_msg(L, "index must be >= 1");
+        }
+        let v = lua_try!(L, a.array.get(&[(v as usize) - 1]));
+        unsafe { lua_pushnumber(L, v) };
+        return 1;
+    }
+    let mut buf = [0usize; MAX_INDEX_RANK];
+    let n = lua_try!(L, unsafe { indices_1_based(L, 2, top, rank, &mut buf) });
+    let v = lua_try!(L, a.array.get(&buf[..n]));
     unsafe { lua_pushnumber(L, v) };
     1
 }
@@ -217,11 +228,21 @@ pub unsafe extern "C" fn a_set(L: *mut lua_State) -> c_int {
         return super::ud::lua_error_msg(L, "set(i..., value) needs indices and a value");
     }
     let value = unsafe { luaL_checknumber(L, top) };
-    let idx = lua_try!(
+    let rank = a.array.rank();
+    if rank == 1 && top == 3 {
+        let v = unsafe { luaL_checkinteger(L, 2) };
+        if v < 1 {
+            return super::ud::lua_error_msg(L, "index must be >= 1");
+        }
+        lua_try!(L, a.array.set(&[(v as usize) - 1], value));
+        return 0;
+    }
+    let mut buf = [0usize; MAX_INDEX_RANK];
+    let n = lua_try!(
         L,
-        unsafe { indices_1_based(L, 2, top - 1, a.array.rank()) }
+        unsafe { indices_1_based(L, 2, top - 1, rank, &mut buf) }
     );
-    lua_try!(L, a.array.set(&idx, value));
+    lua_try!(L, a.array.set(&buf[..n], value));
     0
 }
 
@@ -281,7 +302,6 @@ pub unsafe extern "C" fn a_fill(L: *mut lua_State) -> c_int {
 }
 
 pub unsafe extern "C" fn a_add_op(L: *mut lua_State) -> c_int {
-    use std::ops::Add;
     let ta = unsafe { test_array(L, 1) };
     let tb = unsafe { test_array(L, 2) };
     if !ta.is_null() && !tb.is_null() {
@@ -291,19 +311,18 @@ pub unsafe extern "C" fn a_add_op(L: *mut lua_State) -> c_int {
     }
     if !ta.is_null() && unsafe { lua_isnumber(L, 2) } {
         let s = unsafe { luaL_checknumber(L, 2) };
-        unsafe { push_array(L, Add::add(&(*ta).array, s)) };
+        unsafe { push_array(L, (*ta).array.add_scalar(s)) };
         return 1;
     }
     if unsafe { lua_isnumber(L, 1) } && !tb.is_null() {
         let s = unsafe { luaL_checknumber(L, 1) };
-        unsafe { push_array(L, Add::add(s, &(*tb).array)) };
+        unsafe { push_array(L, (*tb).array.add_scalar(s)) };
         return 1;
     }
     super::ud::lua_error_msg(L, "add expects arrays or array and number")
 }
 
 pub unsafe extern "C" fn a_sub_op(L: *mut lua_State) -> c_int {
-    use std::ops::Sub;
     let ta = unsafe { test_array(L, 1) };
     let tb = unsafe { test_array(L, 2) };
     if !ta.is_null() && !tb.is_null() {
@@ -313,19 +332,18 @@ pub unsafe extern "C" fn a_sub_op(L: *mut lua_State) -> c_int {
     }
     if !ta.is_null() && unsafe { lua_isnumber(L, 2) } {
         let s = unsafe { luaL_checknumber(L, 2) };
-        unsafe { push_array(L, Sub::sub(&(*ta).array, s)) };
+        unsafe { push_array(L, (*ta).array.sub_scalar(s)) };
         return 1;
     }
     if unsafe { lua_isnumber(L, 1) } && !tb.is_null() {
         let s = unsafe { luaL_checknumber(L, 1) };
-        unsafe { push_array(L, Sub::sub(s, &(*tb).array)) };
+        unsafe { push_array(L, (*tb).array.scalar_sub(s)) };
         return 1;
     }
     super::ud::lua_error_msg(L, "sub expects arrays or array and number")
 }
 
 pub unsafe extern "C" fn a_mul_op(L: *mut lua_State) -> c_int {
-    use std::ops::Mul;
     let ta = unsafe { test_array(L, 1) };
     let tb = unsafe { test_array(L, 2) };
     if !ta.is_null() && !tb.is_null() {
@@ -335,19 +353,18 @@ pub unsafe extern "C" fn a_mul_op(L: *mut lua_State) -> c_int {
     }
     if !ta.is_null() && unsafe { lua_isnumber(L, 2) } {
         let s = unsafe { luaL_checknumber(L, 2) };
-        unsafe { push_array(L, Mul::mul(&(*ta).array, s)) };
+        unsafe { push_array(L, (*ta).array.mul_scalar(s)) };
         return 1;
     }
     if unsafe { lua_isnumber(L, 1) } && !tb.is_null() {
         let s = unsafe { luaL_checknumber(L, 1) };
-        unsafe { push_array(L, Mul::mul(s, &(*tb).array)) };
+        unsafe { push_array(L, (*tb).array.mul_scalar(s)) };
         return 1;
     }
     super::ud::lua_error_msg(L, "mul expects arrays or array and number")
 }
 
 pub unsafe extern "C" fn a_div_op(L: *mut lua_State) -> c_int {
-    use std::ops::Div;
     let ta = unsafe { test_array(L, 1) };
     let tb = unsafe { test_array(L, 2) };
     if !ta.is_null() && !tb.is_null() {
@@ -357,12 +374,12 @@ pub unsafe extern "C" fn a_div_op(L: *mut lua_State) -> c_int {
     }
     if !ta.is_null() && unsafe { lua_isnumber(L, 2) } {
         let s = unsafe { luaL_checknumber(L, 2) };
-        unsafe { push_array(L, Div::div(&(*ta).array, s)) };
+        unsafe { push_array(L, (*ta).array.div_scalar(s)) };
         return 1;
     }
     if unsafe { lua_isnumber(L, 1) } && !tb.is_null() {
         let s = unsafe { luaL_checknumber(L, 1) };
-        unsafe { push_array(L, Div::div(s, &(*tb).array)) };
+        unsafe { push_array(L, (*tb).array.scalar_div(s)) };
         return 1;
     }
     super::ud::lua_error_msg(L, "div expects arrays or array and number")

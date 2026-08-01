@@ -54,6 +54,7 @@ unsafe extern "C" {
     pub fn lua_pushinteger(L: *mut lua_State, n: lua_Integer);
     pub fn lua_pushboolean(L: *mut lua_State, b: c_int);
     pub fn lua_pushstring(L: *mut lua_State, s: *const c_char) -> *const c_char;
+    pub fn lua_pushlstring(L: *mut lua_State, s: *const c_char, len: usize) -> *const c_char;
     pub fn lua_pushcclosure(L: *mut lua_State, f: lua_CFunction, n: c_int);
     pub fn lua_createtable(L: *mut lua_State, narr: c_int, nrec: c_int);
 
