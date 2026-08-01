@@ -9,8 +9,8 @@ use crate::error::{Error, Result};
 
 /// Owned dense n-D array of `f64` values in row-major order.
 ///
-/// This is the primary Rust-side array type for M1. Storage is a contiguous
-/// buffer compatible with Arrow [`Float64Array`] interchange (no nulls).
+/// Primary Rust-side array type. Storage is a contiguous buffer compatible
+/// with Arrow [`Float64Array`] interchange (no nulls).
 #[derive(Clone, Debug)]
 pub struct Array {
     shape: Shape,
@@ -255,7 +255,7 @@ impl Array {
     pub fn from_arrow(array: &Float64Array, shape: impl Into<Vec<usize>>) -> Result<Self> {
         if array.null_count() != 0 {
             return Err(Error::Shape(
-                "from_arrow does not accept nulls in M1".into(),
+                "from_arrow does not accept nulls".into(),
             ));
         }
         let shape = Shape::new(shape)?;
