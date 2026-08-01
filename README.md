@@ -1,6 +1,6 @@
 # MatLua
 
-**Dense numeric arrays and linear algebra for Lua 5.4 — a Rust crate with an Arrow data model and a faer backend.**
+MatLua is a general-purpose dense array and linear-algebra library for Rust and Lua 5.4 — deep enough that analytic engines and quant workflows stay in-process for ordinary matrix work, portable enough that no single host owns the API.
 
 MatLua is the architectural counterpart to NumPy for the Lua ecosystem: a high-level language in front, a systems language in the core. Python is replaced by Lua 5.4, C by Rust, `ndarray` by Apache Arrow, and BLAS/LAPACK by [faer](https://github.com/sarah-quinones/faer-rs).
 
