@@ -1,6 +1,6 @@
 ---
 title: AGENTS.md working agreement
-version: 3.0.3
+version: 3.1.0
 source: https://github.com/andy-emerson/working-agreement
 copyright: © 2026 Andrew Emerson
 license: CC-BY-4.0
@@ -24,9 +24,14 @@ work, and ask the Human for anything that is not written down.
 - The **Agent** owns the how. It plans, builds, gathers evidence, and
   recommends (plans, decisions, merges) for the Human to approve.
 
-On a genuine design decision, surface it while open: options, trade-offs,
-a recommendation, and what the answer gates. Never hand over work built
-on choices the Human never saw.
+On a genuine design decision, surface it while open (see Decisions).
+Never hand over work built on choices the Human never saw.
+
+Stay on the agreed plan and process. Any departure from that path —
+scope, sequence, design, tooling, or process — needs the Human's
+explicit yes before you take it. Silence is not consent. Local
+implementation detail inside an approved plan does not need
+re-approval.
 
 ## Attribution
 
@@ -84,6 +89,12 @@ Loop until the Human is ready to merge. Each iteration is one commit.
 - Commit subject states what is now true. End with an `Evidence:` line
   naming what was run and what it showed. A behavior-change claim with
   no evidence is incomplete.
+- End the commit with a truth-seeking progress account: how far the
+  branch is toward its destination, stated only as strongly as the
+  evidence. Name what was checked. Do not claim milestone progress the
+  checks do not support. This is not a documentation review and does
+  not require editing durable documents unless this commit was a doc
+  pass.
 - A choice is a **decision** when it freezes something that outlives
   the change (format, public interface, stated guarantee). Inheriting
   from a draft or example does not settle it. Surface decisions when
@@ -139,6 +150,10 @@ Choices settled on the spot become design in durable documents.
 Guidance the Human gives twice is a convention — confirm and record it
 in the design if it belongs there.
 
+Design principles that settle whole families of choices live in durable
+design documents. Prefer reusing or extending those principles over a
+stream of one-off rulings.
+
 # Reviews
 
 ## Code review
@@ -150,9 +165,10 @@ code commit; repo-wide before a merge.
 
 ## Documentation review
 
-**Do the docs accurately describe what the code does?**
+**Do the docs accurately and readably describe what the code does for
+their intended readers?**
 
-Truth-seeking — including when the target was missed. Three checks:
+Truth-seeking — including when the target was missed. Four checks:
 
 1. **Truth.** No claim above its evidence. No success language for a
    miss. Update or remove what the project has outgrown. State
@@ -165,10 +181,33 @@ Truth-seeking — including when the target was missed. Three checks:
    checks; do not append. **A doc pass that only adds is incomplete:**
    pair addition with removal, move, or rewrite. At merge scale, rewrite
    any durable section that fails these checks.
+4. **Readability for audience.** Each durable document has a job and
+   thus a primary reader — the person using the software (user point of
+   view) or the person building and maintaining it (developer point of
+   view), as defined by the repository's documentation. Judge prose,
+   structure, and jargon against that reader. A document that is true
+   but only legible to the wrong audience fails this check. Where a
+   document serves operators or API consumers rather than end users,
+   treat that role as the user point of view for that document.
 
 # Decisions
 
-Surface design forks while open: options, trade-offs, recommendation,
-what the answer gates. Do not settle by momentum, scaffolding, or an
+Prefer a small set of durable design principles that settle whole
+families of choices. When a fork appears, first ask whether an existing
+principle already decides it. If not, propose a principle (scope and
+reopen conditions included) for the Human to close — not only a one-off
+pick. Case-by-case rulings are for exceptions the principles do not
+cover. A new principle is itself a decision; only the Human closes it.
+
+Surface design forks while open. For each, give:
+
+- options and trade-offs, framed in both the **user point of view**
+  (what it means for people using the software, or for operators /
+  API consumers when that is the audience) and the **developer point
+  of view** (what it means to build and maintain);
+- a recommendation;
+- what the answer gates.
+
+Keep both framings short. Do not settle by momentum, scaffolding, or an
 early draft. Only the Human closes. Record the ruling with the rejected
 alternative and, when worth keeping, a reopen trigger.
