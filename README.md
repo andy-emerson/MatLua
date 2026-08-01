@@ -93,7 +93,7 @@ let x = linalg::solve(&a, &b)?;
 - **User product:** Lua library. **Ship form:** Rust crate.
 - **Hosts fit to MatLua** — engines adapt buffers and embed to MatLua’s contracts.
 - **Portable dense LA** — faer in-tree; no system BLAS/LAPACK default.
-- **Arrow** for buffer model and interchange; faer at an explicit copy boundary today.
+- **Arrow** for buffer model and interchange; faer for dense LA (views in, owned results out).
 - Curated dense surface first — not full NumPy/SciPy parity.
 
 Closed decisions and milestones: [DESIGN.md](DESIGN.md).
@@ -104,9 +104,14 @@ Closed decisions and milestones: [DESIGN.md](DESIGN.md).
 MatLua and scripts can do ordinary dense array and linear-algebra work
 end-to-end. Crate version remains **`0.0.1`** until a formal `0.1.0` cut.
 
+**Performance (P0–P5):** make this surface competitive with NumPy for ordinary
+dense desk work, then measure. Contract and milestone wall live in
+[DESIGN.md §7.2](DESIGN.md#72-performance-program-p0p5). Optimizations land
+before the formal NumPy comparison (P5).
+
 Known thin spots vs a full “leave late” desk (column views, richer slicing,
-broadcasting, host zero-copy *from* Lua) are intentional follow-ups, not
-blockers for basic embed + bulk math.
+broadcasting, host zero-copy *from* Lua) are intentional feature follow-ups,
+not blockers for basic embed + bulk math.
 
 ## License
 
