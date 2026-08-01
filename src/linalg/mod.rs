@@ -19,6 +19,7 @@ mod convert;
 use faer::linalg::solvers::Solve;
 use faer::Side;
 
+use crate::array::kernels;
 use crate::array::Array;
 use crate::error::{Error, Result};
 
@@ -64,12 +65,7 @@ pub fn dot(a: &Array, b: &Array) -> Result<f64> {
             b.len()
         )));
     }
-    Ok(a
-        .as_slice()
-        .iter()
-        .zip(b.as_slice().iter())
-        .map(|(&x, &y)| x * y)
-        .sum())
+    Ok(kernels::dot_slice(a.as_slice(), b.as_slice()))
 }
 
 /// Solve `a x = b` for square `a` using LU with partial pivoting (faer).
@@ -155,7 +151,7 @@ pub fn svd(a: &Array) -> Result<(Array, Array, Array)> {
 /// Frobenius norm of a rank-1 or rank-2 array.
 pub fn norm(a: &Array) -> Result<f64> {
     let _ = array_as_matrix_dims(a)?;
-    Ok(a.as_slice().iter().map(|x| x * x).sum::<f64>().sqrt())
+    Ok(kernels::dot_slice(a.as_slice(), a.as_slice()).sqrt())
 }
 
 /// Identity matrix of order `n`.

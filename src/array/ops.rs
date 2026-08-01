@@ -15,8 +15,7 @@ fn panic_shape(op: &str, err: crate::error::Error) -> ! {
 impl Add for &Array {
     type Output = Array;
     fn add(self, rhs: &Array) -> Array {
-        self.binary_op(rhs, |a, b| a + b)
-            .unwrap_or_else(|e| panic_shape("add", e))
+        Array::add(self, rhs).unwrap_or_else(|e| panic_shape("add", e))
     }
 }
 
@@ -43,8 +42,7 @@ impl Add<Array> for &Array {
 
 impl AddAssign<&Array> for Array {
     fn add_assign(&mut self, rhs: &Array) {
-        self.binary_op_assign(rhs, |a, b| a + b)
-            .unwrap_or_else(|e| panic_shape("add_assign", e));
+        self.add_assign_arr(rhs).unwrap_or_else(|e| panic_shape("add_assign", e));
     }
 }
 
@@ -57,8 +55,7 @@ impl AddAssign for Array {
 impl Sub for &Array {
     type Output = Array;
     fn sub(self, rhs: &Array) -> Array {
-        self.binary_op(rhs, |a, b| a - b)
-            .unwrap_or_else(|e| panic_shape("sub", e))
+        Array::sub(self, rhs).unwrap_or_else(|e| panic_shape("sub", e))
     }
 }
 
@@ -85,8 +82,7 @@ impl Sub<Array> for &Array {
 
 impl SubAssign<&Array> for Array {
     fn sub_assign(&mut self, rhs: &Array) {
-        self.binary_op_assign(rhs, |a, b| a - b)
-            .unwrap_or_else(|e| panic_shape("sub_assign", e));
+        self.sub_assign_arr(rhs).unwrap_or_else(|e| panic_shape("sub_assign", e));
     }
 }
 
@@ -99,8 +95,7 @@ impl SubAssign for Array {
 impl Mul for &Array {
     type Output = Array;
     fn mul(self, rhs: &Array) -> Array {
-        self.binary_op(rhs, |a, b| a * b)
-            .unwrap_or_else(|e| panic_shape("mul", e))
+        Array::mul(self, rhs).unwrap_or_else(|e| panic_shape("mul", e))
     }
 }
 
@@ -127,8 +122,7 @@ impl Mul<Array> for &Array {
 
 impl MulAssign<&Array> for Array {
     fn mul_assign(&mut self, rhs: &Array) {
-        self.binary_op_assign(rhs, |a, b| a * b)
-            .unwrap_or_else(|e| panic_shape("mul_assign", e));
+        self.mul_assign_arr(rhs).unwrap_or_else(|e| panic_shape("mul_assign", e));
     }
 }
 
@@ -141,8 +135,7 @@ impl MulAssign for Array {
 impl Div for &Array {
     type Output = Array;
     fn div(self, rhs: &Array) -> Array {
-        self.binary_op(rhs, |a, b| a / b)
-            .unwrap_or_else(|e| panic_shape("div", e))
+        Array::div(self, rhs).unwrap_or_else(|e| panic_shape("div", e))
     }
 }
 
@@ -169,8 +162,7 @@ impl Div<Array> for &Array {
 
 impl DivAssign<&Array> for Array {
     fn div_assign(&mut self, rhs: &Array) {
-        self.binary_op_assign(rhs, |a, b| a / b)
-            .unwrap_or_else(|e| panic_shape("div_assign", e));
+        self.div_assign_arr(rhs).unwrap_or_else(|e| panic_shape("div_assign", e));
     }
 }
 
@@ -197,7 +189,7 @@ impl Neg for Array {
 impl Add<f64> for &Array {
     type Output = Array;
     fn add(self, rhs: f64) -> Array {
-        self.scalar_op(rhs, |a, s| a + s)
+        self.add_scalar(rhs)
     }
 }
 
@@ -211,7 +203,7 @@ impl Add<f64> for Array {
 impl Add<&Array> for f64 {
     type Output = Array;
     fn add(self, rhs: &Array) -> Array {
-        rhs.scalar_op(self, |a, s| s + a)
+        rhs.add_scalar(self)
     }
 }
 
@@ -225,7 +217,7 @@ impl Add<Array> for f64 {
 impl Sub<f64> for &Array {
     type Output = Array;
     fn sub(self, rhs: f64) -> Array {
-        self.scalar_op(rhs, |a, s| a - s)
+        self.sub_scalar(rhs)
     }
 }
 
@@ -239,7 +231,7 @@ impl Sub<f64> for Array {
 impl Sub<&Array> for f64 {
     type Output = Array;
     fn sub(self, rhs: &Array) -> Array {
-        rhs.scalar_op(self, |a, s| s - a)
+        rhs.scalar_sub(self)
     }
 }
 
@@ -253,7 +245,7 @@ impl Sub<Array> for f64 {
 impl Mul<f64> for &Array {
     type Output = Array;
     fn mul(self, rhs: f64) -> Array {
-        self.scalar_op(rhs, |a, s| a * s)
+        self.mul_scalar(rhs)
     }
 }
 
@@ -267,7 +259,7 @@ impl Mul<f64> for Array {
 impl Mul<&Array> for f64 {
     type Output = Array;
     fn mul(self, rhs: &Array) -> Array {
-        rhs.scalar_op(self, |a, s| s * a)
+        rhs.mul_scalar(self)
     }
 }
 
@@ -281,7 +273,7 @@ impl Mul<Array> for f64 {
 impl Div<f64> for &Array {
     type Output = Array;
     fn div(self, rhs: f64) -> Array {
-        self.scalar_op(rhs, |a, s| a / s)
+        self.div_scalar(rhs)
     }
 }
 
@@ -295,7 +287,7 @@ impl Div<f64> for Array {
 impl Div<&Array> for f64 {
     type Output = Array;
     fn div(self, rhs: &Array) -> Array {
-        rhs.scalar_op(self, |a, s| s / a)
+        rhs.scalar_div(self)
     }
 }
 
