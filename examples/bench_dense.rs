@@ -1,12 +1,16 @@
-//! Dense desk-math microbench for MatLua (P5).
+//! Dense desk-math microbench for MatLua (P5/P6).
+//!
+//! Three faces, one table (always via `benches/compare.py`):
+//! - **lua** — MatLua Lua face (**product** surface)
+//! - **rust** — MatLua Rust core (**critical path** to Lua)
+//! - **numpy** — external quality bar
 //!
 //! ```text
-//! cargo run --release --example bench_dense
 //! cargo run --release --features lua --example bench_dense
 //! python3 benches/compare.py
 //! ```
 //!
-//! Emits TSV lines: `face\top\tn\tms` (median wall time in milliseconds).
+//! Emits TSV lines: `face\top\tn\tms` (median **wall** time in milliseconds).
 
 use std::env;
 use std::time::Instant;
@@ -107,62 +111,79 @@ fn bench_rust(sizes: &[usize]) {
     }
 }
 
+/// Time a pre-defined global Lua function `__bench_op` (no recompile per call).
+#[cfg(feature = "lua")]
+fn time_lua_global(lua: &matlua::lua::Lua, setup: &str, op_body: &str, iters: usize, warm: usize) -> f64 {
+    let define = format!(
+        r#"
+{setup}
+function __bench_op()
+  {op_body}
+end
+"#
+    );
+    lua.do_string(&define).unwrap();
+    for _ in 0..warm {
+        lua.call_global("__bench_op").unwrap();
+    }
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let t0 = Instant::now();
+        lua.call_global("__bench_op").unwrap();
+        samples.push(t0.elapsed().as_secs_f64() * 1e3);
+    }
+    median_ms(samples)
+}
+
 #[cfg(feature = "lua")]
 fn bench_lua(sizes: &[usize]) {
     use matlua::lua::Lua;
 
     let lua = Lua::new().unwrap();
+    lua.do_string(r#"ml = require "matlua""#).unwrap();
+
     for &n in sizes {
         let (iters, warm) = if n >= 1024 {
-            (3, 1)
+            (5, 2)
         } else if n >= 256 {
-            (8, 2)
+            (12, 3)
         } else {
-            (20, 3)
+            (25, 5)
         };
 
-        // Tabs/newlines as real Lua escapes: single backslash in raw string.
-        let chunk = format!(
-            r#"
-local ml = require "matlua"
-local n = {n}
-local function median(t)
-  table.sort(t)
-  return t[math.floor(#t/2)+1]
-end
-local function time_op(iters, warm, fn)
-  for i=1,warm do fn() end
-  local samples = {{}}
-  for i=1,iters do
-    local t0 = os.clock()
-    fn()
-    local t1 = os.clock()
-    samples[i] = (t1-t0)*1000.0
-  end
-  return median(samples)
-end
-local A = ml.full(n, n, 1.000017)
-local B = ml.full(n, n, 1.000013)
-local ms = time_op({iters}, {warm}, function() ml.matmul(A, B) end)
-io.write(string.format("lua\tmatmul\t%d\t%.6f\n", n, ms))
-
-local S = ml.eye(n) + ml.full(n, n, 0.01)
-local St = S:transpose()
-S = ml.matmul(St, S) + ml.eye(n)
-local rhs = ml.full(n, 0.5)
-ms = time_op({iters}, {warm}, function() ml.solve(S, rhs) end)
-io.write(string.format("lua\tsolve\t%d\t%.6f\n", n, ms))
-
-local X = ml.full(n, n, 1.1)
-local Y = ml.full(n, n, 2.2)
-ms = time_op({iters}, {warm}, function() local _ = X + Y end)
-io.write(string.format("lua\telem_add\t%d\t%.6f\n", n, ms))
-"#,
-            n = n,
-            iters = iters,
-            warm = warm
+        let ms = time_lua_global(
+            &lua,
+            &format!("A = ml.full({n}, {n}, 1.000017); B = ml.full({n}, {n}, 1.000013)"),
+            "return ml.matmul(A, B)",
+            iters,
+            warm,
         );
-        lua.do_string(&chunk).unwrap();
+        emit("lua", "matmul", n, ms);
+
+        let ms = time_lua_global(
+            &lua,
+            &format!(
+                r#"
+S = ml.eye({n}) + ml.full({n}, {n}, 0.01)
+local St = S:transpose()
+S = ml.matmul(St, S) + ml.eye({n})
+rhs = ml.full({n}, 0.5)
+"#
+            ),
+            "return ml.solve(S, rhs)",
+            iters,
+            warm,
+        );
+        emit("lua", "solve", n, ms);
+
+        let ms = time_lua_global(
+            &lua,
+            &format!("X = ml.full({n}, {n}, 1.1); Y = ml.full({n}, {n}, 2.2)"),
+            "return X + Y",
+            iters,
+            warm,
+        );
+        emit("lua", "elem_add", n, ms);
     }
 }
 
@@ -176,13 +197,13 @@ fn main() {
         vec![64, 256, 1024]
     };
 
-    eprintln!("# MatLua dense bench (release). sizes={sizes:?}");
+    eprintln!("# MatLua dense bench (release, wall clock). sizes={sizes:?}");
     println!("face\top\tn\tms");
     bench_rust(&sizes);
 
     #[cfg(feature = "lua")]
     {
-        eprintln!("# Lua face");
+        eprintln!("# Lua face (wall clock; call_global, no reparse)");
         bench_lua(&sizes);
     }
     #[cfg(not(feature = "lua"))]

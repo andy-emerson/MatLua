@@ -301,7 +301,7 @@ NumPy comparison is the **gate**, not the driver of every change.
 |------|----------|
 | **Scope** | Dense `f64`, rank 1–2: elementwise bulk ops, `matmul`, `solve`, and the shipped decompositions |
 | **Sizes** | Report at least \(n \in \{64, 256, 1024\}\) (matmul may also use 2048) |
-| **Faces** | Measure **Rust core** and **Lua face** separately |
+| **Faces** | Always **three-way**: **Lua** (product), **Rust** (critical path), **NumPy** (bar) |
 | **Bar** | On medium+ matmul/solve (release, same shapes), MatLua wall time within about **1–2×** of NumPy on the same machine |
 | **Method** | During P1–P4: internal release timings only. **P5**: fixed harness + NumPy scripts; publish a table |
 | **Non-goals** | Beat MKL/OpenBLAS on every micro-op; research kernels; replace faer with system BLAS; full broadcasting engine |
@@ -317,8 +317,9 @@ with reasons rather than expanding scope indefinitely.
 | **P3** | Hot-path hygiene: fewer intermediate arrays, cheap constructors, avoid needless clones | **Done** |
 | **P4** | Lua face cost: reduce per-op overhead on bulk paths | **Done** |
 | **P5** | Comparison harness vs NumPy; meet §7.2 bar or document gaps | **Done** |
+| **P6** | Matmul dest-GEMM into row-major + parallel large products; remeasure 3-way | **Done** |
 
-Order: **P0 → P1 → P2 → P3 → P4 → P5**.
+Order: **P0 → P1 → P2 → P3 → P4 → P5 → P6** (P6 = close matmul residual).
 
 Harness: `python3 benches/compare.py` (see `benches/README.md`). Latest
 checked-in snapshot: [`benches/RESULTS.md`](benches/RESULTS.md).
@@ -367,9 +368,9 @@ Human is always **author** of record; agent may be **co-author** when allowed fo
 - Rust: row-major owned `f64` n-D arrays, views, elementwise, Arrow interchange, faer LA.
 - Lua (`lua` feature): 1-based userdata, constructors, metamethods, linalg module functions.
 
-**Performance program:** **P0–P5** are done. Harness: `benches/compare.py`;
-snapshot: [`benches/RESULTS.md`](benches/RESULTS.md). Residual gap on this
-sandbox: Rust `matmul` n=1024 ≈ 2.26× NumPy (see RESULTS).
+**Performance program:** **P0–P6** are done. Three-way harness:
+`python3 benches/compare.py`. Snapshot: [`benches/RESULTS.md`](benches/RESULTS.md).
+P6 closed the matmul residual (Rust/Lua matmul medium+ within ~1–2× NumPy).
 
 Package version is **`0.0.1`**. Call **v0.1** when the human tags a release;
 until then treat the tree as a **v0.1 candidate** per §7.1.

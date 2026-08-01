@@ -106,14 +106,35 @@ def main() -> int:
                 )
 
     print()
-    if gaps:
-        print("### Gaps vs §7.2 bar (Rust core, medium+ matmul/solve)")
-        for g in gaps:
-            print(f"- {g}")
+    # Product-face gaps (Lua) — same soft bar; this is what users feel.
+    lua_gaps: list[str] = []
+    for op in ("matmul", "solve"):
+        for nsz in sizes:
+            if nsz < 256:
+                continue
+            lua = data.get(("lua", op, nsz))
+            numpy = data.get(("numpy", op, nsz))
+            if lua is None or numpy is None or numpy <= 0:
+                continue
+            ratio_l = lua / numpy
+            if ratio_l > 2.0:
+                lua_gaps.append(
+                    f"{op} n={nsz}: Lua/NumPy = {ratio_l:.2f}× (above ~2× bar)"
+                )
+
+    if gaps or lua_gaps:
+        if gaps:
+            print("### Gaps vs §7.2 bar (Rust critical path, medium+ matmul/solve)")
+            for g in gaps:
+                print(f"- {g}")
+        if lua_gaps:
+            print("### Gaps vs §7.2 bar (Lua product face, medium+ matmul/solve)")
+            for g in lua_gaps:
+                print(f"- {g}")
     else:
         print(
             "### Bar check\n"
-            "Rust core matmul/solve at n≥256 within ~2× of NumPy on this machine "
+            "Rust and Lua matmul/solve at n≥256 within ~2× of NumPy on this machine "
             "(or no medium+ rows)."
         )
 

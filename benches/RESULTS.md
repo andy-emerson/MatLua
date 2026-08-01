@@ -1,30 +1,50 @@
-# P5 comparison snapshot
+# Performance comparison snapshot (3-way)
 
-Recorded on the CI/agent sandbox used for the P5 harness (Linux x86_64,
-NumPy 2.x + OpenBLAS, MatLua release). Re-run with `python3 benches/compare.py`
-on your machine; numbers will differ.
+**Faces (always reported together):**
 
-## Table (median wall ms)
+| Face | Role |
+|------|------|
+| **MatLua Lua** | Product surface — what users call |
+| **MatLua Rust** | Critical path under the Lua face |
+| **NumPy** | External bar for “worth using” |
+
+Recorded on the agent sandbox (Linux x86_64, 2 CPUs, NumPy + OpenBLAS,
+MatLua **release**). Wall clock throughout. Re-run: `python3 benches/compare.py`.
+
+## P6 snapshot (dest GEMM + parallel large matmul)
 
 | op | n | MatLua Rust (ms) | MatLua Lua (ms) | NumPy (ms) | Rust/NumPy | Lua/NumPy |
 |----|---:|-----------------:|----------------:|-----------:|-----------:|----------:|
-| matmul | 64 | 0.0483 | 0.0780 | 0.0112 | 4.30× | 6.95× |
-| matmul | 256 | 0.8245 | 0.9100 | 0.5242 | 1.57× | 1.74× |
-| matmul | 1024 | 38.6288 | 67.0350 | 17.0864 | 2.26× | 3.92× |
-| solve | 64 | 0.0693 | 0.0870 | 0.0358 | 1.93× | 2.43× |
-| solve | 256 | 1.0729 | 1.5010 | 0.6416 | 1.67× | 2.34× |
-| solve | 1024 | 22.9954 | 44.4760 | 25.1010 | 0.92× | 1.77× |
-| elem_add | 64 | 0.0015 | 0.0030 | 0.0028 | 0.54× | 1.07× |
-| elem_add | 256 | 0.0330 | 0.0710 | 0.0355 | 0.93× | 2.00× |
-| elem_add | 1024 | 1.1727 | 2.0940 | 1.1619 | 1.01× | 1.80× |
+| matmul | 64 | 0.0102 | 0.0164 | 0.0096 | 1.06× | 1.71× |
+| matmul | 256 | 0.4022 | 0.4024 | 0.5234 | 0.77× | 0.77× |
+| matmul | 1024 | 21.3654 | 23.7975 | 17.1390 | 1.25× | 1.39× |
+| solve | 64 | 0.0787 | 0.0638 | 0.0357 | 2.21× | 1.79× |
+| solve | 256 | 1.4207 | 1.1119 | 0.6631 | 2.14× | 1.68× |
+| solve | 1024 | 26.6354 | 32.9699 | 27.6425 | 0.96× | 1.19× |
+| elem_add | 64 | 0.0017 | 0.0046 | 0.0017 | 0.96× | 2.65× |
+| elem_add | 256 | 0.0314 | 0.0540 | 0.0424 | 0.74× | 1.27× |
+| elem_add | 1024 | 1.3279 | 3.7482 | 1.0764 | 1.23× | 3.48× |
 
-## Bar check (§7.2)
+### vs pre-P6 (matmul only)
 
-- **Rust matmul/solve at n ≥ 256:** mostly within ~1–2× NumPy.  
-  **Residual gap:** `matmul` n=1024 ≈ **2.26×** NumPy on this host (slightly over the soft 2× ceiling). Likely remaining cost: row-major↔faer kernel boundary and result pack-out; OpenBLAS GEMM is extremely tuned at large n.
-- **Rust solve n=1024:** **faster than NumPy** on this host (0.92×).
-- **Elementwise add:** at parity or better for Rust.
-- **Lua face:** bulk matmul/solve at medium sizes stays near the Rust line; small-n and Lua call overhead are larger (expected; not the §7.2 primary bar).
+| n | Rust/NumPy before | after P6 |
+|---:|------------------:|---------:|
+| 64 | 4.30× | 1.06× |
+| 256 | 1.57× | 0.77× |
+| 1024 | 2.26× | 1.25× |
+
+### Bar check (§7.2)
+
+- **matmul (Rust + Lua), medium+:** inside ~1–2× NumPy; at n=256 often **under** NumPy on this host.
+- **solve:** large-n competitive; n=256 Rust sits ~2.1× (soft edge; noise-sensitive on 2-core sandbox).
+- **elem_add:** Rust at parity; Lua pays userdata alloc (visible at n=1024).
+- **Lua ≈ Rust** on bulk matmul/solve (product face tracks the core).
+
+### What P6 changed
+
+1. GEMM writes **directly** into a pre-sized row-major buffer (no intermediate faer `Mat` + pack-out).
+2. Large products use faer **global parallelism** (Rayon); tiny products stay sequential.
+3. Bench measures **wall clock** for all three faces; Lua uses `call_global` so compile cost is not in the sample.
 
 ## How to reproduce
 

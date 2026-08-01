@@ -110,6 +110,29 @@ impl Lua {
         }
         Ok(())
     }
+
+    /// Call a global function with no arguments (discards results).
+    ///
+    /// Used by benches so wall-clock timing does not include chunk compile cost.
+    pub fn call_global(&self, name: &str) -> Result<()> {
+        let c = CString::new(name).map_err(|e| Error::message(e.to_string()))?;
+        unsafe {
+            lua_getglobal(self.state, c.as_ptr());
+            if lua_type(self.state, -1) != LUA_TFUNCTION {
+                lua_pop(self.state, 1);
+                return Err(Error::message(format!(
+                    "global {name:?} is not a function"
+                )));
+            }
+            let call = lua_pcall(self.state, 0, 0, 0);
+            if call != LUA_OK {
+                let msg = error_string(self.state);
+                lua_pop(self.state, 1);
+                return Err(Error::message(format!("lua runtime error: {msg}")));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Drop for Lua {

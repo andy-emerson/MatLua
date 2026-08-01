@@ -1,7 +1,13 @@
 # Performance comparison harness (P5)
 
-Compares MatLua (Rust core + optional Lua face) to NumPy on ordinary dense
-`f64` desk ops: `matmul`, `solve`, elementwise add.
+Three-way compare on ordinary dense `f64` desk ops (`matmul`, `solve`,
+elementwise add):
+
+| Face | Role |
+|------|------|
+| **MatLua Lua** | Product surface (what users call) |
+| **MatLua Rust** | Critical path under Lua |
+| **NumPy** | External “worth using” bar |
 
 ## Contract
 
