@@ -314,7 +314,7 @@ with reasons rather than expanding scope indefinitely.
 | **P0** | Write this contract and the P1–P5 wall into durable docs | **Done** |
 | **P1** | Kill the LA tax: zero-copy faer `MatRef` over row-major `Array` inputs; copy out only for owned results | **Done** |
 | **P2** | Elementwise / reductions: contiguous bulk loops, less alloc, SIMD-friendly code | **Done** |
-| **P3** | Hot-path hygiene: fewer intermediate arrays, cheap constructors, avoid needless clones | **Planned** |
+| **P3** | Hot-path hygiene: fewer intermediate arrays, cheap constructors, avoid needless clones | **Done** |
 | **P4** | Lua face cost: reduce per-op overhead on bulk paths | **Planned** |
 | **P5** | Comparison harness vs NumPy; meet §7.2 bar or document gaps | **Planned** |
 
@@ -364,9 +364,9 @@ Human is always **author** of record; agent may be **co-author** when allowed fo
 - Rust: row-major owned `f64` n-D arrays, views, elementwise, Arrow interchange, faer LA.
 - Lua (`lua` feature): 1-based userdata, constructors, metamethods, linalg module functions.
 
-**Performance program:** **P0–P2** are done (contract, zero-copy LA inputs,
-elementwise/reduction kernels). **P3–P5** remain toward NumPy-competitive dense
-desk work (§7.2).
+**Performance program:** **P0–P3** are done (contract, zero-copy LA inputs,
+elementwise kernels, hot-path hygiene). **P4–P5** remain toward NumPy-competitive
+dense desk work (§7.2).
 
 Package version is **`0.0.1`**. Call **v0.1** when the human tags a release;
 until then treat the tree as a **v0.1 candidate** per §7.1.

@@ -5,7 +5,7 @@
 
 use faer::{Mat, MatMut, MatRef};
 
-use crate::array::Array;
+use crate::array::{Array, Shape};
 use crate::error::{Error, Result};
 
 /// Interpret an array as a matrix for dense LA.
@@ -51,11 +51,11 @@ pub(crate) fn matref_to_array(m: MatRef<'_, f64>, prefer_vector: bool) -> Result
         out.copy_from(m);
     }
     if prefer_vector && ncols == 1 {
-        Array::from_shape_vec(vec![nrows], data)
+        Ok(Array::from_parts(Shape::from_len(nrows), data))
     } else if prefer_vector && nrows == 1 {
-        Array::from_shape_vec(vec![ncols], data)
+        Ok(Array::from_parts(Shape::from_len(ncols), data))
     } else {
-        Array::from_shape_vec(vec![nrows, ncols], data)
+        Ok(Array::from_parts(Shape::matrix(nrows, ncols)?, data))
     }
 }
 
