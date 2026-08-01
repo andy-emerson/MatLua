@@ -372,6 +372,8 @@ Human is always **author** of record; agent may be **co-author** when allowed fo
 - Rust: row-major owned `f64` n-D arrays, views, elementwise, Arrow interchange, faer LA.
 - Lua (`lua` feature): 1-based userdata, constructors, metamethods, linalg module functions.
 
+**Reshape (closed 2026-08-01, issue #12):** value buffer is `Arc<Vec<f64>>`. `reshape` / Lua `reshape` share the buffer (metadata + `Arc` clone). In-place mutation uses copy-on-write (`Arc::make_mut`) when the buffer is still shared. `Clone`, `to_owned_array`, and Lua `copy` remain **deep** unique copies.
+
 **Performance program:** structural P0–P6 work is on `main`. Measurement and
 follow-up optimization use the **fair** three-way suite under `tests/bench/`.
 Active function-level work is tracked in Issues (#12 reshape, #13 min, #14 max,
