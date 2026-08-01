@@ -1,5 +1,7 @@
 //! Owned dense `f64` arrays (row-major, n-D).
 
+use std::sync::Arc;
+
 use arrow_array::{Array as ArrowArray, Float64Array};
 use arrow_buffer::Buffer;
 
@@ -12,11 +14,14 @@ use crate::error::{Error, Result};
 ///
 /// Primary Rust-side array type. Storage is a contiguous buffer compatible
 /// with Arrow [`Float64Array`] interchange (no nulls).
+///
+/// The value buffer is reference-counted so [`Self::reshape`] can share storage
+/// (metadata-only). In-place mutation uses copy-on-write when the buffer is shared.
 #[derive(Clone, Debug)]
 pub struct Array {
     shape: Shape,
     /// Contiguous row-major values; length always equals `shape.numel()`.
-    data: Vec<f64>,
+    data: Arc<Vec<f64>>,
 }
 
 impl Array {
@@ -53,31 +58,34 @@ impl Array {
     /// Contiguous row-major values.
     #[inline]
     pub fn as_slice(&self) -> &[f64] {
-        &self.data
+        self.data.as_ref()
     }
 
     /// Contiguous row-major values (mutable).
+    ///
+    /// Clones the buffer if other arrays still share it (e.g. after [`Self::reshape`]).
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [f64] {
-        &mut self.data
+        Arc::make_mut(&mut self.data).as_mut_slice()
     }
 
     /// Shared view of the whole array.
     #[inline]
     pub fn view(&self) -> ArrayView<'_> {
-        ArrayView::from_shape_slice(self.shape.clone(), &self.data)
+        ArrayView::from_shape_slice(self.shape.clone(), self.data.as_ref())
     }
 
     /// Mutable view of the whole array.
     #[inline]
     pub fn view_mut(&mut self) -> ArrayViewMut<'_> {
-        ArrayViewMut::from_shape_slice(self.shape.clone(), &mut self.data)
+        let shape = self.shape.clone();
+        ArrayViewMut::from_shape_slice(shape, self.as_mut_slice())
     }
 
-    /// Deep copy (same as [`Clone`] for owned data).
+    /// Deep copy of shape and values (unique buffer).
     #[inline]
     pub fn to_owned_array(&self) -> Array {
-        self.clone()
+        Self::from_parts(self.shape.clone(), self.as_slice().to_vec())
     }
 
     /// Build from shape and a flat row-major buffer.
@@ -91,14 +99,20 @@ impl Array {
                 shape.numel()
             )));
         }
-        Ok(Self { shape, data })
+        Ok(Self {
+            shape,
+            data: Arc::new(data),
+        })
     }
 
     /// Assemble an array when shape and length are already known to match.
     #[inline]
     pub(crate) fn from_parts(shape: Shape, data: Vec<f64>) -> Self {
         debug_assert_eq!(data.len(), shape.numel());
-        Self { shape, data }
+        Self {
+            shape,
+            data: Arc::new(data),
+        }
     }
 
     /// Build from shape and a flat row-major slice (copies).
@@ -133,10 +147,6 @@ impl Array {
     }
 
     /// Rank-1 range `[start, stop)` with the given step.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Shape`] if `step` is zero or the length overflows.
     pub fn arange_step(start: f64, stop: f64, step: f64) -> Result<Self> {
         if step == 0.0 {
             return Err(Error::Shape("arange step must be non-zero".into()));
@@ -172,16 +182,20 @@ impl Array {
     /// Write one element at a multi-index (0-based).
     pub fn set(&mut self, indices: &[usize], value: f64) -> Result<()> {
         let off = self.shape.offset(indices)?;
-        self.data[off] = value;
+        self.as_mut_slice()[off] = value;
         Ok(())
     }
 
     /// Set every element to `value`.
     pub fn fill(&mut self, value: f64) {
-        self.data.fill(value);
+        self.as_mut_slice().fill(value);
     }
 
-    /// Reshape without changing values if the element count matches (copies data).
+    /// Reshape without changing values if the element count matches.
+    ///
+    /// **Zero-copy:** shares the underlying buffer (`Arc` clone). A later
+    /// in-place mutation on either array copies the buffer on write
+    /// (`Arc::make_mut`).
     pub fn reshape(&self, shape: impl Into<Vec<usize>>) -> Result<Self> {
         let shape = Shape::new(shape)?;
         if shape.numel() != self.len() {
@@ -191,7 +205,10 @@ impl Array {
                 shape
             )));
         }
-        Ok(Self::from_parts(shape, self.data.clone()))
+        Ok(Self {
+            shape,
+            data: Arc::clone(&self.data),
+        })
     }
 
     /// Consume `self` and reshape without copying the value buffer.
@@ -204,7 +221,10 @@ impl Array {
                 shape
             )));
         }
-        Ok(Self::from_parts(shape, self.data))
+        Ok(Self {
+            shape,
+            data: self.data,
+        })
     }
 
     /// Reshape in place without copying if the element count matches.
@@ -225,7 +245,6 @@ impl Array {
     pub fn eye(n: usize) -> Result<Self> {
         let shape = Shape::matrix(n, n)?;
         let mut data = vec![0.0; shape.numel()];
-        // Row-major: diagonal at i * n + i.
         for i in 0..n {
             data[i * n + i] = 1.0;
         }
@@ -238,10 +257,6 @@ impl Array {
     }
 
     /// Mean of all elements.
-    ///
-    /// # Errors
-    ///
-    /// Empty arrays return [`Error::Shape`].
     pub fn mean(&self) -> Result<f64> {
         if self.is_empty() {
             return Err(Error::Shape("mean of empty array".into()));
@@ -263,17 +278,13 @@ impl Array {
 
     /// Export as a non-null Arrow [`Float64Array`] (flat row-major values).
     pub fn to_arrow(&self) -> Float64Array {
-        Float64Array::from(self.data.clone())
+        Float64Array::from(self.as_slice().to_vec())
     }
 
     /// Import from a non-null Arrow [`Float64Array`] with an explicit shape.
-    ///
-    /// Nulls are rejected. Values are interpreted as row-major for `shape`.
     pub fn from_arrow(array: &Float64Array, shape: impl Into<Vec<usize>>) -> Result<Self> {
         if array.null_count() != 0 {
-            return Err(Error::Shape(
-                "from_arrow does not accept nulls".into(),
-            ));
+            return Err(Error::Shape("from_arrow does not accept nulls".into()));
         }
         let shape = Shape::new(shape)?;
         if array.len() != shape.numel() {
@@ -284,13 +295,13 @@ impl Array {
                 shape.numel()
             )));
         }
-        let data = array.values().iter().copied().collect();
-        Ok(Self { shape, data })
+        let data: Vec<f64> = array.values().iter().copied().collect();
+        Ok(Self::from_parts(shape, data))
     }
 
     /// Copy values into a new Arrow [`Buffer`].
     pub fn to_buffer(&self) -> Buffer {
-        Buffer::from_vec(self.data.clone())
+        Buffer::from_vec(self.as_slice().to_vec())
     }
 
     fn same_shape(&self, other: &Array) -> Result<()> {
@@ -377,32 +388,26 @@ impl Array {
         Ok(())
     }
 
-    /// `self + scalar` (owned).
     pub(crate) fn add_scalar(&self, scalar: f64) -> Array {
         self.owned_unary_kernel(|a, out| kernels::add_scalar(a, scalar, out))
     }
 
-    /// `self - scalar` (owned).
     pub(crate) fn sub_scalar(&self, scalar: f64) -> Array {
         self.owned_unary_kernel(|a, out| kernels::sub_scalar(a, scalar, out))
     }
 
-    /// `scalar - self` (owned).
     pub(crate) fn scalar_sub(&self, scalar: f64) -> Array {
         self.owned_unary_kernel(|a, out| kernels::scalar_sub(a, scalar, out))
     }
 
-    /// `self * scalar` (owned).
     pub(crate) fn mul_scalar(&self, scalar: f64) -> Array {
         self.owned_unary_kernel(|a, out| kernels::mul_scalar(a, scalar, out))
     }
 
-    /// `self / scalar` (owned).
     pub(crate) fn div_scalar(&self, scalar: f64) -> Array {
         self.owned_unary_kernel(|a, out| kernels::div_scalar(a, scalar, out))
     }
 
-    /// `scalar / self` (owned).
     pub(crate) fn scalar_div(&self, scalar: f64) -> Array {
         self.owned_unary_kernel(|a, out| kernels::scalar_div(a, scalar, out))
     }
@@ -412,14 +417,13 @@ impl PartialEq for Array {
     fn eq(&self, other: &Self) -> bool {
         self.shape == other.shape
             && self
-                .data
+                .as_slice()
                 .iter()
-                .zip(other.data.iter())
+                .zip(other.as_slice().iter())
                 .all(|(a, b)| a == b || (a.is_nan() && b.is_nan()))
     }
 }
 
-/// Validate shape product without constructing (used by views).
 #[allow(dead_code)]
 pub(crate) fn check_shape(dims: &[usize]) -> Result<usize> {
     numel_checked(dims)
@@ -439,6 +443,20 @@ mod tests {
         let m = v.into_reshape(vec![2, 3]).unwrap();
         assert_eq!(m.dims(), &[2, 3]);
         assert_eq!(m.as_slice(), &[0., 1., 2., 3., 4., 5.]);
+    }
+
+    #[test]
+    fn reshape_shares_buffer_until_write() {
+        let a = Array::arange(0.0, 6.0).unwrap();
+        let b = a.reshape(vec![2, 3]).unwrap();
+        assert_eq!(b.dims(), &[2, 3]);
+        assert_eq!(a.as_slice().as_ptr(), b.as_slice().as_ptr());
+        let mut c = b.reshape(vec![3, 2]).unwrap();
+        assert_eq!(a.as_slice().as_ptr(), c.as_slice().as_ptr());
+        c.set(&[0, 0], 99.0).unwrap();
+        assert_eq!(a.get(&[0]).unwrap(), 0.0);
+        assert_eq!(c.get(&[0, 0]).unwrap(), 99.0);
+        assert_ne!(a.as_slice().as_ptr(), c.as_slice().as_ptr());
     }
 
     #[test]
