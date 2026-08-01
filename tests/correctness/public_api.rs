@@ -40,3 +40,24 @@ fn linalg_desk_path() {
     let n = linalg::norm(&a).unwrap();
     assert!((n - (3.0f64.hypot(1.0).hypot(1.0).hypot(2.0))).abs() < 1e-9);
 }
+
+#[test]
+fn matmul_at_and_normal_eq() {
+    use matlua::array::Array;
+    use matlua::linalg::{matmul, matmul_at, normal_eq, solve, transpose};
+
+    let x = Array::from_shape_slice(vec![4, 2], &[1., 0., 1., 1., 1., 2., 1., 3.]).unwrap();
+    let y = Array::from_shape_slice(vec![4], &[0., 1., 2., 3.]).unwrap();
+    let atb = matmul_at(&x, &y).unwrap();
+    let long = matmul(&transpose(&x).unwrap(), &y).unwrap();
+    assert_eq!(atb.as_slice(), long.as_slice());
+    let beta = normal_eq(&x, &y).unwrap();
+    let beta2 = solve(
+        &matmul(&transpose(&x).unwrap(), &x).unwrap(),
+        &matmul(&transpose(&x).unwrap(), &y).unwrap(),
+    )
+    .unwrap();
+    for (a, b) in beta.as_slice().iter().zip(beta2.as_slice()) {
+        assert!((a - b).abs() < 1e-9);
+    }
+}
