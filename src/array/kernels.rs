@@ -244,47 +244,58 @@ pub(crate) fn min_slice(a: &[f64]) -> Option<f64> {
     Some(m)
 }
 
-/// Maximum over a dense slice (chunked compares for ILP / auto-vectorization).
+/// Maximum over a dense slice.
+///
+/// Cache-blocked reduction: maxima within L1-friendly blocks, then max of
+/// block maxima (different from widening the inner accumulator count alone).
 #[inline]
 pub(crate) fn max_slice(a: &[f64]) -> Option<f64> {
     if a.is_empty() {
         return None;
     }
-    let mut m0 = f64::NEG_INFINITY;
-    let mut m1 = f64::NEG_INFINITY;
-    let mut m2 = f64::NEG_INFINITY;
-    let mut m3 = f64::NEG_INFINITY;
-    let mut chunks = a.chunks_exact(4);
-    for c in chunks.by_ref() {
-        if c[0] > m0 {
-            m0 = c[0];
+    // ~4 KiB of f64s — stays friendly to L1 while giving the inner loop room.
+    const BLOCK: usize = 512;
+    let mut global = f64::NEG_INFINITY;
+    for block in a.chunks(BLOCK) {
+        let mut m0 = f64::NEG_INFINITY;
+        let mut m1 = f64::NEG_INFINITY;
+        let mut m2 = f64::NEG_INFINITY;
+        let mut m3 = f64::NEG_INFINITY;
+        let mut chunks = block.chunks_exact(4);
+        for c in chunks.by_ref() {
+            if c[0] > m0 {
+                m0 = c[0];
+            }
+            if c[1] > m1 {
+                m1 = c[1];
+            }
+            if c[2] > m2 {
+                m2 = c[2];
+            }
+            if c[3] > m3 {
+                m3 = c[3];
+            }
         }
-        if c[1] > m1 {
-            m1 = c[1];
+        let mut m = m0;
+        if m1 > m {
+            m = m1;
         }
-        if c[2] > m2 {
-            m2 = c[2];
+        if m2 > m {
+            m = m2;
         }
-        if c[3] > m3 {
-            m3 = c[3];
+        if m3 > m {
+            m = m3;
+        }
+        for &x in chunks.remainder() {
+            if x > m {
+                m = x;
+            }
+        }
+        if m > global {
+            global = m;
         }
     }
-    let mut m = m0;
-    if m1 > m {
-        m = m1;
-    }
-    if m2 > m {
-        m = m2;
-    }
-    if m3 > m {
-        m = m3;
-    }
-    for &x in chunks.remainder() {
-        if x > m {
-            m = x;
-        }
-    }
-    Some(m)
+    Some(global)
 }
 
 #[cfg(test)]
