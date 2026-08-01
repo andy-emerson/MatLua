@@ -322,8 +322,10 @@ with reasons rather than expanding scope indefinitely.
 
 Order: **P0 → P1 → P2 → P3 → P4 → P5 → P6** (P6 = close matmul residual).
 
-Harness: `python3 benches/compare.py` (see `benches/README.md`). Latest
-checked-in snapshot: [`benches/RESULTS.md`](benches/RESULTS.md).
+Harness and latest table: [`tests/README.md`](tests/README.md) and
+`python3 tests/bench/compare_fair.py`. Open perf work: GitHub Issues (one
+function per issue); close the issue and update this file when the Human is
+satisfied with that function’s performance.
 
 ---
 
@@ -334,8 +336,9 @@ checked-in snapshot: [`benches/RESULTS.md`](benches/RESULTS.md).
 | **README.md** | User / visitor surface — accurate to what ships |
 | **DESIGN.md** (this file) | Rulings, architecture, scope — accurate to why and how |
 | **AGENTS.md** | Human/agent process (replace whole from upstream only on explicit decision) |
+| **tests/** | Correctness integration tests + fair three-way microbenches; results prose in `tests/README.md` |
 | **GitHub Discussions** | Open design while unsettled |
-| **GitHub Issues** | Todos and bugs after rulings |
+| **GitHub Issues** | Todos, bugs, and **per-function performance work** (proposed fix; close when Human is satisfied) |
 
 When a Discussion closes: write the ruling here in present tense; note rejected
 alternatives when useful; optional reopen triggers.
@@ -369,9 +372,10 @@ Human is always **author** of record; agent may be **co-author** when allowed fo
 - Rust: row-major owned `f64` n-D arrays, views, elementwise, Arrow interchange, faer LA.
 - Lua (`lua` feature): 1-based userdata, constructors, metamethods, linalg module functions.
 
-**Performance program:** **P0–P6** are done. Three-way harness:
-`python3 benches/compare.py`. Snapshot: [`benches/RESULTS.md`](benches/RESULTS.md).
-P6 closed the matmul residual (Rust/Lua matmul medium+ within ~1–2× NumPy).
+**Performance program:** structural P0–P6 work is on `main`. Measurement and
+follow-up optimization use the **fair** three-way suite under `tests/bench/`.
+Active function-level work is tracked in Issues (#12 reshape, #13 min, #14 max,
+#15 norm). Do not claim a function “done” in this file until its issue is closed.
 
 Package version is **`0.0.1`**. Call **v0.1** when the human tags a release;
 until then treat the tree as a **v0.1 candidate** per §7.1.
