@@ -17,11 +17,19 @@ use crate::error::{Error, Result};
 ///
 /// The value buffer is reference-counted so [`Self::reshape`] can share storage
 /// (metadata-only). In-place mutation uses copy-on-write when the buffer is shared.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Array {
     shape: Shape,
     /// Contiguous row-major values; length always equals `shape.numel()`.
     data: Arc<Vec<f64>>,
+}
+
+impl Clone for Array {
+    /// Deep copy of values (unique buffer). Prefer [`Self::reshape`] for
+    /// zero-copy shape changes that intentionally share storage.
+    fn clone(&self) -> Self {
+        Self::from_parts(self.shape.clone(), self.as_slice().to_vec())
+    }
 }
 
 impl Array {
