@@ -122,3 +122,28 @@ Re-run: `python3 tests/bench/compare_fair.py`.
 | svd | 1024 | 340.7707 | 444.5843 | 390.2499 | 1.30× | 1.15× | 0.88× |
 | transpose | 1024 | 4.3359 | 4.5253 | 4.4600 | 1.04× | 1.03× | 0.99× |
 | zeros | 1024 | 0.3259 | 0.2989 | 0.3692 | 0.92× | 1.13× | 1.24× |
+
+
+## Composed paths (normal equations)
+
+After single-op tuning, chains matter: `XᵀX` and `solve(XᵀX, Xᵀy)` without materializing `Xᵀ`.
+
+```bash
+python3 tests/bench/compare_compose.py --sizes 64,256,1024
+```
+
+`k` is features; design matrix is tall `m=4k`. **short** = `matmul_at` / `normal_eq`. **long** = `transpose` + `matmul` (+ `solve`). NumPy short uses view `.T` (already short).
+
+### Snapshot (2026-08-01, dest-pack solve + adaptive AᵀA)
+
+| op | k | NumPy short (ms) | Rust long | Rust short | Lua long | Lua short | Rshort/N | Lshort/N | L/R short |
+|----|--:|-----------------:|----------:|-----------:|---------:|----------:|---------:|---------:|----------:|
+| xtx | 64 | 0.0491 | 0.1000 | 0.0337 | 0.0901 | 0.0371 | 0.69× | 0.76× | 1.10× |
+| xtx | 256 | 1.2565 | 2.5032 | 1.4692 | 3.3646 | 1.4366 | 1.17× | 1.14× | 0.98× |
+| xtx | 1024 | 43.6407 | 100.7139 | 101.3016 | 114.9898 | 106.9934 | 2.32× | 2.45× | 1.06× |
+| normal_eq | 64 | 0.0924 | 0.2681 | 0.1338 | 0.2451 | 0.1211 | 1.45× | 1.31× | 0.90× |
+| normal_eq | 256 | 1.8753 | 5.1909 | 2.8412 | 6.8682 | 2.9601 | 1.52× | 1.58× | 1.04× |
+| normal_eq | 1024 | 75.3366 | 152.8941 | 133.7190 | 184.5319 | 134.9339 | 1.77× | 1.79× | 1.01× |
+
+**Read:** Short path wins the full `normal_eq` chain at all sizes (Lua ≈ Rust). Large pure `XᵀX` still ~2.3× NumPy (OpenBLAS residual). Adaptive `AᵀA`: view-transpose GEMM for `k<512`, blocked materialize+GEMM for larger `k`. `solve` writes the RHS in place (no faer-owned Mat pack-out).
+

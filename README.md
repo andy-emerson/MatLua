@@ -11,7 +11,7 @@ front, systems language in the core. Python → Lua 5.4, C → Rust, `ndarray` �
 
 | You are… | You get… |
 |----------|----------|
-| **Lua author** (inside a host) | `require "matlua"`, 1-based arrays, operators, `matmul` / `solve` / factorizations |
+| **Lua author** (inside a host) | `require "matlua"`, 1-based arrays, operators, `matmul` / `matmul_at` / `normal_eq` / `solve` / factorizations |
 | **Host / embedder** | Rust crate: owned `f64` n-D arrays, faer LA, optional `lua` feature + `matlua::lua::register` |
 | **Rust-only consumer** | Same arrays + LA without linking Lua |
 
@@ -32,10 +32,8 @@ local x = ml.solve(A, b)          -- ≈ {2, 3}
 -- one expression, one result (no forced temps for subexpressions)
 local X = ml.array({{1, 0}, {1, 1}, {1, 2}, {1, 3}})
 local y = ml.array({1, 3, 5, 7})
-local beta = ml.solve(
-  ml.matmul(X:transpose(), X),
-  ml.matmul(X:transpose(), y:reshape(4, 1))
-)
+local beta = ml.normal_eq(X, y:reshape(4, 1))  -- short: no materializing Xᵀ
+-- or: ml.solve(ml.matmul_at(X, X), ml.matmul_at(X, y:reshape(4, 1)))
 ```
 
 **Indexing is 1-based on the Lua face.** Elementwise `+ - * /` and unary `-`
@@ -49,7 +47,7 @@ work on arrays (and array ↔ number). Matrix product is always explicit:
 | **Constructors** | `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`, half-open), `array` (nested tables → dense `f64`), `eye` |
 | **Array methods** | `shape`, `rank`, `get` / `set`, `sum` / `mean` / `min` / `max`, `copy`, `reshape`, `transpose`, `fill`, `#a` |
 | **Elementwise** | `+`, `-`, `*`, `/`, unary `-` (array–array or array–number) |
-| **Linear algebra** | `matmul`, `solve`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd` |
+| **Linear algebra** | `matmul`, `matmul_at`, `normal_eq`, `solve`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd` |
 | **Rust core** | `Array` (row-major n-D `f64`), views over host buffers, Arrow `Float64Array` interchange, same LA under `matlua::linalg` |
 
 Quality bar is **`f64`**. Storage is a dense buffer, not nested Lua tables

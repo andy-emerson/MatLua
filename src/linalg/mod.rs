@@ -2,8 +2,8 @@
 //!
 //! Public functions take and return MatLua [`Array`]s. Inputs are viewed as
 //! faer [`MatRef`](faer::MatRef) over contiguous row-major storage (zero-copy).
-//! [`matmul`] writes GEMM output straight into a row-major buffer; other
-//! results still pack out from faer into owned row-major arrays.
+//! [`matmul`] / [`matmul_at`] write GEMM into row-major buffers; [`solve`]
+//! factors then solves **in place** on a row-major RHS copy (no faer-owned Mat out).
 //!
 //! # Rank conventions
 //!
@@ -134,7 +134,7 @@ pub fn matmul(a: &Array, b: &Array) -> Result<Array> {
     let prefer_vec = b.rank() == 1 || (a.rank() == 1 && bn == 1);
 
     let n_out = am.saturating_mul(bn);
-    let mut data = vec![0.0; n_out];
+    let mut data = crate::array::pool_take_uninit(n_out);
     if n_out > 0 {
         let mut dst = MatMut::from_row_major_slice_mut(&mut data, am, bn);
         faer_matmul(
@@ -147,6 +147,68 @@ pub fn matmul(a: &Array, b: &Array) -> Result<Array> {
         );
     }
     matmul_result(data, am, bn, prefer_vec)
+}
+
+/// Matrix product `aᵀ @ b` without materializing `aᵀ`.
+///
+/// Shapes: `(m, k)ᵀ × (m, n) → (k, n)` i.e. `a` is `m×k`, `b` is `m×n`.
+/// Rank-1 `b` is a column; result is rank-1 when `b` is rank-1.
+///
+/// Numerically matches [`matmul`]`(`[`transpose`]`(a), b)` with one fewer full
+/// transpose allocation (GEMM over a transposed [`MatRef`](faer::MatRef)).
+pub fn matmul_at(a: &Array, b: &Array) -> Result<Array> {
+    let (am, an) = array_as_matrix_dims(a)?;
+    let (bm, bn) = array_as_matrix_dims(b)?;
+    if am != bm {
+        return Err(Error::shape(format!(
+            "matmul_at shape mismatch: a is ({am}, {an}) so aᵀ is ({an}, {am}), b is ({bm}, {bn})"
+        )));
+    }
+    // AᵀA (same buffer): for large feature count, materialize Aᵀ (blocked) then
+    // dest-GEMM. Small k keeps a pure transposed MatRef GEMM (cheaper).
+    if std::ptr::eq(a.as_slice().as_ptr(), b.as_slice().as_ptr())
+        && a.len() == b.len()
+        && a.rank() == 2
+        && b.rank() == 2
+        && an == bn
+        && an >= 512
+    {
+        let at = transpose(a)?;
+        return matmul(&at, a);
+    }
+    let lhs = array_as_mat_ref(a)?.transpose();
+    let rhs = array_as_mat_ref(b)?;
+    let prefer_vec = b.rank() == 1;
+    let n_out = an.saturating_mul(bn);
+    let mut data = crate::array::pool_take_uninit(n_out);
+    if n_out > 0 {
+        let mut dst = MatMut::from_row_major_slice_mut(&mut data, an, bn);
+        faer_matmul(
+            &mut dst,
+            Accum::Replace,
+            lhs,
+            rhs,
+            1.0,
+            matmul_par(an, bn, am),
+        );
+    }
+    matmul_result(data, an, bn, prefer_vec)
+}
+
+/// Normal equations: `solve(XᵀX, Xᵀy)` via [`matmul_at`] (no materializing `Xᵀ`).
+///
+/// - `x`: rank-2 `(m, k)` design matrix  
+/// - `y`: rank-1 `(m,)` or rank-2 `(m, n)`  
+/// - returns coefficients with the same rank style as `y`
+///
+/// Same result as `solve(matmul(transpose(x), x), matmul(transpose(x), y))`.
+pub fn normal_eq(x: &Array, y: &Array) -> Result<Array> {
+    if x.rank() != 2 {
+        return Err(Error::shape("normal_eq expects rank-2 design matrix X"));
+    }
+    let xtx = matmul_at(x, x)?;
+    let xty = matmul_at(x, y)?;
+    solve(&xtx, &xty)
 }
 
 /// Dot product of two rank-1 arrays of equal length.
@@ -183,10 +245,18 @@ pub fn solve(a: &Array, b: &Array) -> Result<Array> {
         )));
     }
     let am = array_as_mat_ref(a)?;
-    let bm = array_as_mat_ref(b)?;
     let lu = am.partial_piv_lu();
-    let x = lu.solve(bm);
-    mat_to_array(&x, b.rank() == 1 && bk == 1)
+    // Dest-pack: copy RHS into owned row-major buffer and solve in place
+    // (avoids faer-owned Mat + second pack-out).
+    let prefer_vec = b.rank() == 1 && bk == 1;
+    let n_out = bn.saturating_mul(bk);
+    let mut data = crate::array::pool_take_uninit(n_out);
+    if n_out > 0 {
+        data.copy_from_slice(b.as_slice());
+        let mut rhs = MatMut::from_row_major_slice_mut(&mut data, bn, bk);
+        lu.solve_in_place(&mut rhs);
+    }
+    matmul_result(data, bn, bk, prefer_vec)
 }
 
 /// Cholesky factor `L` of a symmetric positive-definite matrix (`A = L Lᵀ`).
@@ -322,6 +392,45 @@ mod tests {
     }
 
     #[test]
+    fn matmul_at_matches_transpose_matmul() {
+        let a = Array::from_shape_slice(vec![3, 2], &[1., 2., 3., 4., 5., 6.]).unwrap();
+        let b = Array::from_shape_slice(vec![3, 2], &[0.5, 1.5, 2.5, 3.5, 4.5, 5.5]).unwrap();
+        let short = matmul_at(&a, &b).unwrap();
+        let long = matmul(&transpose(&a).unwrap(), &b).unwrap();
+        assert_eq!(short.shape().dims(), long.shape().dims());
+        for (x, y) in short.as_slice().iter().zip(long.as_slice()) {
+            assert!((x - y).abs() < 1e-12, "{x} vs {y}");
+        }
+        let v = Array::from_shape_slice(vec![3], &[1., 0., -1.]).unwrap();
+        let short_v = matmul_at(&a, &v).unwrap();
+        let long_v = matmul(&transpose(&a).unwrap(), &v).unwrap();
+        assert_eq!(short_v.rank(), 1);
+        for (x, y) in short_v.as_slice().iter().zip(long_v.as_slice()) {
+            assert!((x - y).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn normal_eq_matches_composed_solve() {
+        // Small least-squares style: X 4×2, y 4
+        let x = Array::from_shape_slice(
+            vec![4, 2],
+            &[1., 0., 1., 1., 1., 2., 1., 3.],
+        )
+        .unwrap();
+        let y = Array::from_shape_slice(vec![4], &[1., 2., 3., 4.]).unwrap();
+        let short = normal_eq(&x, &y).unwrap();
+        let long = solve(
+            &matmul(&transpose(&x).unwrap(), &x).unwrap(),
+            &matmul(&transpose(&x).unwrap(), &y).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(short.rank(), 1);
+        for (a, b) in short.as_slice().iter().zip(long.as_slice()) {
+            assert!((a - b).abs() < 1e-9, "{a} vs {b}");
+        }
+    }
+
     fn svd_singular_values_sorted() {
         let a = Array::from_shape_slice(vec![2, 2], &[3., 0., 0., 2.]).unwrap();
         let (_u, s, _v) = svd(&a).unwrap();

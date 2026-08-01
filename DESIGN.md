@@ -208,7 +208,7 @@ Names match the `lua` feature on `main`. Tutorial samples live in
 ### 4.1 Module functions
 
 `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`), `array`, `eye`,
-`matmul`, `solve`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd`
+`matmul`, `matmul_at` (AᵀB without materializing Aᵀ), `normal_eq`, `solve`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd`
 
 ### 4.2 Array methods and metamethods
 
@@ -225,10 +225,10 @@ beta = np.linalg.solve(X.T @ X, X.T @ y)
 
 ```lua
 -- MatLua: explicit matmul; 1-based; no @
-local beta = ml.solve(
-  ml.matmul(X:transpose(), X),
-  ml.matmul(X:transpose(), y)
-)
+-- Preferred short path (no materializing Xᵀ):
+local beta = ml.normal_eq(X, y)
+-- Equivalent primitive: ml.solve(ml.matmul_at(X, X), ml.matmul_at(X, y))
+-- Long path (still correct): ml.solve(ml.matmul(X:transpose(), X), ml.matmul(X:transpose(), y))
 ```
 
 Rank-1 vectors are valid `matmul` / `solve` operands (column convention). Column-fill helpers (`:col`, `:assign`) are **not** implemented; use `get`/`set` loops or build from tables until view sugar lands.
@@ -371,6 +371,8 @@ Human is always **author** of record; agent may be **co-author** when allowed fo
 
 - Rust: row-major owned `f64` n-D arrays, views, elementwise, Arrow interchange, faer LA.
 - Lua (`lua` feature): 1-based userdata, constructors, metamethods, linalg module functions.
+
+**Composed paths (2026-08-01):** `solve` dest-packs (in-place on row-major RHS). `matmul_at` adaptive `AᵀA` for large `k`.  Prefer `matmul_at(A,B)` ≡ `AᵀB` and `normal_eq(X,y)` ≡ `solve(XᵀX, Xᵀy)` over materializing `transpose` then `matmul`. Same numerics as the long composition; fewer temps. End-to-end numbers: `tests/bench/compare_compose.py` / `tests/README.md`.
 
 **Reshape (closed 2026-08-01, issue #12):** value buffer is `Arc<Vec<f64>>`. `reshape` / Lua `reshape` share the buffer (metadata + `Arc` clone). In-place mutation uses copy-on-write (`Arc::make_mut`) when the buffer is still shared. `Clone`, `to_owned_array`, and Lua `copy` remain **deep** unique copies.
 
