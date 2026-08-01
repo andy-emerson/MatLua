@@ -27,7 +27,6 @@ mod shape;
 mod view;
 
 pub use array::Array;
-pub use ops::TryElemwise;
 pub use shape::Shape;
 pub use view::{ArrayView, ArrayViewMut};
 

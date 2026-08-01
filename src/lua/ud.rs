@@ -52,7 +52,16 @@ pub unsafe fn push_array(L: *mut lua_State, array: Array) {
     }
 }
 
-/// Raise a Lua error (longjmp). Marked as returning `c_int` for `lua_try!`.
+/// Raise a Lua error via **longjmp** (`lua_error`). Marked as returning `c_int`
+/// for `lua_try!`.
+///
+/// # Drop / longjmp
+///
+/// Like the C Lua API, this does not run Rust `Drop` for values still live on
+/// the current stack frame. Call sites must not hold owned Rust values
+/// (e.g. temporary `Array`s) across `lua_try!` error paths when avoidable; the
+/// face bindings keep fallible work in `Result` and only longjmp after those
+/// values are consumed or dropped.
 ///
 /// Uses `lua_pushlstring` so we do not allocate a `CString` on the error path.
 pub unsafe fn lua_error_msg(L: *mut lua_State, msg: &str) -> c_int {
@@ -63,37 +72,26 @@ pub unsafe fn lua_error_msg(L: *mut lua_State, msg: &str) -> c_int {
     }
 }
 
-/// Max rank for stack-backed multi-index decoding (no heap on get/set).
-pub const MAX_INDEX_RANK: usize = 8;
-
-/// Convert 1-based Lua multi-index (stack args `from..=to` inclusive) into `buf`.
-///
-/// Returns the filled prefix of `buf` (length `rank`). Uses no heap allocation
-/// when `rank <= MAX_INDEX_RANK` and `buf` is stack-provided.
+/// Convert 1-based Lua multi-index (stack args `from..=to` inclusive) to 0-based indices.
 pub unsafe fn indices_1_based(
     L: *mut lua_State,
     from: c_int,
     to: c_int,
     rank: usize,
-    buf: &mut [usize; MAX_INDEX_RANK],
-) -> Result<usize, String> {
+) -> Result<Vec<usize>, String> {
     let n = (to - from + 1) as usize;
     if n != rank {
         return Err(format!("expected {rank} indices, got {n}"));
     }
-    if rank > MAX_INDEX_RANK {
-        return Err(format!(
-            "rank {rank} exceeds Lua face index limit {MAX_INDEX_RANK}"
-        ));
-    }
+    let mut idx = Vec::with_capacity(rank);
     for i in 0..rank {
         let v = unsafe { luaL_checkinteger(L, from + i as c_int) };
         if v < 1 {
             return Err(format!("index must be >= 1, got {v}"));
         }
-        buf[i] = (v as usize) - 1;
+        idx.push((v as usize) - 1);
     }
-    Ok(rank)
+    Ok(idx)
 }
 
 /// Read a shape from Lua: either a single integer-list table, or consecutive numbers.
@@ -140,6 +138,9 @@ pub unsafe fn shape_from_table(L: *mut lua_State, idx: c_int) -> Result<Vec<usiz
             return Err("shape dimensions must be non-negative".into());
         }
         dims.push(n as usize);
+    }
+    if dims.is_empty() {
+        return Err("empty shape".into());
     }
     Ok(dims)
 }

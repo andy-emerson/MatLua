@@ -68,3 +68,46 @@ end
     )
     .unwrap();
 }
+
+#[test]
+fn factorizations_and_empty_shape_error() {
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local A = ml.array({{2, 0.5}, {0.5, 1}})
+local L = ml.cholesky(A)
+assert(L:rank() == 2)
+local Q, R = ml.qr(A)
+assert(Q:rank() == 2 and R:rank() == 2)
+local U, s, V = ml.svd(A)
+assert(s:rank() == 1)
+local ok, err = pcall(function() return ml.zeros({}) end)
+assert(not ok)
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn reshape_copy_and_high_rank_index() {
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local a = ml.arange(0, 6)
+local b = a:reshape(2, 3)
+assert(b:get(1, 1) == 0)
+assert(b:get(2, 3) == 5)
+-- rank-3 get/set
+local c = ml.zeros(2, 2, 2)
+c:set(1, 1, 1, 3.5)
+assert(c:get(1, 1, 1) == 3.5)
+local d = a:copy()
+d:fill(9)
+assert(a:get(1) == 0)
+assert(d:get(1) == 9)
+"#,
+    )
+    .unwrap();
+}

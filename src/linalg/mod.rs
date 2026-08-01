@@ -28,7 +28,7 @@ use crate::error::{Error, Result};
 use convert::{array_as_mat_ref, array_as_matrix_dims, mat_to_array, matref_to_array};
 
 /// Parallelism for GEMM: sequential for tiny products, otherwise faer's global
-/// setting (Rayon by default when the `rayon` feature is on).
+/// setting (typically Rayon with default faer features).
 #[inline]
 fn matmul_par(m: usize, n: usize, k: usize) -> Par {
     // ~ n³ work proxy; below ~128³ rayon overhead often dominates.
@@ -117,9 +117,9 @@ fn blocked_transpose(src: &[f64], rows: usize, cols: usize, dst: &mut [f64]) {
 /// Shapes: `(m, k) × (k, n) → (m, n)`. Rank-1 operands are treated as columns.
 /// A matrix–vector product returns a rank-1 vector.
 ///
-/// Implementation (P6): GEMM writes **directly** into a pre-sized row-major
-/// buffer (no intermediate owned faer `Mat` + pack-out). Large products use
-/// faer's global parallelism (Rayon by default).
+/// GEMM writes **directly** into a pre-sized row-major buffer (no intermediate
+/// owned faer `Mat` + pack-out). Large products use faer's global parallelism
+/// (typically Rayon with default faer features).
 pub fn matmul(a: &Array, b: &Array) -> Result<Array> {
     let (am, an) = array_as_matrix_dims(a)?;
     let (bm, bn) = array_as_matrix_dims(b)?;
@@ -149,13 +149,15 @@ pub fn matmul(a: &Array, b: &Array) -> Result<Array> {
     matmul_result(data, am, bn, prefer_vec)
 }
 
-/// Matrix product `aᵀ @ b` without materializing `aᵀ`.
+/// Matrix product `aᵀ @ b`.
 ///
 /// Shapes: `(m, k)ᵀ × (m, n) → (k, n)` i.e. `a` is `m×k`, `b` is `m×n`.
 /// Rank-1 `b` is a column; result is rank-1 when `b` is rank-1.
 ///
-/// Numerically matches [`matmul`]`(`[`transpose`]`(a), b)` with one fewer full
-/// transpose allocation (GEMM over a transposed [`MatRef`](faer::MatRef)).
+/// Numerically matches [`matmul`]`(`[`transpose`]`(a), b)`. Implementation:
+/// - general `a`/`b`: GEMM over a transposed [`MatRef`](faer::MatRef) (no owned `aᵀ`);
+/// - same-buffer gram `aᵀa` with feature count `k ≥ 512`: blocked materialize of
+///   `aᵀ` then dest-GEMM (faster than pure transposed views at large `k`).
 pub fn matmul_at(a: &Array, b: &Array) -> Result<Array> {
     let (am, an) = array_as_matrix_dims(a)?;
     let (bm, bn) = array_as_matrix_dims(b)?;
@@ -195,13 +197,14 @@ pub fn matmul_at(a: &Array, b: &Array) -> Result<Array> {
     matmul_result(data, an, bn, prefer_vec)
 }
 
-/// Normal equations: `solve(XᵀX, Xᵀy)` via [`matmul_at`] (no materializing `Xᵀ`).
+/// Normal equations: `solve(XᵀX, Xᵀy)` via [`matmul_at`].
 ///
 /// - `x`: rank-2 `(m, k)` design matrix  
 /// - `y`: rank-1 `(m,)` or rank-2 `(m, n)`  
 /// - returns coefficients with the same rank style as `y`
 ///
 /// Same result as `solve(matmul(transpose(x), x), matmul(transpose(x), y))`.
+/// Large `XᵀX` may materialize `Xᵀ` once internally (see [`matmul_at`]).
 pub fn normal_eq(x: &Array, y: &Array) -> Result<Array> {
     if x.rank() != 2 {
         return Err(Error::shape("normal_eq expects rank-2 design matrix X"));
@@ -306,9 +309,9 @@ pub fn svd(a: &Array) -> Result<(Array, Array, Array)> {
     let s_diag = svd.S();
     let n = s_diag.dim();
     let col = s_diag.column_vector();
-    let mut s = Vec::with_capacity(n);
+    let mut s = crate::array::pool_take_uninit(n);
     for i in 0..n {
-        s.push(col[i]);
+        s[i] = col[i];
     }
     let s = Array::from_parts(crate::array::Shape::from_len(n), s);
     Ok((u, s, v))
@@ -431,6 +434,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn svd_singular_values_sorted() {
         let a = Array::from_shape_slice(vec![2, 2], &[3., 0., 0., 2.]).unwrap();
         let (_u, s, _v) = svd(&a).unwrap();

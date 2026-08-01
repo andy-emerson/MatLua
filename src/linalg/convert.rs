@@ -45,7 +45,7 @@ pub(crate) fn matref_to_array(m: MatRef<'_, f64>, prefer_vector: bool) -> Result
     let nrows = m.nrows();
     let ncols = m.ncols();
     let n = nrows.saturating_mul(ncols);
-    let mut data = vec![0.0; n];
+    let mut data = crate::array::pool_take_uninit(n);
     if n > 0 {
         let mut out = MatMut::from_row_major_slice_mut(&mut data, nrows, ncols);
         out.copy_from(m);

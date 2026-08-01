@@ -61,3 +61,50 @@ fn matmul_at_and_normal_eq() {
         assert!((a - b).abs() < 1e-9);
     }
 }
+
+#[test]
+fn arrow_roundtrip_and_reshape_cow() {
+    let a = Array::from_shape_slice(vec![2, 3], &[1., 2., 3., 4., 5., 6.]).unwrap();
+    let arrow = a.to_arrow();
+    let b = Array::from_arrow(&arrow, vec![2, 3]).unwrap();
+    assert_eq!(a.as_slice(), b.as_slice());
+
+    let r = a.reshape(vec![3, 2]).unwrap();
+    assert_eq!(r.dims(), &[3, 2]);
+    // Shared until write: mutating reshape COWs.
+    let mut w = r.reshape(vec![6]).unwrap();
+    w.as_mut_slice()[0] = 99.0;
+    assert_eq!(a.as_slice()[0], 1.0);
+    assert_eq!(w.as_slice()[0], 99.0);
+}
+
+#[test]
+fn decompositions_smoke() {
+    let a = Array::from_shape_slice(vec![2, 2], &[2.0, 0.5, 0.5, 1.0]).unwrap();
+    let l = linalg::cholesky(&a).unwrap();
+    assert_eq!(l.dims(), &[2, 2]);
+    let (q, r) = linalg::qr(&a).unwrap();
+    let recon = linalg::matmul(&q, &r).unwrap();
+    for (x, y) in recon.as_slice().iter().zip(a.as_slice()) {
+        assert!((x - y).abs() < 1e-9);
+    }
+    let (_u, s, _v) = linalg::svd(&a).unwrap();
+    assert!(s.get(&[0]).unwrap() >= s.get(&[1]).unwrap());
+}
+
+#[test]
+fn matmul_at_gram_matches_transpose_path() {
+    // Small k uses view path; correctness vs long path.
+    let x = Array::from_shape_slice(
+        vec![5, 3],
+        &[
+            1., 0., 0., 0., 1., 0., 0., 0., 1., 1., 1., 0., 0., 1., 1.,
+        ],
+    )
+    .unwrap();
+    let short = linalg::matmul_at(&x, &x).unwrap();
+    let long = linalg::matmul(&linalg::transpose(&x).unwrap(), &x).unwrap();
+    for (a, b) in short.as_slice().iter().zip(long.as_slice()) {
+        assert!((a - b).abs() < 1e-10, "{a} vs {b}");
+    }
+}

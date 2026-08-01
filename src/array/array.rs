@@ -3,11 +3,10 @@
 use std::sync::Arc;
 
 use arrow_array::{Array as ArrowArray, Float64Array};
-use arrow_buffer::Buffer;
 
 use super::kernels;
 use super::pool;
-use super::shape::{numel_checked, Shape};
+use super::shape::Shape;
 use super::view::{ArrayView, ArrayViewMut};
 use crate::error::{Error, Result};
 
@@ -125,7 +124,13 @@ impl Array {
     /// Assemble an array when shape and length are already known to match.
     #[inline]
     pub(crate) fn from_parts(shape: Shape, data: Vec<f64>) -> Self {
-        debug_assert_eq!(data.len(), shape.numel());
+        assert_eq!(
+            data.len(),
+            shape.numel(),
+            "from_parts: data length {} != shape numel {}",
+            data.len(),
+            shape.numel()
+        );
         Self {
             shape,
             data: Arc::new(data),
@@ -318,10 +323,6 @@ impl Array {
         Ok(Self::from_parts(shape, data))
     }
 
-    /// Copy values into a new Arrow [`Buffer`].
-    pub fn to_buffer(&self) -> Buffer {
-        Buffer::from_vec(self.as_slice().to_vec())
-    }
 
     fn same_shape(&self, other: &Array) -> Result<()> {
         if !self.shape.same_as(other.shape()) {
@@ -433,6 +434,8 @@ impl Array {
 }
 
 impl PartialEq for Array {
+    /// Structural equality: same shape and elementwise equal, with **NaN == NaN**
+    /// (unlike IEEE floating compare). Useful for tests; not a math relation.
     fn eq(&self, other: &Self) -> bool {
         self.shape == other.shape
             && self
@@ -453,10 +456,6 @@ impl Drop for Array {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn check_shape(dims: &[usize]) -> Result<usize> {
-    numel_checked(dims)
-}
 
 #[cfg(test)]
 mod tests {
