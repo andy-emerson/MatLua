@@ -1,6 +1,9 @@
-//! Convert between MatLua [`Array`](crate::Array) (row-major) and faer [`Mat`].
+//! Convert between MatLua [`Array`](crate::Array) (row-major) and faer matrices.
+//!
+//! Inputs: zero-copy [`MatRef`] over contiguous row-major storage.
+//! Outputs: owned row-major [`Array`] (copy out).
 
-use faer::Mat;
+use faer::{Mat, MatMut, MatRef};
 
 use crate::array::Array;
 use crate::error::{Error, Result};
@@ -19,29 +22,33 @@ pub(crate) fn array_as_matrix_dims(a: &Array) -> Result<(usize, usize)> {
     }
 }
 
-/// Copy a MatLua array into a faer column-major [`Mat`].
-pub(crate) fn array_to_mat(a: &Array) -> Result<Mat<f64>> {
+/// Zero-copy faer view over a contiguous row-major MatLua array.
+///
+/// Rank-1 arrays are viewed as `n × 1` columns.
+pub(crate) fn array_as_mat_ref(a: &Array) -> Result<MatRef<'_, f64>> {
     let (nrows, ncols) = array_as_matrix_dims(a)?;
     let data = a.as_slice();
-    if data.len() != nrows.saturating_mul(ncols) {
+    let n = nrows.saturating_mul(ncols);
+    if data.len() != n {
         return Err(Error::shape("internal layout length mismatch"));
     }
-    // Row-major source → (i, j) at i * ncols + j
-    Ok(Mat::from_fn(nrows, ncols, |i, j| data[i * ncols + j]))
+    // faer panics if nrows*ncols != len; empty 0×k / k×0 with len 0 is fine.
+    Ok(MatRef::from_row_major_slice(data, nrows, ncols))
 }
 
-/// Copy a faer [`Mat`] into a MatLua row-major [`Array`].
+/// Copy a faer matrix view into a MatLua row-major [`Array`].
 ///
 /// - `n × 1` → rank-1 shape `(n,)` when `prefer_vector` is true  
+/// - `1 × n` → rank-1 shape `(n,)` when `prefer_vector` is true  
 /// - otherwise rank-2 shape `(m, n)`
-pub(crate) fn mat_to_array(m: &Mat<f64>, prefer_vector: bool) -> Result<Array> {
+pub(crate) fn matref_to_array(m: MatRef<'_, f64>, prefer_vector: bool) -> Result<Array> {
     let nrows = m.nrows();
     let ncols = m.ncols();
-    let mut data = vec![0.0; nrows * ncols];
-    for i in 0..nrows {
-        for j in 0..ncols {
-            data[i * ncols + j] = m[(i, j)];
-        }
+    let n = nrows.saturating_mul(ncols);
+    let mut data = vec![0.0; n];
+    if n > 0 {
+        let mut out = MatMut::from_row_major_slice_mut(&mut data, nrows, ncols);
+        out.copy_from(m);
     }
     if prefer_vector && ncols == 1 {
         Array::from_shape_vec(vec![nrows], data)
@@ -52,15 +59,33 @@ pub(crate) fn mat_to_array(m: &Mat<f64>, prefer_vector: bool) -> Result<Array> {
     }
 }
 
-/// Copy a matrix-like faer view into an owned MatLua array (always rank-2 unless 0-size).
-pub(crate) fn matref_to_array(m: faer::MatRef<'_, f64>) -> Result<Array> {
-    let nrows = m.nrows();
-    let ncols = m.ncols();
-    let mut data = vec![0.0; nrows * ncols];
-    for i in 0..nrows {
-        for j in 0..ncols {
-            data[i * ncols + j] = m[(i, j)];
-        }
+/// Copy a faer owned [`Mat`] into a MatLua row-major [`Array`].
+pub(crate) fn mat_to_array(m: &Mat<f64>, prefer_vector: bool) -> Result<Array> {
+    matref_to_array(m.as_ref(), prefer_vector)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mat_ref_views_row_major_without_reordering() {
+        // Row-major [1,2,3,4] as 2×2 is [[1,2],[3,4]].
+        let a = Array::from_shape_slice(vec![2, 2], &[1., 2., 3., 4.]).unwrap();
+        let m = array_as_mat_ref(&a).unwrap();
+        assert_eq!(m.nrows(), 2);
+        assert_eq!(m.ncols(), 2);
+        assert_eq!(m[(0, 0)], 1.0);
+        assert_eq!(m[(0, 1)], 2.0);
+        assert_eq!(m[(1, 0)], 3.0);
+        assert_eq!(m[(1, 1)], 4.0);
     }
-    Array::from_shape_vec(vec![nrows, ncols], data)
+
+    #[test]
+    fn rank1_is_column() {
+        let a = Array::from_shape_slice(vec![3], &[1., 2., 3.]).unwrap();
+        let m = array_as_mat_ref(&a).unwrap();
+        assert_eq!((m.nrows(), m.ncols()), (3, 1));
+        assert_eq!(m[(2, 0)], 3.0);
+    }
 }

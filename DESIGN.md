@@ -312,7 +312,7 @@ with reasons rather than expanding scope indefinitely.
 | Milestone | Intent | Status |
 |-----------|--------|--------|
 | **P0** | Write this contract and the P1–P5 wall into durable docs | **Done** |
-| **P1** | Kill the LA tax: zero-copy faer `MatRef` over row-major `Array` inputs; copy out only for owned results | **Planned** |
+| **P1** | Kill the LA tax: zero-copy faer `MatRef` over row-major `Array` inputs; copy out only for owned results | **Done** |
 | **P2** | Elementwise / reductions: contiguous bulk loops, less alloc, SIMD-friendly code | **Planned** |
 | **P3** | Hot-path hygiene: fewer intermediate arrays, cheap constructors, avoid needless clones | **Planned** |
 | **P4** | Lua face cost: reduce per-op overhead on bulk paths | **Planned** |
@@ -364,10 +364,8 @@ Human is always **author** of record; agent may be **co-author** when allowed fo
 - Rust: row-major owned `f64` n-D arrays, views, elementwise, Arrow interchange, faer LA.
 - Lua (`lua` feature): 1-based userdata, constructors, metamethods, linalg module functions.
 
-**Performance program:** **P0** (this contract) is recorded. **P1–P5** are the
-next wall toward NumPy-competitive dense desk work (§7.2). Until P1 lands, LA
-may still materialize faer-owned matrices on the hot path; the §3.12 layout
-ruling is the target boundary.
+**Performance program:** **P0** (contract) and **P1** (zero-copy LA inputs)
+are done. **P2–P5** remain toward NumPy-competitive dense desk work (§7.2).
 
 Package version is **`0.0.1`**. Call **v0.1** when the human tags a release;
 until then treat the tree as a **v0.1 candidate** per §7.1.
