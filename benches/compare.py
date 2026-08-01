@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Merge MatLua + NumPy TSV benches and print a comparison table (P5)."""
+"""Three-way dense desk compare: NumPy baseline vs MatLua Rust vs MatLua Lua.
+
+**How to read the table**
+
+NumPy is the baseline: **1.00×** on every row.
+MatLua columns are *wall time relative to NumPy on the same op and size*:
+
+- **1.00×** — same wall time as NumPy
+- **2.00×** — twice as slow (worse)
+- **0.50×** — twice as fast (better)
+
+Absolute milliseconds are printed in a second table for calibration only.
+"""
 
 from __future__ import annotations
 
@@ -20,25 +32,33 @@ def load_tsv(text: str) -> dict[tuple[str, str, int], float]:
     return out
 
 
+def fmt_rel(x: float | None) -> str:
+    if x is None:
+        return "—"
+    return f"{x:.2f}×"
+
+
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        description="NumPy = 1.00× baseline; MatLua Rust and Lua as relative wall time."
+    )
     ap.add_argument("--sizes", default="64,256,1024")
     ap.add_argument("--skip-lua", action="store_true")
     args = ap.parse_args()
 
-    rust_cmd = [
-        "cargo",
-        "run",
-        "--release",
-        "--example",
-        "bench_dense",
-        "--",
-        "--sizes",
-        args.sizes,
-    ]
-    if not args.skip_lua:
-        # insert features before --
+    if args.skip_lua:
+        rust_cmd = [
+            "cargo",
+            "run",
+            "--release",
+            "--example",
+            "bench_dense",
+            "--",
+            "--sizes",
+            args.sizes,
+        ]
+    else:
         rust_cmd = [
             "cargo",
             "run",
@@ -78,67 +98,74 @@ def main() -> int:
 
     ops = ["matmul", "solve", "elem_add"]
     sizes = [int(s) for s in args.sizes.split(",") if s.strip()]
-    faces_order = ["rust", "lua", "numpy"]
+    faces_order = ["numpy", "rust", "lua"]
 
     print()
-    print("| op | n | MatLua Rust (ms) | MatLua Lua (ms) | NumPy (ms) | Rust/NumPy | Lua/NumPy |")
-    print("|----|---:|-----------------:|----------------:|-----------:|-----------:|----------:|")
+    print(
+        "Relative wall time (**NumPy = 1.00×** baseline). "
+        "Lower is better. >1 means slower than NumPy."
+    )
+    print()
+    print("| op | n | NumPy | MatLua Rust | MatLua Lua |")
+    print("|----|---:|------:|------------:|-----------:|")
 
-    gaps: list[str] = []
+    gaps_rust: list[str] = []
+    gaps_lua: list[str] = []
     for op in ops:
         for nsz in sizes:
             rust = data.get(("rust", op, nsz))
             lua = data.get(("lua", op, nsz))
             numpy = data.get(("numpy", op, nsz))
-            if rust is None or numpy is None:
+            if numpy is None or numpy <= 0:
                 continue
-            ratio_r = rust / numpy if numpy > 0 else float("inf")
-            ratio_l = (lua / numpy) if (lua is not None and numpy > 0) else None
-            lua_s = f"{lua:.4f}" if lua is not None else "—"
-            ratio_l_s = f"{ratio_l:.2f}×" if ratio_l is not None else "—"
+            ratio_r = (rust / numpy) if rust is not None else None
+            ratio_l = (lua / numpy) if lua is not None else None
             print(
-                f"| {op} | {nsz} | {rust:.4f} | {lua_s} | {numpy:.4f} | {ratio_r:.2f}× | {ratio_l_s} |"
+                f"| {op} | {nsz} | 1.00× | {fmt_rel(ratio_r)} | {fmt_rel(ratio_l)} |"
             )
-            # Contract: medium+ matmul/solve within ~1–2× (rust face)
-            if op in ("matmul", "solve") and nsz >= 256 and ratio_r > 2.0:
-                gaps.append(
-                    f"{op} n={nsz}: Rust/NumPy = {ratio_r:.2f}× (above ~2× bar)"
-                )
+            if op in ("matmul", "solve") and nsz >= 256:
+                if ratio_r is not None and ratio_r > 2.0:
+                    gaps_rust.append(
+                        f"{op} n={nsz}: MatLua Rust = {ratio_r:.2f}× NumPy (above ~2× bar)"
+                    )
+                if ratio_l is not None and ratio_l > 2.0:
+                    gaps_lua.append(
+                        f"{op} n={nsz}: MatLua Lua = {ratio_l:.2f}× NumPy (above ~2× bar)"
+                    )
 
     print()
-    # Product-face gaps (Lua) — same soft bar; this is what users feel.
-    lua_gaps: list[str] = []
-    for op in ("matmul", "solve"):
+    print("Absolute wall time (ms) — same runs, for calibration only:")
+    print()
+    print("| op | n | NumPy (ms) | MatLua Rust (ms) | MatLua Lua (ms) |")
+    print("|----|---:|-----------:|-----------------:|----------------:|")
+    for op in ops:
         for nsz in sizes:
-            if nsz < 256:
-                continue
+            rust = data.get(("rust", op, nsz))
             lua = data.get(("lua", op, nsz))
             numpy = data.get(("numpy", op, nsz))
-            if lua is None or numpy is None or numpy <= 0:
+            if numpy is None:
                 continue
-            ratio_l = lua / numpy
-            if ratio_l > 2.0:
-                lua_gaps.append(
-                    f"{op} n={nsz}: Lua/NumPy = {ratio_l:.2f}× (above ~2× bar)"
-                )
+            rs = f"{rust:.4f}" if rust is not None else "—"
+            ls = f"{lua:.4f}" if lua is not None else "—"
+            print(f"| {op} | {nsz} | {numpy:.4f} | {rs} | {ls} |")
 
-    if gaps or lua_gaps:
-        if gaps:
+    print()
+    if gaps_rust or gaps_lua:
+        if gaps_rust:
             print("### Gaps vs §7.2 bar (Rust critical path, medium+ matmul/solve)")
-            for g in gaps:
+            for g in gaps_rust:
                 print(f"- {g}")
-        if lua_gaps:
+        if gaps_lua:
             print("### Gaps vs §7.2 bar (Lua product face, medium+ matmul/solve)")
-            for g in lua_gaps:
+            for g in gaps_lua:
                 print(f"- {g}")
     else:
         print(
             "### Bar check\n"
-            "Rust and Lua matmul/solve at n≥256 within ~2× of NumPy on this machine "
+            "MatLua Rust and Lua matmul/solve at n≥256 within ~2× NumPy on this machine "
             "(or no medium+ rows)."
         )
 
-    # Write machine-readable dump next to harness
     out = root / "benches" / "last_results.tsv"
     lines = ["face\top\tn\tms"]
     for face in faces_order:

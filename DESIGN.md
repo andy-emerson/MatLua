@@ -301,7 +301,8 @@ NumPy comparison is the **gate**, not the driver of every change.
 |------|----------|
 | **Scope** | Dense `f64`, rank 1–2: elementwise bulk ops, `matmul`, `solve`, and the shipped decompositions |
 | **Sizes** | Report at least \(n \in \{64, 256, 1024\}\) (matmul may also use 2048) |
-| **Faces** | Always **three-way**: **Lua** (product), **Rust** (critical path), **NumPy** (bar) |
+| **Faces** | Always **three-way**: **NumPy** (baseline **1.00×**), **Rust** (critical path), **Lua** (product) |
+| **Reporting** | Relative wall time to NumPy (NumPy column is always 1.00×); absolute ms secondary |
 | **Bar** | On medium+ matmul/solve (release, same shapes), MatLua wall time within about **1–2×** of NumPy on the same machine |
 | **Method** | During P1–P4: internal release timings only. **P5**: fixed harness + NumPy scripts; publish a table |
 | **Non-goals** | Beat MKL/OpenBLAS on every micro-op; research kernels; replace faer with system BLAS; full broadcasting engine |

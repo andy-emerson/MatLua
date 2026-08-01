@@ -12,8 +12,14 @@ elementwise add):
 ## Contract
 
 See [DESIGN.md §7.2](../DESIGN.md#72-performance-program-p0p5): sizes
-64 / 256 / 1024, faces measured separately, ~1–2× NumPy on medium+ matmul/solve
-for the **Rust** face.
+64 / 256 / 1024. **NumPy is the 1.00× baseline**; MatLua Rust and MatLua Lua are
+reported as relative wall time (lower is better). Soft bar: ~1–2× on medium+
+matmul/solve for both MatLua faces (Lua is the product face).
+
+## How to read the table
+
+Primary output is **relative wall time with NumPy = 1.00×** on every row.
+Absolute milliseconds appear second, for calibration only.
 
 ## Run
 
