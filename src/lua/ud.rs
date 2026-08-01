@@ -9,6 +9,7 @@ use std::ptr;
 use crate::array::Array;
 
 use super::ffi::*;
+// lua_gc / LUA_GC* from ffi
 
 pub const ARRAY_MT: &CStr = c"matlua.Array";
 
@@ -28,11 +29,26 @@ pub unsafe fn test_array(L: *mut lua_State, idx: c_int) -> *mut ArrayUd {
 }
 
 /// Push a new Array userdata (moves the array).
+///
+/// GC debt is stepped only when this array **uniquely owns** its `f64` buffer
+/// (new allocation / deep copy). Shared buffers (`reshape`) do not re-account
+/// the full payload. Step size is capped so mid-size and large-n pushes scale.
 pub unsafe fn push_array(L: *mut lua_State, array: Array) {
     unsafe {
+        let account = if array.buffer_strong_count() == 1 {
+            array.len().saturating_mul(8)
+        } else {
+            0
+        };
         let p = lua_newuserdatauv(L, std::mem::size_of::<ArrayUd>(), 0) as *mut ArrayUd;
         ptr::write(p, ArrayUd { array });
         luaL_setmetatable(L, ARRAY_MT.as_ptr());
+        // Skip tiny results; cap step so very large matrices do not pause ~O(nbytes)
+        // on every face return (still prompts collection of dead userdata).
+        if account >= 64 * 1024 {
+            let step_kb = ((account / 1024) as c_int).min(256);
+            let _ = lua_gc(L, LUA_GCSTEP, step_kb);
+        }
     }
 }
 

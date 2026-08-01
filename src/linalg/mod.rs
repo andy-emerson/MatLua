@@ -62,9 +62,54 @@ fn matmul_result(
 /// Transpose a rank-1 or rank-2 array.
 ///
 /// Rank-1 inputs become shape `(1, n)` row matrices (rank 2).
+/// Rank-2 uses a blocked out-of-place transpose into a pooled buffer (O(mn),
+/// cache-friendly for large n — not faer pack-out).
 pub fn transpose(a: &Array) -> Result<Array> {
-    let m = array_as_mat_ref(a)?;
-    matref_to_array(m.transpose(), false)
+    match a.rank() {
+        1 => {
+            // Column (n,) → row matrix (1, n).
+            let n = a.len();
+            let mut data = crate::array::pool_take_uninit(n);
+            data.copy_from_slice(a.as_slice());
+            Ok(Array::from_parts(Shape::matrix(1, n)?, data))
+        }
+        2 => {
+            let rows = a.dims()[0];
+            let cols = a.dims()[1];
+            let src = a.as_slice();
+            let mut data = crate::array::pool_take_uninit(rows.saturating_mul(cols));
+            blocked_transpose(src, rows, cols, &mut data);
+            Ok(Array::from_parts(Shape::matrix(cols, rows)?, data))
+        }
+        r => Err(Error::shape(format!(
+            "transpose expects rank 1 or 2, got rank {r}"
+        ))),
+    }
+}
+
+/// Cache-blocked out-of-place transpose: `dst` is `cols × rows` row-major.
+/// Block size chosen for L1; still O(rows*cols) and better for large matrices.
+fn blocked_transpose(src: &[f64], rows: usize, cols: usize, dst: &mut [f64]) {
+    debug_assert_eq!(src.len(), rows.saturating_mul(cols));
+    debug_assert_eq!(dst.len(), rows.saturating_mul(cols));
+    const BS: usize = 32;
+    let mut i0 = 0;
+    while i0 < rows {
+        let i1 = (i0 + BS).min(rows);
+        let mut j0 = 0;
+        while j0 < cols {
+            let j1 = (j0 + BS).min(cols);
+            for i in i0..i1 {
+                let src_row = i * cols;
+                for j in j0..j1 {
+                    // dst is cols×rows: index (j, i) → j * rows + i
+                    dst[j * rows + i] = src[src_row + j];
+                }
+            }
+            j0 = j1;
+        }
+        i0 = i1;
+    }
 }
 
 /// Matrix product `a @ b` (math notation).
@@ -202,7 +247,7 @@ pub fn svd(a: &Array) -> Result<(Array, Array, Array)> {
 /// Frobenius norm of a rank-1 or rank-2 array.
 pub fn norm(a: &Array) -> Result<f64> {
     let _ = array_as_matrix_dims(a)?;
-    Ok(kernels::dot_slice(a.as_slice(), a.as_slice()).sqrt())
+    Ok(kernels::sum_sq_slice(a.as_slice()).sqrt())
 }
 
 /// Identity matrix of order `n`.

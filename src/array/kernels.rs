@@ -180,24 +180,133 @@ pub(crate) fn sum_slice(a: &[f64]) -> f64 {
     s
 }
 
+/// Sum of squares (for Frobenius norm).
 #[inline]
-pub(crate) fn min_slice(a: &[f64]) -> Option<f64> {
-    let (&first, rest) = a.split_first()?;
-    let mut m = first;
-    for &x in rest {
-        m = m.min(x);
+pub(crate) fn sum_sq_slice(a: &[f64]) -> f64 {
+    let mut s0 = 0.0;
+    let mut s1 = 0.0;
+    let mut s2 = 0.0;
+    let mut s3 = 0.0;
+    let mut chunks = a.chunks_exact(4);
+    for c in chunks.by_ref() {
+        s0 += c[0] * c[0];
+        s1 += c[1] * c[1];
+        s2 += c[2] * c[2];
+        s3 += c[3] * c[3];
     }
-    Some(m)
+    let mut s = s0 + s1 + s2 + s3;
+    for &x in chunks.remainder() {
+        s += x * x;
+    }
+    s
 }
 
+/// Minimum over a dense slice.
+///
+/// Cache-blocked reduction (same structure as [`max_slice`]): O(n) with
+/// L1-friendly tiles so large n does not thrash on a single accumulator chain.
+#[inline]
+pub(crate) fn min_slice(a: &[f64]) -> Option<f64> {
+    if a.is_empty() {
+        return None;
+    }
+    const BLOCK: usize = 512;
+    let mut global = f64::INFINITY;
+    for block in a.chunks(BLOCK) {
+        let mut m0 = f64::INFINITY;
+        let mut m1 = f64::INFINITY;
+        let mut m2 = f64::INFINITY;
+        let mut m3 = f64::INFINITY;
+        let mut chunks = block.chunks_exact(4);
+        for c in chunks.by_ref() {
+            if c[0] < m0 {
+                m0 = c[0];
+            }
+            if c[1] < m1 {
+                m1 = c[1];
+            }
+            if c[2] < m2 {
+                m2 = c[2];
+            }
+            if c[3] < m3 {
+                m3 = c[3];
+            }
+        }
+        let mut m = m0;
+        if m1 < m {
+            m = m1;
+        }
+        if m2 < m {
+            m = m2;
+        }
+        if m3 < m {
+            m = m3;
+        }
+        for &x in chunks.remainder() {
+            if x < m {
+                m = x;
+            }
+        }
+        if m < global {
+            global = m;
+        }
+    }
+    Some(global)
+}
+
+/// Maximum over a dense slice.
+///
+/// Cache-blocked reduction: maxima within L1-friendly blocks, then max of
+/// block maxima. Still O(n); blocking helps large n (better cache use), not a
+/// small-n-only trick.
 #[inline]
 pub(crate) fn max_slice(a: &[f64]) -> Option<f64> {
-    let (&first, rest) = a.split_first()?;
-    let mut m = first;
-    for &x in rest {
-        m = m.max(x);
+    if a.is_empty() {
+        return None;
     }
-    Some(m)
+    // ~4 KiB of f64s — stays friendly to L1 while giving the inner loop room.
+    const BLOCK: usize = 512;
+    let mut global = f64::NEG_INFINITY;
+    for block in a.chunks(BLOCK) {
+        let mut m0 = f64::NEG_INFINITY;
+        let mut m1 = f64::NEG_INFINITY;
+        let mut m2 = f64::NEG_INFINITY;
+        let mut m3 = f64::NEG_INFINITY;
+        let mut chunks = block.chunks_exact(4);
+        for c in chunks.by_ref() {
+            if c[0] > m0 {
+                m0 = c[0];
+            }
+            if c[1] > m1 {
+                m1 = c[1];
+            }
+            if c[2] > m2 {
+                m2 = c[2];
+            }
+            if c[3] > m3 {
+                m3 = c[3];
+            }
+        }
+        let mut m = m0;
+        if m1 > m {
+            m = m1;
+        }
+        if m2 > m {
+            m = m2;
+        }
+        if m3 > m {
+            m = m3;
+        }
+        for &x in chunks.remainder() {
+            if x > m {
+                m = x;
+            }
+        }
+        if m > global {
+            global = m;
+        }
+    }
+    Some(global)
 }
 
 #[cfg(test)]

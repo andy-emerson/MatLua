@@ -51,6 +51,19 @@ pub unsafe fn register(L: *mut lua_State) {
     }
 }
 
+/// Enable Lua 5.4 **generational** GC on a host state (recommended for MatLua).
+///
+/// Large arrays live on the Rust heap; without GC tuning, dead userdata pile up
+/// and face-path allocators pay major GC / free storms. Safe to call more than once.
+///
+/// # Safety
+/// `L` must be a valid Lua 5.4 state.
+pub unsafe fn enable_generational_gc(L: *mut lua_State) {
+    unsafe {
+        let _ = lua_gc(L, LUA_GCGEN, 0, 0);
+    }
+}
+
 /// C entry point compatible with `luaL_requiref` / `luaopen_*` conventions.
 ///
 /// # Safety
@@ -74,6 +87,8 @@ impl Lua {
         }
         unsafe {
             luaL_openlibs(state);
+            // Generational GC: better for allocate-heavy numeric scripts (PUC lua.c default for interactive).
+            let _ = lua_gc(state, LUA_GCGEN, 0, 0);
             register(state);
         }
         Ok(Self { state })
