@@ -1,8 +1,8 @@
 //! Dense linear algebra on rank-1/2 [`Array`] values (faer-backed).
 //!
-//! Public functions take and return MatLua [`Array`]s. Values are copied into
-//! faer [`Mat`](faer::Mat) (column-major) and results back to row-major owned
-//! arrays. Zero-copy faer views may come later without changing this API.
+//! Public functions take and return MatLua [`Array`]s. Inputs are viewed as
+//! faer [`MatRef`](faer::MatRef) over contiguous row-major storage (zero-copy).
+//! Results are copied into owned row-major arrays.
 //!
 //! # Rank conventions
 //!
@@ -22,14 +22,14 @@ use faer::Side;
 use crate::array::Array;
 use crate::error::{Error, Result};
 
-use convert::{array_as_matrix_dims, array_to_mat, mat_to_array, matref_to_array};
+use convert::{array_as_mat_ref, array_as_matrix_dims, mat_to_array, matref_to_array};
 
 /// Transpose a rank-1 or rank-2 array.
 ///
 /// Rank-1 inputs become shape `(1, n)` row matrices (rank 2).
 pub fn transpose(a: &Array) -> Result<Array> {
-    let m = array_to_mat(a)?;
-    mat_to_array(&m.transpose().to_owned(), false)
+    let m = array_as_mat_ref(a)?;
+    matref_to_array(m.transpose(), false)
 }
 
 /// Matrix product `a @ b` (math notation).
@@ -44,9 +44,9 @@ pub fn matmul(a: &Array, b: &Array) -> Result<Array> {
             "matmul shape mismatch: ({am}, {an}) vs ({bm}, {bn})"
         )));
     }
-    let am_mat = array_to_mat(a)?;
-    let bm_mat = array_to_mat(b)?;
-    let c = &am_mat * &bm_mat;
+    let am_mat = array_as_mat_ref(a)?;
+    let bm_mat = array_as_mat_ref(b)?;
+    let c = am_mat * bm_mat;
     // Collapse n×1 (or 1×1 from row@col) to rank-1 when an operand was a vector.
     let prefer_vec = b.rank() == 1 || (a.rank() == 1 && bn == 1);
     mat_to_array(&c, prefer_vec)
@@ -90,10 +90,10 @@ pub fn solve(a: &Array, b: &Array) -> Result<Array> {
             "solve rhs rows {bn} != matrix order {n}"
         )));
     }
-    let am = array_to_mat(a)?;
-    let bm = array_to_mat(b)?;
+    let am = array_as_mat_ref(a)?;
+    let bm = array_as_mat_ref(b)?;
     let lu = am.partial_piv_lu();
-    let x = lu.solve(&bm);
+    let x = lu.solve(bm);
     mat_to_array(&x, b.rank() == 1 && bk == 1)
 }
 
@@ -108,11 +108,11 @@ pub fn cholesky(a: &Array) -> Result<Array> {
     if a.rank() != 2 {
         return Err(Error::shape("cholesky requires a rank-2 matrix"));
     }
-    let am = array_to_mat(a)?;
+    let am = array_as_mat_ref(a)?;
     let llt = am
         .llt(Side::Lower)
         .map_err(|e| Error::linalg(format!("cholesky failed: {e:?}")))?;
-    matref_to_array(llt.L())
+    matref_to_array(llt.L(), false)
 }
 
 /// Thin QR decomposition: returns `(Q, R)` with `A = Q R`.
@@ -122,7 +122,7 @@ pub fn qr(a: &Array) -> Result<(Array, Array)> {
     if a.rank() != 2 {
         return Err(Error::shape("qr requires a rank-2 matrix"));
     }
-    let am = array_to_mat(a)?;
+    let am = array_as_mat_ref(a)?;
     let qr = am.qr();
     let q = qr.compute_thin_Q();
     let r = qr.thin_R().to_owned();
@@ -135,12 +135,12 @@ pub fn svd(a: &Array) -> Result<(Array, Array, Array)> {
     if a.rank() != 2 {
         return Err(Error::shape("svd requires a rank-2 matrix"));
     }
-    let am = array_to_mat(a)?;
+    let am = array_as_mat_ref(a)?;
     let svd = am
         .thin_svd()
         .map_err(|e| Error::linalg(format!("svd failed: {e:?}")))?;
-    let u = matref_to_array(svd.U())?;
-    let v = matref_to_array(svd.V())?;
+    let u = matref_to_array(svd.U(), false)?;
+    let v = matref_to_array(svd.V(), false)?;
     let s_diag = svd.S();
     let n = s_diag.dim();
     let col = s_diag.column_vector();

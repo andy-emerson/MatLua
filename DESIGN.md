@@ -194,7 +194,9 @@ Explicitly not defaults: nalgebra, system BLAS/LAPACK, mlua, ndarray as data mod
 ### 3.12 Layout
 
 - Owned `Array` storage is contiguous **row-major (C-order)** `f64`.
-- faer `Mat` is column-major; the crate currently copies at the boundary. Zero-copy faer views may come later without changing the public Array model.
+- Dense LA **inputs** are faer `MatRef` views over that storage when the buffer is contiguous row-major (**zero-copy in**). The public `Array` model stays row-major; we do not re-store matrices column-major.
+- Dense LA **results** are **owned** row-major `Array`s (**copy out**), unless an explicit out-parameter / view API is added later.
+- faer’s native owned `Mat` remains column-major internally where faer allocates; that is an implementation detail of kernels, not MatLua’s user-facing layout.
 
 ---
 
@@ -254,12 +256,12 @@ Lua 5.4 scripts
 Hand-rolled Lua C API  ← feature = "lua"
       ▼
 Rust crate (MatLua)
-      ├── Array / views / Arrow Float64 interchange
-      └── faer  (copy in/out of column-major Mat today)
+      ├── Array / views / Arrow Float64 interchange (row-major f64)
+      └── faer  (MatRef over Array for inputs; owned Array results)
 ```
 
 Arrow owns the **data model**. faer owns **dense linear algebra**. They meet at
-explicit boundaries (views, gathers, copies).
+explicit boundaries (zero-copy views in, owned results out).
 
 **Modules (crate):**
 
@@ -274,6 +276,8 @@ explicit boundaries (views, gathers, copies).
 
 ## 7. Milestones
 
+### 7.1 Product surface (M0–M3 / v0.1)
+
 | Milestone | Intent | Status |
 |-----------|--------|--------|
 | **M0** | Crate skeleton, module layout, deps, error type | **Done** |
@@ -282,9 +286,39 @@ explicit boundaries (views, gathers, copies).
 | **M3** | Lua face: register into host state; bulk ops; 1-based API | **Done** |
 | **v0.1** | M1–M3 good enough that a host embeds MatLua and scripts do ordinary dense work without leaving for NumPy | **Candidate** (not version-tagged; crate still `0.0.1`) |
 
-Natural follow-ups after a v0.1 cut (not blocking the candidate bar): richer
-indexing/views from Lua, broadcasting policy, host buffer handles in Lua,
-docs.rs polish, more reductions.
+Feature follow-ups (not the performance program): richer indexing/views from Lua,
+broadcasting policy, host buffer handles in Lua, docs.rs polish, more reductions.
+
+### 7.2 Performance program (P0–P5)
+
+Goal: make the **current** surface competitive with NumPy for ordinary dense
+`f64` desk work, then **prove** it. Optimize structural costs first; formal
+NumPy comparison is the **gate**, not the driver of every change.
+
+#### Performance contract (“on par”)
+
+| Axis | Contract |
+|------|----------|
+| **Scope** | Dense `f64`, rank 1–2: elementwise bulk ops, `matmul`, `solve`, and the shipped decompositions |
+| **Sizes** | Report at least \(n \in \{64, 256, 1024\}\) (matmul may also use 2048) |
+| **Faces** | Measure **Rust core** and **Lua face** separately |
+| **Bar** | On medium+ matmul/solve (release, same shapes), MatLua wall time within about **1–2×** of NumPy on the same machine |
+| **Method** | During P1–P4: internal release timings only. **P5**: fixed harness + NumPy scripts; publish a table |
+| **Non-goals** | Beat MKL/OpenBLAS on every micro-op; research kernels; replace faer with system BLAS; full broadcasting engine |
+
+Tiny ops and pure Lua call overhead may lag NumPy; document residual gaps at P5
+with reasons rather than expanding scope indefinitely.
+
+| Milestone | Intent | Status |
+|-----------|--------|--------|
+| **P0** | Write this contract and the P1–P5 wall into durable docs | **Done** |
+| **P1** | Kill the LA tax: zero-copy faer `MatRef` over row-major `Array` inputs; copy out only for owned results | **Done** |
+| **P2** | Elementwise / reductions: contiguous bulk loops, less alloc, SIMD-friendly code | **Planned** |
+| **P3** | Hot-path hygiene: fewer intermediate arrays, cheap constructors, avoid needless clones | **Planned** |
+| **P4** | Lua face cost: reduce per-op overhead on bulk paths | **Planned** |
+| **P5** | Comparison harness vs NumPy; meet §7.2 bar or document gaps | **Planned** |
+
+Order: **P0 → P1 → P2 → P3 → P4 → P5**.
 
 ---
 
@@ -325,13 +359,16 @@ Human is always **author** of record; agent may be **co-author** when allowed fo
 
 ## 10. Status
 
-**Implementation through M3 is on `main`.** Closed rulings above match the code:
+**Implementation through M3 is on `main`.** Closed rulings above match the product surface:
 
 - Rust: row-major owned `f64` n-D arrays, views, elementwise, Arrow interchange, faer LA.
 - Lua (`lua` feature): 1-based userdata, constructors, metamethods, linalg module functions.
 
+**Performance program:** **P0** (contract) and **P1** (zero-copy LA inputs)
+are done. **P2–P5** remain toward NumPy-competitive dense desk work (§7.2).
+
 Package version is **`0.0.1`**. Call **v0.1** when the human tags a release;
-until then treat the tree as a **v0.1 candidate** per §7.
+until then treat the tree as a **v0.1 candidate** per §7.1.
 
 Update this document when rulings or the frozen public face change — not on
 every internal refactor.
