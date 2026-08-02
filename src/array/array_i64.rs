@@ -11,19 +11,33 @@ use super::shape::{broadcast_shapes, Shape};
 use super::Array;
 use crate::error::{Error, Result};
 
-/// Cache-blocked out-of-place transpose: `dst` is `cols × rows` row-major.
+/// Cache-blocked transpose with **destination-row streaming** (same idea as f64).
 fn blocked_transpose_i64(src: &[i64], rows: usize, cols: usize, dst: &mut [i64]) {
-    const BS: usize = 16;
-    for i0 in (0..rows).step_by(BS) {
-        for j0 in (0..cols).step_by(BS) {
+    const BS: usize = 32;
+    let mut j0 = 0;
+    while j0 < cols {
+        let j1 = (j0 + BS).min(cols);
+        let mut i0 = 0;
+        while i0 < rows {
             let i1 = (i0 + BS).min(rows);
-            let j1 = (j0 + BS).min(cols);
-            for i in i0..i1 {
-                for j in j0..j1 {
-                    dst[j * rows + i] = src[i * cols + j];
+            for j in j0..j1 {
+                let dst_row = j * rows;
+                let mut i = i0;
+                while i + 4 <= i1 {
+                    dst[dst_row + i] = src[i * cols + j];
+                    dst[dst_row + i + 1] = src[(i + 1) * cols + j];
+                    dst[dst_row + i + 2] = src[(i + 2) * cols + j];
+                    dst[dst_row + i + 3] = src[(i + 3) * cols + j];
+                    i += 4;
+                }
+                while i < i1 {
+                    dst[dst_row + i] = src[i * cols + j];
+                    i += 1;
                 }
             }
+            i0 = i1;
         }
+        j0 = j1;
     }
 }
 
@@ -1480,17 +1494,81 @@ impl ArrayI64 {
     }
 
     /// Membership test: for each element of `self`, 1 if in `test_elements` (rank-1), else 0.
+    ///
+    /// Algorithm (research-backed hybrid, NumPy-style tradeoffs):
+    /// - empty test → all zeros;
+    /// - **bitset** when values fit a dense non-negative (or shifted) range ≤ ~2M slots
+    ///   (sequential bit tests beat hash for dense integer domains);
+    /// - else **sort unique + binary_search** (better than `HashSet` for large `self`
+    ///   and modest test sets: no hash, sorted cache line, one sort of |test|);
+    /// - tiny test sets (|test| ≤ 8): linear scan after sort of test only.
+    ///
+    /// Output is still `i64` 0/1 (no bool dtype); NumPy writes 1-byte bools — ratios
+    /// need not hit 1.0× purely from bandwidth.
     pub fn isin(&self, test_elements: &ArrayI64) -> Result<ArrayI64> {
         if test_elements.rank() != 1 {
             return Err(Error::Shape("isin test_elements must be rank-1".into()));
         }
-        // HashSet for average O(1) membership; BTree is slower for large test sets.
-        let set: std::collections::HashSet<i64> =
-            test_elements.as_slice().iter().copied().collect();
-        let mut data = pool::take_uninit(self.len());
+        let te = test_elements.as_slice();
         let src = self.as_slice();
-        for i in 0..src.len() {
-            data[i] = if set.contains(&src[i]) { 1 } else { 0 };
+        let mut data = pool::take_uninit(self.len());
+        if te.is_empty() {
+            data.fill(0);
+            return Ok(Self::from_parts(self.shape.clone(), data));
+        }
+        if src.is_empty() {
+            return Ok(Self::from_parts(self.shape.clone(), data));
+        }
+
+        let mut tmin = te[0];
+        let mut tmax = te[0];
+        for &x in &te[1..] {
+            tmin = tmin.min(x);
+            tmax = tmax.max(x);
+        }
+        // Bitset if span is modest (2M bits ≈ 256 KiB).
+        const BITSET_MAX: i128 = 2_000_000;
+        let span = (tmax as i128) - (tmin as i128) + 1;
+        if span > 0 && span <= BITSET_MAX {
+            let nbits = span as usize;
+            let mut bits = vec![0u64; (nbits + 63) / 64];
+            for &x in te {
+                let i = (x as i128 - tmin as i128) as usize;
+                bits[i / 64] |= 1u64 << (i % 64);
+            }
+            for i in 0..src.len() {
+                let x = src[i];
+                if (x as i128) < tmin as i128 || (x as i128) > tmax as i128 {
+                    data[i] = 0;
+                } else {
+                    let j = (x as i128 - tmin as i128) as usize;
+                    data[i] = if (bits[j / 64] >> (j % 64)) & 1 == 1 {
+                        1
+                    } else {
+                        0
+                    };
+                }
+            }
+            return Ok(Self::from_parts(self.shape.clone(), data));
+        }
+
+        // Sort unique test keys; binary search (or linear if tiny).
+        let mut keys = te.to_vec();
+        keys.sort_unstable();
+        keys.dedup();
+        if keys.len() <= 8 {
+            for i in 0..src.len() {
+                let x = src[i];
+                data[i] = if keys.iter().any(|&k| k == x) { 1 } else { 0 };
+            }
+        } else {
+            for i in 0..src.len() {
+                data[i] = if keys.binary_search(&src[i]).is_ok() {
+                    1
+                } else {
+                    0
+                };
+            }
         }
         Ok(Self::from_parts(self.shape.clone(), data))
     }

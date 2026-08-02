@@ -526,7 +526,14 @@ M7.b delivered **host entry** (`push_view_f64`/`i64`, `push_array_copy_*`) as re
 - **`std::simd` / portable_simd** still unstable on stable Rust toolchains we target.
 - **Decision for now:** stay on packed GEBP + 4×4 scalar micro-kernel + Rayon; optional AVX-512 path later if CI has it. Elementwise i64 benefits more from autovec on add than hand SIMD.
 
-**Still open:** AVX-512DQ mul path (gated); Strassen trial at n≥512; f64 min/solve residuals.
+**Wave 5 (landed):** measurement + face + isin
+- **isin:** hybrid bitset (dense span) / sort-unique + binary_search (was HashSet); R/N ~6× → ≲1× on fair sizes.
+- **Lua i64:** `push_array_i64` GC-debt step (parity with f64) — primary fix for Lua/Rust ≫ 1 on elem_*/transpose.
+- **i64 transpose:** destination-row streaming tiles (match f64).
+- **Harness:** expanded pure-i64 surface (ctors, sub/div/max, …); **Tables E–F** for i64→f64 promote-out.
+- **#21** still deferred.
+
+**Still open:** AVX-512DQ mul (gated); Strassen n≥512; f64 min/solve residuals; more Lua face if ratios reappear.
 
 #### What remains explicitly *not* TallyDB-owned
 

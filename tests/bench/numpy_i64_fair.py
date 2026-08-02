@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""NumPy int64 twin for tests/bench/i64_surface.rs generation rules."""
+"""NumPy int64 twin for expanded i64_surface."""
 
 from __future__ import annotations
 
@@ -26,7 +26,6 @@ def time_ms(iters: int, warm: int, fn) -> float:
 
 
 def dense(n: int) -> np.ndarray:
-    # Match Rust: x = 1; then x = x.wrapping_add(17) per element (row-major).
     data = np.empty(n * n, dtype=np.int64)
     x = 1
     for i in range(n * n):
@@ -35,8 +34,16 @@ def dense(n: int) -> np.ndarray:
     return data.reshape(n, n)
 
 
+def dense2(n: int) -> np.ndarray:
+    data = np.empty(n * n, dtype=np.int64)
+    x = 2
+    for i in range(n * n):
+        data[i] = np.int64(x if x < 2**63 else x - 2**64)
+        x = (x + 13) & ((1 << 64) - 1)
+    return data.reshape(n, n)
+
+
 def vec_n(n: int) -> np.ndarray:
-    # (i as i64).wrapping_mul(3).wrapping_add(1)
     i = np.arange(n, dtype=np.int64)
     return i * np.int64(3) + np.int64(1)
 
@@ -64,24 +71,35 @@ def main() -> None:
     ap.add_argument("--sizes", default="64,256,1024")
     args = ap.parse_args()
     sizes = [int(s) for s in args.sizes.split(",") if s.strip()]
-
     print("face\top\tn\tms")
     for n in sizes:
         a = dense(n)
-        b = dense(n)
+        b = dense2(n)
         v = vec_n(n)
         it, wrm = budget(n, False)
         ith, wrmh = budget(n, True)
-
+        emit("zeros", n, time_ms(it, wrm, lambda: np.zeros((n, n), dtype=np.int64)))
+        emit("ones", n, time_ms(it, wrm, lambda: np.ones((n, n), dtype=np.int64)))
+        emit("full", n, time_ms(it, wrm, lambda: np.full((n, n), 7, dtype=np.int64)))
+        emit("eye", n, time_ms(it, wrm, lambda: np.eye(n, dtype=np.int64)))
+        emit("arange", n, time_ms(it, wrm, lambda: np.arange(0, n, dtype=np.int64)))
+        emit("copy", n, time_ms(it, wrm, lambda: a.copy()))
+        if n % 2 == 0:
+            emit("reshape", n, time_ms(it, wrm, lambda: a.reshape(n // 2, n * 2)))
+        t = a.copy()
+        emit("fill", n, time_ms(it, wrm, lambda: t.fill(3)))
         emit("elem_add", n, time_ms(it, wrm, lambda: a + b))
+        emit("elem_sub", n, time_ms(it, wrm, lambda: a - b))
         emit("elem_mul", n, time_ms(it, wrm, lambda: a * b))
+        # avoid div0: b never 0 with dense2 starting at 2
+        emit("elem_div", n, time_ms(it, wrm, lambda: a // b))
         emit("sum", n, time_ms(it, wrm, lambda: int(a.sum())))
         emit("min", n, time_ms(it, wrm, lambda: int(a.min())))
+        emit("max", n, time_ms(it, wrm, lambda: int(a.max())))
         emit("transpose", n, time_ms(it, wrm, lambda: a.T.copy()))
         emit("dot", n, time_ms(it, wrm, lambda: int(v @ v)))
         emit("matmul", n, time_ms(ith, wrmh, lambda: a @ b))
-        u = v  # length n
-        emit("unique", n, time_ms(it, wrm, lambda: np.unique(u)))
+        emit("unique", n, time_ms(it, wrm, lambda: np.unique(v)))
         emit("isin", n, time_ms(it, wrm, lambda: np.isin(a, v)))
 
 

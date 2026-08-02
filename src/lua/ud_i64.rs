@@ -28,11 +28,24 @@ pub unsafe fn test_array_i64(L: *mut lua_State, idx: c_int) -> *mut ArrayI64Ud {
 }
 
 /// Push a new ArrayI64 userdata (moves the array).
+///
+/// Same GC-debt policy as [`super::ud::push_array`]: step when uniquely owning
+/// a non-trivial buffer so dead userdata do not pile up on allocate-heavy faces
+/// (`A+B`, transpose, …) — major driver of Lua/Rust ≫ 1 on elementwise.
 pub unsafe fn push_array_i64(L: *mut lua_State, array: ArrayI64) {
     unsafe {
+        let account = if array.buffer_strong_count() == 1 {
+            array.len().saturating_mul(8)
+        } else {
+            0
+        };
         let p = lua_newuserdatauv(L, std::mem::size_of::<ArrayI64Ud>(), 0) as *mut ArrayI64Ud;
         ptr::write(p, ArrayI64Ud { array });
         luaL_setmetatable(L, ARRAY_I64_MT.as_ptr());
+        if account >= 64 * 1024 {
+            let step_kb = ((account / 1024) as c_int).min(256);
+            let _ = lua_gc(L, LUA_GCSTEP, step_kb);
+        }
     }
 }
 

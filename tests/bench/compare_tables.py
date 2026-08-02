@@ -116,17 +116,45 @@ def build_i64(data: dict) -> tuple[str, str]:
     return abs_t, rel_t
 
 
+
+def build_promote(data: dict) -> tuple[str, str]:
+    """i64→f64 promote-out three-way (numpy / rust / lua)."""
+    keys = sorted({(op, n) for (face, op, n) in data if face in ("numpy", "rust", "lua")})
+    abs_rows = []
+    rel_rows = []
+    for op, n in keys:
+        np_ms = data.get(("numpy", op, n))
+        ru_ms = data.get(("rust", op, n))
+        lu_ms = data.get(("lua", op, n))
+        abs_rows.append([op, str(n), fmt_ms(np_ms), fmt_ms(ru_ms), fmt_ms(lu_ms)])
+        r_np = (ru_ms / np_ms) if np_ms and ru_ms and np_ms > 0 else None
+        l_np = (lu_ms / np_ms) if np_ms and lu_ms and np_ms > 0 else None
+        l_r = (lu_ms / ru_ms) if ru_ms and lu_ms and ru_ms > 0 else None
+        rel_rows.append([op, str(n), "1.00x", fmt_x(r_np), fmt_x(l_np), fmt_x(l_r)])
+    abs_t = md_table(
+        ["op", "n", "NumPy (ms)", "MatLua Rust (ms)", "MatLua Lua (ms)"],
+        abs_rows,
+    )
+    rel_t = md_table(
+        ["op", "n", "NumPy", "Rust/NumPy", "Lua/NumPy", "Lua/Rust"],
+        rel_rows,
+    )
+    return abs_t, rel_t
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--f64", type=Path, default=Path("tests/bench/last_f64.tsv"))
     ap.add_argument("--i64", type=Path, default=Path("tests/bench/last_i64.tsv"))
+    ap.add_argument("--promote", type=Path, default=Path("tests/bench/last_i64_promote.tsv"))
     ap.add_argument("--write-readme", type=Path, default=None)
     args = ap.parse_args()
 
     f64 = load_tsv(args.f64)
     i64 = load_tsv(args.i64)
+    promo = load_tsv(args.promote)
     f_abs, f_rel = build_f64(f64)
     i_abs, i_rel = build_i64(i64)
+    p_abs, p_rel = build_promote(promo)
 
     body = f"""### Table A — f64 absolute wall time (ms)
 
@@ -153,6 +181,19 @@ NumPy integer matmul is not OpenBLAS DGEMM; useful reference, not an MKL peer.
 **NumPy is always 1.00x**. Same columns as Table B (Rust/NumPy, Lua/NumPy, Lua/Rust).
 
 {i_rel}
+
+### Table E — i64→f64 promote-out absolute wall time (ms)
+
+Integer inputs, floating / LA outputs (mean, std, median, quantile, norm, solve, cholesky, qr).
+NumPy uses int64 stats where natural, else float64 after cast for LA.
+
+{p_abs}
+
+### Table F — i64→f64 promote-out vs NumPy (relative)
+
+**NumPy is always 1.00x**.
+
+{p_rel}
 """
     print(body)
     if args.write_readme:
