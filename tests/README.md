@@ -36,6 +36,7 @@ Open performance work is tracked as GitHub Issues (one function per issue). Clos
 | `min` | [#13](https://github.com/andy-emerson/MatLua/issues/13) |
 | `max` | [#14](https://github.com/andy-emerson/MatLua/issues/14) |
 | `norm` | [#15](https://github.com/andy-emerson/MatLua/issues/15) |
+| in-place `out=` (API) | [#21](https://github.com/andy-emerson/MatLua/issues/21) |
 
 ## Latest fair results (snapshot)
 
@@ -146,3 +147,37 @@ python3 tests/bench/compare_compose.py --sizes 64,256,1024
 
 **Read:** Short path wins the full `normal_eq` chain at all sizes (Lua ≈ Rust). Large pure `XᵀX` still ~2.3× NumPy (OpenBLAS residual). Adaptive `AᵀA`: view-transpose GEMM for `k<512`, blocked materialize+GEMM for larger `k`. `solve` writes the RHS in place (no faer-owned Mat pack-out).
 
+
+## Path-length switches (audit follow-up)
+
+After individual kernel tuning, alternate algorithms with shorter dependency graphs
+were measured (release, 2026-08-02). **Only switches that win (or never lose) were kept.**
+
+```bash
+cargo test --release --test path_length -- --run
+```
+
+| Option | Decision | Evidence (short/long, lower better) |
+|--------|----------|-------------------------------------|
+| `cov` gram \(XX^	op\) via [`matmul_bt`] (no owned transpose) | **Switched** | `8×256` gram **0.46×**; `32×1024` / `64×1024` **~1.00×** (adaptive materialize at large *k*) |
+| Fused `mean_axis` / `var_axis` | **Not switched** | Rust wall ~**1.00×** long path; no clear win → keep `sum_axis` then scale / two-pass mean |
+| Fused broadcast matrix×row / matrix×col for `add`/`sub`/`mul`/`div` | **Switched** | `elem_add` row/col **0.07–0.17×** vs materialize-then-add at 256 and 1024 |
+| `corrcoef` | **Inherits `cov`** | No separate DE; benefits from short gram only |
+
+### Snapshot (`path_length --run`)
+
+| op | size | long (ms) | short (ms) | short/long |
+|----|------|----------:|-----------:|-----------:|
+| gram_xxT | 8×256 | 0.0026 | 0.0012 | 0.46× |
+| gram_xxT | 32×1024 | 0.0659 | 0.0660 | 1.00× |
+| gram_xxT | 64×1024 | 0.2697 | 0.2713 | 1.01× |
+| mean_axis1 | 256×256 | 0.0379 | 0.0376 | 0.99× (not switched) |
+| var_axis1 | 256×256 | 0.0834 | 0.0847 | 1.02× (not switched) |
+| elem_add_row | 256×256 | 0.1949 | 0.0169 | **0.09×** |
+| elem_add_col | 256×256 | 0.2133 | 0.0154 | **0.07×** |
+| elem_add_row | 1024×1024 | 3.698 | 0.612 | **0.17×** |
+| elem_add_col | 1024×1024 | 3.939 | 0.615 | **0.16×** |
+
+The main fair three-way table above is **unchanged** for same-shape bulk ops (those paths were already leaves). Broadcast and `cov` are not rows in that table yet.
+
+Open: [#21](https://github.com/andy-emerson/MatLua/issues/21) in-place `out=` (API; not an algorithm switch).

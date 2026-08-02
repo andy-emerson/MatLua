@@ -126,3 +126,16 @@ fn lstsq_eigh_pinv_smoke() {
     let p = linalg::pinv(&x).unwrap();
     assert_eq!(p.dims(), &[2, 4]);
 }
+
+#[test]
+fn m6_tier2_smoke() {
+    let m = Array::from_shape_slice(vec![2, 3], &[1., 2., 3., 4., 5., 6.]).unwrap();
+    assert_eq!(m.sum_axis(0).unwrap().as_slice(), &[5., 7., 9.]);
+    let x = Array::from_shape_slice(vec![2, 3], &[1., 2., 3., 2., 4., 6.]).unwrap();
+    let c = Array::cov(&x, 1).unwrap();
+    assert!((c.get(&[0, 1]).unwrap() - 2.0).abs() < 1e-9);
+    let v = Array::from_shape_slice(vec![3], &[3., 1., 2.]).unwrap();
+    let idx = v.argsort(false).unwrap();
+    assert_eq!(v.take(&idx).unwrap().as_slice(), &[1., 2., 3.]);
+    assert_eq!(Array::diag(&v).unwrap().dims(), &[3, 3]);
+}

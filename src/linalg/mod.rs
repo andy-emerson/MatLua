@@ -2,8 +2,9 @@
 //!
 //! Public functions take and return MatLua [`Array`]s. Inputs are viewed as
 //! faer [`MatRef`](faer::MatRef) over contiguous row-major storage (zero-copy).
-//! [`matmul`] / [`matmul_at`] write GEMM into row-major buffers; [`solve`]
-//! factors then solves **in place** on a row-major RHS copy (no faer-owned Mat out).
+//! [`matmul`] / [`matmul_at`] / [`matmul_bt`] write GEMM into row-major buffers;
+//! [`solve`] factors then solves **in place** on a row-major RHS copy (no
+//! faer-owned Mat out).
 //!
 //! # Rank conventions
 //!
@@ -195,6 +196,56 @@ pub fn matmul_at(a: &Array, b: &Array) -> Result<Array> {
         );
     }
     matmul_result(data, an, bn, prefer_vec)
+}
+
+/// Matrix product `a @ bᵀ`.
+///
+/// Shapes: `(m, k) × (n, k)ᵀ → (m, n)` i.e. both `a` and `b` have `k` columns.
+/// Rank-1 `a` is a row-as-column style via the usual rank-1 column view; prefer
+/// rank-2 operands for clarity.
+///
+/// Numerically matches [`matmul`]`(a, `[`transpose`]`(b))`. Uses a transposed
+/// [`MatRef`](faer::MatRef) on `b` (no owned `bᵀ`) except for large same-buffer
+/// gram `a aᵀ` with observation count `k ≥ 512`, which materializes `aᵀ` once
+/// then dest-GEMMs (mirror of [`matmul_at`]'s large-`k` path).
+///
+/// Primary consumer: [`Array::cov`] (row-variable gram \(XX^\top\)).
+pub fn matmul_bt(a: &Array, b: &Array) -> Result<Array> {
+    let (am, an) = array_as_matrix_dims(a)?;
+    let (bm, bn) = array_as_matrix_dims(b)?;
+    if an != bn {
+        return Err(Error::shape(format!(
+            "matmul_bt shape mismatch: a is ({am}, {an}), b is ({bm}, {bn}); need equal column counts for a @ bᵀ"
+        )));
+    }
+    // AAᵀ (same buffer): large k (shared dimension) → materialize Aᵀ then A @ Aᵀ.
+    if std::ptr::eq(a.as_slice().as_ptr(), b.as_slice().as_ptr())
+        && a.len() == b.len()
+        && a.rank() == 2
+        && b.rank() == 2
+        && am == bm
+        && an >= 512
+    {
+        let at = transpose(a)?;
+        return matmul(a, &at);
+    }
+    let lhs = array_as_mat_ref(a)?;
+    let rhs = array_as_mat_ref(b)?.transpose();
+    let prefer_vec = a.rank() == 1;
+    let n_out = am.saturating_mul(bm);
+    let mut data = crate::array::pool_take_uninit(n_out);
+    if n_out > 0 {
+        let mut dst = MatMut::from_row_major_slice_mut(&mut data, am, bm);
+        faer_matmul(
+            &mut dst,
+            Accum::Replace,
+            lhs,
+            rhs,
+            1.0,
+            matmul_par(am, bm, an),
+        );
+    }
+    matmul_result(data, am, bm, prefer_vec)
 }
 
 /// Normal equations: `solve(XᵀX, Xᵀy)` via [`matmul_at`].
@@ -485,6 +536,24 @@ mod tests {
         let long_v = matmul(&transpose(&a).unwrap(), &v).unwrap();
         assert_eq!(short_v.rank(), 1);
         for (x, y) in short_v.as_slice().iter().zip(long_v.as_slice()) {
+            assert!((x - y).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn matmul_bt_matches_matmul_transpose() {
+        let a = Array::from_shape_slice(vec![2, 3], &[1., 2., 3., 4., 5., 6.]).unwrap();
+        let b = Array::from_shape_slice(vec![2, 3], &[0.5, 1.5, 2.5, 3.5, 4.5, 5.5]).unwrap();
+        let short = matmul_bt(&a, &b).unwrap();
+        let long = matmul(&a, &transpose(&b).unwrap()).unwrap();
+        assert_eq!(short.dims(), long.dims());
+        for (x, y) in short.as_slice().iter().zip(long.as_slice()) {
+            assert!((x - y).abs() < 1e-12, "{x} vs {y}");
+        }
+        // Same-buffer AAᵀ
+        let g = matmul_bt(&a, &a).unwrap();
+        let g_long = matmul(&a, &transpose(&a).unwrap()).unwrap();
+        for (x, y) in g.as_slice().iter().zip(g_long.as_slice()) {
             assert!((x - y).abs() < 1e-12);
         }
     }

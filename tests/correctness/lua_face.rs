@@ -181,3 +181,34 @@ assert(b:shape()[1] == 2 and b:get(2,2) == 2)
     )
     .unwrap();
 }
+
+#[test]
+fn m6_tier2_face() {
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local m = ml.array({{1,2,3},{4,5,6}})
+local s = m:sum(0)
+assert(s:get(1) == 5 and s:get(3) == 9)
+local x = ml.array({{1,2,3},{2,4,6}})
+local c = ml.cov(x)
+assert(math.abs(c:get(1,2) - 2) < 1e-9)
+local r = ml.corrcoef(x)
+assert(math.abs(r:get(1,2) - 1) < 1e-9)
+local v = ml.array({3,1,4,2})
+local idx = v:argsort()
+assert(idx:get(1) == 2) -- 1-based
+local t = v:take(idx)
+assert(t:get(1) == 1 and t:get(4) == 4)
+local d = ml.diag(ml.array({1,2}))
+assert(d:shape()[1] == 2 and d:get(1,1) == 1 and d:get(1,2) == 0)
+assert(d:trace() == 3)
+local o = ml.outer(ml.array({1,2}), ml.array({3,4}))
+assert(o:get(2,2) == 8)
+local mask = ml.array({{0,1},{0,0}})
+assert(mask:any() and not mask:all())
+"#,
+    )
+    .unwrap();
+}

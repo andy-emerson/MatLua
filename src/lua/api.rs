@@ -284,12 +284,30 @@ pub unsafe extern "C" fn a_set(L: *mut lua_State) -> c_int {
 
 pub unsafe extern "C" fn a_sum(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
+    if unsafe { lua_gettop(L) } >= 2 && unsafe { lua_isnumber(L, 2) } {
+        let axis = unsafe { luaL_checkinteger(L, 2) };
+        if axis < 0 {
+            return super::ud::lua_error_msg(L, "axis must be >= 0 (NumPy-shaped)");
+        }
+        let out = lua_try!(L, a.array.sum_axis(axis as usize));
+        unsafe { push_array(L, out) };
+        return 1;
+    }
     unsafe { lua_pushnumber(L, a.array.sum()) };
     1
 }
 
 pub unsafe extern "C" fn a_mean(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
+    if unsafe { lua_gettop(L) } >= 2 && unsafe { lua_isnumber(L, 2) } {
+        let axis = unsafe { luaL_checkinteger(L, 2) };
+        if axis < 0 {
+            return super::ud::lua_error_msg(L, "axis must be >= 0 (NumPy-shaped)");
+        }
+        let out = lua_try!(L, a.array.mean_axis(axis as usize));
+        unsafe { push_array(L, out) };
+        return 1;
+    }
     let m = lua_try!(L, a.array.mean());
     unsafe { lua_pushnumber(L, m) };
     1
@@ -297,6 +315,15 @@ pub unsafe extern "C" fn a_mean(L: *mut lua_State) -> c_int {
 
 pub unsafe extern "C" fn a_min(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
+    if unsafe { lua_gettop(L) } >= 2 && unsafe { lua_isnumber(L, 2) } {
+        let axis = unsafe { luaL_checkinteger(L, 2) };
+        if axis < 0 {
+            return super::ud::lua_error_msg(L, "axis must be >= 0 (NumPy-shaped)");
+        }
+        let out = lua_try!(L, a.array.min_axis(axis as usize));
+        unsafe { push_array(L, out) };
+        return 1;
+    }
     let m = lua_try!(L, a.array.min());
     unsafe { lua_pushnumber(L, m) };
     1
@@ -304,6 +331,15 @@ pub unsafe extern "C" fn a_min(L: *mut lua_State) -> c_int {
 
 pub unsafe extern "C" fn a_max(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
+    if unsafe { lua_gettop(L) } >= 2 && unsafe { lua_isnumber(L, 2) } {
+        let axis = unsafe { luaL_checkinteger(L, 2) };
+        if axis < 0 {
+            return super::ud::lua_error_msg(L, "axis must be >= 0 (NumPy-shaped)");
+        }
+        let out = lua_try!(L, a.array.max_axis(axis as usize));
+        unsafe { push_array(L, out) };
+        return 1;
+    }
     let m = lua_try!(L, a.array.max());
     unsafe { lua_pushnumber(L, m) };
     1
@@ -507,6 +543,10 @@ pub unsafe extern "C" fn a_argmax(L: *mut lua_State) -> c_int {
 }
 pub unsafe extern "C" fn a_var(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
+    // a:var([axis], [ddof]) — if first optional is axis (integer) and rank-2 path requested
+    // Conventions: var() | var(ddof) | var(axis, ddof) when axis is integer 0/1 and second present
+    // Simpler: var() flat ddof0; var(ddof) flat; var(axis, ddof) when two ints — but ddof alone conflicts.
+    // Use: optional ddof only for flat; for axis use var_axis via :var_axis(axis, ddof) method.
     let ddof = if unsafe { lua_gettop(L) } >= 2 {
         let d = unsafe { luaL_checkinteger(L, 2) };
         if d < 0 {
@@ -711,8 +751,7 @@ pub unsafe extern "C" fn a_slice(L: *mut lua_State) -> c_int {
         return super::ud::lua_error_msg(L, "slice start must be >= 1");
     }
     let s0 = (start as usize) - 1;
-    let e0 = stop as usize; // stop is exclusive 1-based ⇒ same as exclusive 0-based end index after -0: 
-    // 1-based half-open [start, stop): convert to 0-based [start-1, stop-1)
+    // 1-based half-open [start, stop) → 0-based [start-1, stop-1)
     if stop < start {
         return super::ud::lua_error_msg(L, "slice stop must be >= start");
     }
@@ -765,12 +804,156 @@ pub unsafe extern "C" fn l_broadcast_to(L: *mut lua_State) -> c_int {
     1
 }
 
+
+pub unsafe extern "C" fn a_var_axis(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let axis = unsafe { luaL_checkinteger(L, 2) };
+    if axis < 0 {
+        return super::ud::lua_error_msg(L, "axis must be >= 0 (NumPy-shaped)");
+    }
+    let ddof = if unsafe { lua_gettop(L) } >= 3 {
+        let d = unsafe { luaL_checkinteger(L, 3) };
+        if d < 0 {
+            return super::ud::lua_error_msg(L, "var_axis ddof must be >= 0");
+        }
+        d as usize
+    } else {
+        0
+    };
+    let out = lua_try!(L, a.array.var_axis(axis as usize, ddof));
+    unsafe { push_array(L, out) };
+    1
+}
+pub unsafe extern "C" fn a_std_axis(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let axis = unsafe { luaL_checkinteger(L, 2) };
+    if axis < 0 {
+        return super::ud::lua_error_msg(L, "axis must be >= 0 (NumPy-shaped)");
+    }
+    let ddof = if unsafe { lua_gettop(L) } >= 3 {
+        let d = unsafe { luaL_checkinteger(L, 3) };
+        if d < 0 {
+            return super::ud::lua_error_msg(L, "std_axis ddof must be >= 0");
+        }
+        d as usize
+    } else {
+        0
+    };
+    let out = lua_try!(L, a.array.std_axis(axis as usize, ddof));
+    unsafe { push_array(L, out) };
+    1
+}
+pub unsafe extern "C" fn a_any(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    if unsafe { lua_gettop(L) } >= 2 && unsafe { lua_isnumber(L, 2) } {
+        let axis = unsafe { luaL_checkinteger(L, 2) };
+        if axis < 0 {
+            return super::ud::lua_error_msg(L, "axis must be >= 0 (NumPy-shaped)");
+        }
+        let out = lua_try!(L, a.array.any_axis(axis as usize));
+        unsafe { push_array(L, out) };
+        return 1;
+    }
+    unsafe { lua_pushboolean(L, a.array.any() as i32) };
+    1
+}
+pub unsafe extern "C" fn a_all(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    if unsafe { lua_gettop(L) } >= 2 && unsafe { lua_isnumber(L, 2) } {
+        let axis = unsafe { luaL_checkinteger(L, 2) };
+        if axis < 0 {
+            return super::ud::lua_error_msg(L, "axis must be >= 0 (NumPy-shaped)");
+        }
+        let out = lua_try!(L, a.array.all_axis(axis as usize));
+        unsafe { push_array(L, out) };
+        return 1;
+    }
+    unsafe { lua_pushboolean(L, a.array.all() as i32) };
+    1
+}
+pub unsafe extern "C" fn a_argsort(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let desc = if unsafe { lua_gettop(L) } >= 2 {
+        unsafe { lua_toboolean(L, 2) != 0 }
+    } else {
+        false
+    };
+    let idx = lua_try!(L, a.array.argsort(desc));
+    // Convert 0-based f64 indices to 1-based for Lua face
+    let mut data = idx.as_slice().to_vec();
+    for x in &mut data {
+        *x += 1.0;
+    }
+    let out = Array::from_shape_vec(vec![data.len()], data).unwrap();
+    unsafe { push_array(L, out) };
+    1
+}
+pub unsafe extern "C" fn a_take(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let idx_ud = unsafe { &*check_array(L, 2) };
+    // Lua indices are 1-based: convert to 0-based for Rust take
+    let mut zero = idx_ud.array.as_slice().to_vec();
+    for x in &mut zero {
+        *x -= 1.0;
+    }
+    let z = Array::from_shape_vec(vec![zero.len()], zero).unwrap();
+    let out = lua_try!(L, a.array.take(&z));
+    unsafe { push_array(L, out) };
+    1
+}
+pub unsafe extern "C" fn a_diagonal(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let d = lua_try!(L, a.array.diagonal());
+    unsafe { push_array(L, d) };
+    1
+}
+pub unsafe extern "C" fn a_trace(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let t = lua_try!(L, a.array.trace());
+    unsafe { lua_pushnumber(L, t) };
+    1
+}
+pub unsafe extern "C" fn l_diag(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let d = lua_try!(L, Array::diag(&a.array));
+    unsafe { push_array(L, d) };
+    1
+}
+pub unsafe extern "C" fn l_outer(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let b = unsafe { &*check_array(L, 2) };
+    let o = lua_try!(L, Array::outer(&a.array, &b.array));
+    unsafe { push_array(L, o) };
+    1
+}
+pub unsafe extern "C" fn l_cov(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let ddof = if unsafe { lua_gettop(L) } >= 2 {
+        let d = unsafe { luaL_checkinteger(L, 2) };
+        if d < 0 {
+            return super::ud::lua_error_msg(L, "cov ddof must be >= 0");
+        }
+        d as usize
+    } else {
+        1
+    };
+    let c = lua_try!(L, Array::cov(&a.array, ddof));
+    unsafe { push_array(L, c) };
+    1
+}
+pub unsafe extern "C" fn l_corrcoef(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let c = lua_try!(L, Array::corrcoef(&a.array));
+    unsafe { push_array(L, c) };
+    1
+}
+
 /// Module open: push library table.
 pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
     unsafe {
         if luaL_newmetatable(L, ARRAY_MT.as_ptr()) != 0 {
             lua_newtable(L);
-            let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 43] = [
+            let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 51] = [
                 (c"shape", a_shape),
                 (c"rank", a_rank),
                 (c"get", a_get),
@@ -814,6 +997,14 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
                 (c"rows", a_rows),
                 (c"row", a_row),
                 (c"col", a_col),
+                (c"var_axis", a_var_axis),
+                (c"std_axis", a_std_axis),
+                (c"any", a_any),
+                (c"all", a_all),
+                (c"argsort", a_argsort),
+                (c"take", a_take),
+                (c"diagonal", a_diagonal),
+                (c"trace", a_trace),
             ];
             for (name, f) in methods {
                 lua_pushcfunction(L, Some(f));
@@ -841,7 +1032,7 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
         lua_pop(L, 1);
 
         lua_newtable(L);
-        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 23] = [
+        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 27] = [
             (c"zeros", l_zeros),
             (c"ones", l_ones),
             (c"full", l_full),
@@ -852,6 +1043,10 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
             (c"concatenate", l_concatenate),
             (c"stack", l_stack),
             (c"broadcast_to", l_broadcast_to),
+            (c"diag", l_diag),
+            (c"outer", l_outer),
+            (c"cov", l_cov),
+            (c"corrcoef", l_corrcoef),
             (c"matmul", l_matmul),
             (c"matmul_at", l_matmul_at),
             (c"normal_eq", l_normal_eq),

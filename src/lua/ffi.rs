@@ -70,6 +70,7 @@ unsafe extern "C" {
     pub fn lua_tointegerx(L: *mut lua_State, idx: c_int, isnum: *mut c_int) -> lua_Integer;
     pub fn lua_tolstring(L: *mut lua_State, idx: c_int, len: *mut usize) -> *const c_char;
     pub fn lua_touserdata(L: *mut lua_State, idx: c_int) -> *mut c_void;
+    pub fn lua_toboolean(L: *mut lua_State, idx: c_int) -> c_int;
 
     pub fn lua_getfield(L: *mut lua_State, idx: c_int, k: *const c_char) -> c_int;
     pub fn lua_setfield(L: *mut lua_State, idx: c_int, k: *const c_char);

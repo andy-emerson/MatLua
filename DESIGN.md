@@ -139,7 +139,7 @@ Matrix×vector `matmul` returns **rank-1**. `solve` preserves the rank style of 
 
 1. **Owned arrays** — MatLua-managed results own their buffer.
 2. **Borrowed views (Rust)** — `ArrayView` / `ArrayViewMut` over contiguous host or parent memory; **caller guarantees lifetime**.
-3. **LA results** — always **owned** row-major arrays. **Inputs** are zero-copy faer `MatRef` when contiguous. **Outputs:** `matmul` / `matmul_at` / blocked `transpose` write dest buffers; `solve` factors then solves in place on a row-major RHS copy. **Factorizations** (`cholesky`, `qr`, `svd`) still pack out from faer views into owned buffers.
+3. **LA results** — always **owned** row-major arrays. **Inputs** are zero-copy faer `MatRef` when contiguous. **Outputs:** `matmul` / `matmul_at` / `matmul_bt` / blocked `transpose` write dest buffers; `solve` factors then solves in place on a row-major RHS copy. **Factorizations** (`cholesky`, `qr`, `svd`) still pack out from faer views into owned buffers.
 4. **Rule of thumb:** views share memory until the user **copies**; bulk math results are new arrays unless documented otherwise. `reshape` may share an owned buffer until a write (copy-on-write).
 
 Lua userdata today holds **owned** arrays. Host zero-copy *into* scripts remains a host/Rust-side concern until a view face is exposed to Lua.
@@ -222,7 +222,7 @@ still shared (`Arc::make_mut`). `Clone`, `to_owned_array`, and Lua `copy` are
 
 ### 3.14 Composed dense paths
 
-Prefer `matmul_at(A, B)` for `AᵀB` and `normal_eq(X, y)` for `solve(XᵀX, Xᵀy)`
+Prefer `matmul_at(A, B)` for `AᵀB`, `matmul_bt(A, B)` for `ABᵀ` (used by `cov`), and `normal_eq(X, y)` for `solve(XᵀX, Xᵀy)`
 over materializing `transpose` then `matmul`. Same numerics as the long
 composition. Large same-buffer `AᵀA` (`k ≥ 512`) may materialize `Aᵀ` once
 internally. Measurement: `tests/bench/compare_compose.py`.
@@ -234,6 +234,14 @@ internally. Measurement: `tests/bench/compare_compose.py`.
 - **Ufuncs:** IEEE **propagate** NaN. Skipping NaN uses explicit `nan*` reductions.
 - **Views:** rank-1 `slice`, rank-2 `rows`/`row` are zero-copy when contiguous; `col` **copies** (row-major). Lua face uses **1-based half-open** ranges for `slice`/`rows` (stop exclusive).
 
+### 3.16 Tier-2 quant helpers (M6)
+
+- **`cov` / `corrcoef`:** variables in **rows** (NumPy `rowvar=True`). `cov` default `ddof=1`.
+- **Axis:** reductions take **0-based axis** (NumPy-shaped) even on the Lua face; element indices remain 1-based.
+- **`argsort` / `take`:** Rust 0-based; Lua face converts to/from 1-based indices.
+- **`diag`:** vector→matrix or matrix→diagonal; `diagonal` / `trace` on matrices; `outer` for rank-1×rank-1.
+- **`any` / `all`:** nonzero non-NaN is true (same as `where` cond); optional axis → 0/1 mask.
+
 ---
 
 ## 4. Lua face (frozen names)
@@ -244,7 +252,7 @@ Names match the `lua` feature on `main`. Tutorial samples live in
 ### 4.1 Module functions
 
 `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`), `array`, `eye`, `where`,
-`matmul`, `matmul_at` (AᵀB; large same-buffer AᵀA may materialize Aᵀ once), `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd`
+`matmul`, `matmul_at` (AᵀB; large same-buffer AᵀA may materialize Aᵀ once), `matmul_bt` (ABᵀ; large AAᵀ same rule), `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd`
 
 ### 4.2 Array methods and metamethods
 
@@ -324,10 +332,12 @@ explicit boundaries (zero-copy views in, owned results out).
 | **M2** | Dense LA via faer: matmul, solve, decompositions | **Done** |
 | **M3** | Lua face: register into host state; bulk ops; 1-based API | **Done** |
 | **v0.1** | M1–M3 good enough that a host embeds MatLua and scripts do ordinary dense work without leaving for NumPy | **Candidate** (not version-tagged; crate still `0.0.1`) |
-| **M4a** | Job-A LA pack: `lstsq`, `eigh`, `pinv` (NumPy-shaped names; faer-backed; not aliases of `normal_eq`) | **In progress** |
-| **M5** | Tier-1 leave-late array ops: ufuncs, compares/masks, practical broadcast, views/slices, `std`/`var`/`argmin`/`argmax`, `cumsum`, `concatenate`/`stack`; NaN: IEEE propagate + named `nan*` where needed | **Planned** |
+| **M4a** | Job-A LA pack: `lstsq`, `eigh`, `pinv` | **Done** |
+| **M5** | Tier-1 leave-late array ops | **Done** |
+| **M6** | Tier-2 quant sugar: `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis reductions (rank-2), `any`/`all` | **Done** (this branch) |
+| **v0.1** tag | Explicit release cut | **Deferred** |
 
-Feature follow-ups beyond M5: axis reductions, `cov`/`corrcoef`, `argsort`, host `out=`, leaner Arrow, TallyDB cutover (other repo).
+Follow-ups: host `out=`, leaner Arrow, longjmp-safe Lua errors, TallyDB cutover (other repo).
 
 ### 7.2 Performance program (P0–P6)
 

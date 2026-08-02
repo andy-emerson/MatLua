@@ -10,6 +10,42 @@ use super::shape::{broadcast_shapes, Shape};
 use super::view::{ArrayView, ArrayViewMut};
 use crate::error::{Error, Result};
 
+/// Binary op for fused same-shape / row / col broadcast kernels.
+#[derive(Clone, Copy)]
+enum BroadcastOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+impl BroadcastOp {
+    fn apply_same(self, a: &[f64], b: &[f64], out: &mut [f64]) {
+        match self {
+            Self::Add => kernels::add_slices(a, b, out),
+            Self::Sub => kernels::sub_slices(a, b, out),
+            Self::Mul => kernels::mul_slices(a, b, out),
+            Self::Div => kernels::div_slices(a, b, out),
+        }
+    }
+    fn apply_row(self, m: usize, n: usize, a: &[f64], row: &[f64], out: &mut [f64]) {
+        match self {
+            Self::Add => kernels::add_matrix_row(m, n, a, row, out),
+            Self::Sub => kernels::sub_matrix_row(m, n, a, row, out),
+            Self::Mul => kernels::mul_matrix_row(m, n, a, row, out),
+            Self::Div => kernels::div_matrix_row(m, n, a, row, out),
+        }
+    }
+    fn apply_col(self, m: usize, n: usize, a: &[f64], col: &[f64], out: &mut [f64]) {
+        match self {
+            Self::Add => kernels::add_matrix_col(m, n, a, col, out),
+            Self::Sub => kernels::sub_matrix_col(m, n, a, col, out),
+            Self::Mul => kernels::mul_matrix_col(m, n, a, col, out),
+            Self::Div => kernels::div_matrix_col(m, n, a, col, out),
+        }
+    }
+}
+
 /// Owned dense n-D array of `f64` values in row-major order.
 ///
 /// Primary Rust-side array type. Storage is a contiguous buffer compatible
@@ -354,6 +390,34 @@ impl Array {
         Ok(Self::from_parts(out_shape, data))
     }
 
+    /// Binary elementwise with fused matrix×row / matrix×col broadcast (no tile alloc).
+    fn owned_binary_broadcast(&self, other: &Array, op: BroadcastOp) -> Result<Array> {
+        if self.shape.same_as(other.shape()) {
+            let n = self.len();
+            let mut data = pool::take_uninit(n);
+            op.apply_same(self.as_slice(), other.as_slice(), &mut data);
+            return Ok(Self::from_parts(self.shape.clone(), data));
+        }
+        if self.rank() == 2 {
+            let (m, n) = (self.dims()[0], self.dims()[1]);
+            // row: (n,) or (1, n) — NumPy last-axis broadcast
+            if (other.rank() == 1 && other.len() == n)
+                || (other.rank() == 2 && other.dims() == [1, n])
+            {
+                let mut data = pool::take_uninit(m * n);
+                op.apply_row(m, n, self.as_slice(), other.as_slice(), &mut data);
+                return Ok(Self::from_parts(self.shape.clone(), data));
+            }
+            // col: (m, 1) only
+            if other.rank() == 2 && other.dims() == [m, 1] {
+                let mut data = pool::take_uninit(m * n);
+                op.apply_col(m, n, self.as_slice(), other.as_slice(), &mut data);
+                return Ok(Self::from_parts(self.shape.clone(), data));
+            }
+        }
+        self.owned_from_kernel(other, |a, b, o| op.apply_same(a, b, o))
+    }
+
     fn owned_unary_kernel<F>(&self, f: F) -> Array
     where
         F: FnOnce(&[f64], &mut [f64]),
@@ -366,22 +430,22 @@ impl Array {
 
     /// Element-wise addition.
     pub fn add(&self, other: &Array) -> Result<Array> {
-        self.owned_from_kernel(other, kernels::add_slices)
+        self.owned_binary_broadcast(other, BroadcastOp::Add)
     }
 
     /// Element-wise subtraction.
     pub fn sub(&self, other: &Array) -> Result<Array> {
-        self.owned_from_kernel(other, kernels::sub_slices)
+        self.owned_binary_broadcast(other, BroadcastOp::Sub)
     }
 
     /// Element-wise multiplication.
     pub fn mul(&self, other: &Array) -> Result<Array> {
-        self.owned_from_kernel(other, kernels::mul_slices)
+        self.owned_binary_broadcast(other, BroadcastOp::Mul)
     }
 
     /// Element-wise division.
     pub fn div(&self, other: &Array) -> Result<Array> {
-        self.owned_from_kernel(other, kernels::div_slices)
+        self.owned_binary_broadcast(other, BroadcastOp::Div)
     }
 
     /// Element-wise negation.
@@ -847,6 +911,350 @@ impl Array {
         }
         Ok(Self::from_parts(Shape::from_len(m), data))
     }
+
+    // --- M6: axis reductions, quant helpers, argsort/take, any/all ---
+
+    fn rank2_dims(&self) -> Result<(usize, usize)> {
+        if self.rank() != 2 {
+            return Err(Error::Shape("axis reductions require rank-2".into()));
+        }
+        Ok((self.dims()[0], self.dims()[1]))
+    }
+
+    /// Sum along `axis` (0 or 1) for rank-2; result is rank-1.
+    pub fn sum_axis(&self, axis: usize) -> Result<Array> {
+        let (m, n) = self.rank2_dims()?;
+        match axis {
+            0 => {
+                let mut out = pool::take_uninit(n);
+                kernels::axis0_sum(m, n, self.as_slice(), &mut out);
+                Ok(Self::from_parts(Shape::from_len(n), out))
+            }
+            1 => {
+                let mut out = pool::take_uninit(m);
+                kernels::axis1_sum(m, n, self.as_slice(), &mut out);
+                Ok(Self::from_parts(Shape::from_len(m), out))
+            }
+            _ => Err(Error::Shape(format!("axis {axis} out of range for rank-2"))),
+        }
+    }
+
+    /// Mean along `axis` for rank-2.
+    pub fn mean_axis(&self, axis: usize) -> Result<Array> {
+        let (m, n) = self.rank2_dims()?;
+        let s = self.sum_axis(axis)?;
+        let denom = match axis {
+            0 => m as f64,
+            1 => n as f64,
+            _ => unreachable!(),
+        };
+        if denom == 0.0 {
+            return Err(Error::Shape("mean_axis of empty dimension".into()));
+        }
+        Ok(s.mul_scalar(1.0 / denom))
+    }
+
+    /// Min along `axis` for rank-2.
+    pub fn min_axis(&self, axis: usize) -> Result<Array> {
+        let (m, n) = self.rank2_dims()?;
+        if m == 0 || n == 0 {
+            return Err(Error::Shape("min_axis of empty dimension".into()));
+        }
+        match axis {
+            0 => {
+                let mut out = pool::take_uninit(n);
+                kernels::axis0_min(m, n, self.as_slice(), &mut out);
+                Ok(Self::from_parts(Shape::from_len(n), out))
+            }
+            1 => {
+                let mut out = pool::take_uninit(m);
+                kernels::axis1_min(m, n, self.as_slice(), &mut out);
+                Ok(Self::from_parts(Shape::from_len(m), out))
+            }
+            _ => Err(Error::Shape(format!("axis {axis} out of range for rank-2"))),
+        }
+    }
+
+    /// Max along `axis` for rank-2.
+    pub fn max_axis(&self, axis: usize) -> Result<Array> {
+        let (m, n) = self.rank2_dims()?;
+        if m == 0 || n == 0 {
+            return Err(Error::Shape("max_axis of empty dimension".into()));
+        }
+        match axis {
+            0 => {
+                let mut out = pool::take_uninit(n);
+                kernels::axis0_max(m, n, self.as_slice(), &mut out);
+                Ok(Self::from_parts(Shape::from_len(n), out))
+            }
+            1 => {
+                let mut out = pool::take_uninit(m);
+                kernels::axis1_max(m, n, self.as_slice(), &mut out);
+                Ok(Self::from_parts(Shape::from_len(m), out))
+            }
+            _ => Err(Error::Shape(format!("axis {axis} out of range for rank-2"))),
+        }
+    }
+
+    /// Variance along `axis` for rank-2 (`ddof` as NumPy).
+    pub fn var_axis(&self, axis: usize, ddof: usize) -> Result<Array> {
+        let (m, n) = self.rank2_dims()?;
+        let mean = self.mean_axis(axis)?;
+        let count = match axis {
+            0 => m,
+            1 => n,
+            _ => return Err(Error::Shape(format!("axis {axis} out of range for rank-2"))),
+        };
+        if count <= ddof {
+            return Err(Error::Shape(format!(
+                "var_axis requires size > ddof (size={count}, ddof={ddof})"
+            )));
+        }
+        let mut out = pool::take_uninit(mean.len());
+        let src = self.as_slice();
+        let mu = mean.as_slice();
+        match axis {
+            0 => {
+                for j in 0..n {
+                    let mut ss = 0.0;
+                    for i in 0..m {
+                        let d = src[i * n + j] - mu[j];
+                        ss += d * d;
+                    }
+                    out[j] = ss / (count - ddof) as f64;
+                }
+            }
+            1 => {
+                for i in 0..m {
+                    let mut ss = 0.0;
+                    for j in 0..n {
+                        let d = src[i * n + j] - mu[i];
+                        ss += d * d;
+                    }
+                    out[i] = ss / (count - ddof) as f64;
+                }
+            }
+            _ => unreachable!(),
+        }
+        Ok(Self::from_parts(Shape::from_len(mean.len()), out))
+    }
+
+    /// Std-dev along `axis` for rank-2.
+    pub fn std_axis(&self, axis: usize, ddof: usize) -> Result<Array> {
+        let v = self.var_axis(axis, ddof)?;
+        Ok(v.sqrt())
+    }
+
+    /// True if any element is nonzero and non-NaN.
+    pub fn any(&self) -> bool {
+        kernels::any_slice(self.as_slice())
+    }
+
+    /// True if every element is nonzero and non-NaN (empty → false).
+    pub fn all(&self) -> bool {
+        kernels::all_slice(self.as_slice())
+    }
+
+    /// `any` along axis for rank-2 → 0/1 rank-1 mask.
+    pub fn any_axis(&self, axis: usize) -> Result<Array> {
+        let (m, n) = self.rank2_dims()?;
+        match axis {
+            0 => {
+                let mut out = pool::take_uninit(n);
+                kernels::axis0_any(m, n, self.as_slice(), &mut out);
+                Ok(Self::from_parts(Shape::from_len(n), out))
+            }
+            1 => {
+                let mut out = pool::take_uninit(m);
+                kernels::axis1_any(m, n, self.as_slice(), &mut out);
+                Ok(Self::from_parts(Shape::from_len(m), out))
+            }
+            _ => Err(Error::Shape(format!("axis {axis} out of range for rank-2"))),
+        }
+    }
+
+    /// `all` along axis for rank-2 → 0/1 rank-1 mask.
+    pub fn all_axis(&self, axis: usize) -> Result<Array> {
+        let (m, n) = self.rank2_dims()?;
+        match axis {
+            0 => {
+                let mut out = pool::take_uninit(n);
+                kernels::axis0_all(m, n, self.as_slice(), &mut out);
+                Ok(Self::from_parts(Shape::from_len(n), out))
+            }
+            1 => {
+                let mut out = pool::take_uninit(m);
+                kernels::axis1_all(m, n, self.as_slice(), &mut out);
+                Ok(Self::from_parts(Shape::from_len(m), out))
+            }
+            _ => Err(Error::Shape(format!("axis {axis} out of range for rank-2"))),
+        }
+    }
+
+    /// Argsort: 0-based indices as rank-1 `f64` (dense storage has no integer dtype).
+    pub fn argsort(&self, descending: bool) -> Result<Array> {
+        if self.rank() != 1 {
+            return Err(Error::Shape("argsort requires rank-1".into()));
+        }
+        let n = self.len();
+        let mut idx = vec![0usize; n];
+        kernels::argsort_indices(self.as_slice(), descending, &mut idx);
+        let mut data = pool::take_uninit(n);
+        for i in 0..n {
+            data[i] = idx[i] as f64;
+        }
+        Ok(Self::from_parts(Shape::from_len(n), data))
+    }
+
+    /// Gather elements of a rank-1 array by 0-based indices (values truncated toward zero).
+    pub fn take(&self, indices: &Array) -> Result<Array> {
+        if self.rank() != 1 {
+            return Err(Error::Shape("take requires rank-1 source".into()));
+        }
+        if indices.rank() != 1 {
+            return Err(Error::Shape("take indices must be rank-1".into()));
+        }
+        let src = self.as_slice();
+        let n = src.len();
+        let mut data = pool::take_uninit(indices.len());
+        for (k, &raw) in indices.as_slice().iter().enumerate() {
+            if raw.is_nan() || raw < 0.0 {
+                return Err(Error::Index(format!("take index {raw} invalid")));
+            }
+            let i = raw as usize;
+            if i >= n {
+                return Err(Error::Index(format!("take index {i} out of range for len {n}")));
+            }
+            data[k] = src[i];
+        }
+        Ok(Self::from_parts(Shape::from_len(indices.len()), data))
+    }
+
+    /// Outer product of two rank-1 arrays → rank-2 `(len(a), len(b))`.
+    pub fn outer(a: &Array, b: &Array) -> Result<Array> {
+        if a.rank() != 1 || b.rank() != 1 {
+            return Err(Error::Shape("outer requires two rank-1 arrays".into()));
+        }
+        let m = a.len();
+        let n = b.len();
+        let mut data = pool::take_uninit(m * n);
+        let av = a.as_slice();
+        let bv = b.as_slice();
+        for i in 0..m {
+            for j in 0..n {
+                data[i * n + j] = av[i] * bv[j];
+            }
+        }
+        Ok(Self::from_parts(Shape::matrix(m, n)?, data))
+    }
+
+    /// NumPy-style `diag`: vector → square matrix, or matrix → main diagonal vector.
+    pub fn diag(a: &Array) -> Result<Array> {
+        match a.rank() {
+            1 => {
+                let n = a.len();
+                let mut data = pool::take_uninit(n * n);
+                data.fill(0.0);
+                let v = a.as_slice();
+                for i in 0..n {
+                    data[i * n + i] = v[i];
+                }
+                Ok(Self::from_parts(Shape::matrix(n, n)?, data))
+            }
+            2 => {
+                let (m, n) = (a.dims()[0], a.dims()[1]);
+                let k = m.min(n);
+                let mut data = pool::take_uninit(k);
+                let src = a.as_slice();
+                for i in 0..k {
+                    data[i] = src[i * n + i];
+                }
+                Ok(Self::from_parts(Shape::from_len(k), data))
+            }
+            _ => Err(Error::Shape("diag requires rank 1 or 2".into())),
+        }
+    }
+
+    /// Main diagonal of a rank-2 matrix (alias of vector side of [`diag`]).
+    pub fn diagonal(&self) -> Result<Array> {
+        if self.rank() != 2 {
+            return Err(Error::Shape("diagonal requires rank-2".into()));
+        }
+        Self::diag(self)
+    }
+
+    /// Trace of a square rank-2 matrix.
+    pub fn trace(&self) -> Result<f64> {
+        if self.rank() != 2 {
+            return Err(Error::Shape("trace requires rank-2".into()));
+        }
+        let (m, n) = (self.dims()[0], self.dims()[1]);
+        if m != n {
+            return Err(Error::Shape("trace requires a square matrix".into()));
+        }
+        let src = self.as_slice();
+        let mut s = 0.0;
+        for i in 0..m {
+            s += src[i * n + i];
+        }
+        Ok(s)
+    }
+
+    /// Sample/population covariance. **Variables in rows** (NumPy `rowvar=True`).
+    ///
+    /// `a` is `d × n` (d variables, n observations). Returns `d × d`. Default use `ddof=1`.
+    ///
+    /// Path: center rows → [`crate::linalg::matmul_bt`](`X`, `X`) for \(XX^	op\)
+    /// (no owned transpose) → scale.
+    pub fn cov(a: &Array, ddof: usize) -> Result<Array> {
+        let x = match a.rank() {
+            1 => a.reshape(vec![1, a.len()])?,
+            2 => a.clone(),
+            _ => return Err(Error::Shape("cov requires rank 1 or 2".into())),
+        };
+        let (d, n) = (x.dims()[0], x.dims()[1]);
+        if n <= ddof {
+            return Err(Error::Shape(format!(
+                "cov requires n > ddof (n={n}, ddof={ddof})"
+            )));
+        }
+        let means = x.mean_axis(1)?; // length d
+        let mu = means.as_slice();
+        let src = x.as_slice();
+        let mut centered = pool::take_uninit(d * n);
+        for i in 0..d {
+            for j in 0..n {
+                centered[i * n + j] = src[i * n + j] - mu[i];
+            }
+        }
+        let xc = Self::from_parts(Shape::matrix(d, n)?, centered);
+        // Short path: X @ Xᵀ without owned transpose
+        let g = crate::linalg::matmul_bt(&xc, &xc)?;
+        let scale = 1.0 / (n - ddof) as f64;
+        Ok(g.mul_scalar(scale))
+    }
+
+    /// Pearson correlation matrix; variables in rows (NumPy `rowvar=True`).
+    pub fn corrcoef(a: &Array) -> Result<Array> {
+        let c = Self::cov(a, 1)?;
+        let d = c.dims()[0];
+        let src = c.as_slice();
+        let mut out = pool::take_uninit(d * d);
+        for i in 0..d {
+            let sii = src[i * d + i].sqrt();
+            for j in 0..d {
+                let sjj = src[j * d + j].sqrt();
+                let denom = sii * sjj;
+                out[i * d + j] = if denom == 0.0 || denom.is_nan() {
+                    f64::NAN
+                } else {
+                    src[i * d + j] / denom
+                };
+            }
+        }
+        Ok(Self::from_parts(Shape::matrix(d, d)?, out))
+    }
+
 }
 
 impl PartialEq for Array {
@@ -875,6 +1283,44 @@ impl Drop for Array {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn m6_axis_and_cov() {
+        let m = Array::from_shape_slice(vec![2, 3], &[1., 2., 3., 4., 5., 6.]).unwrap();
+        assert_eq!(m.sum_axis(0).unwrap().as_slice(), &[5., 7., 9.]);
+        assert_eq!(m.sum_axis(1).unwrap().as_slice(), &[6., 15.]);
+        assert_eq!(m.min_axis(1).unwrap().as_slice(), &[1., 4.]);
+        let mask = Array::from_shape_slice(vec![2, 2], &[0., 1., 0., 0.]).unwrap();
+        assert!(mask.any());
+        assert!(!mask.all());
+        assert_eq!(mask.any_axis(0).unwrap().as_slice(), &[0., 1.]);
+
+        let v = Array::from_shape_slice(vec![4], &[3., 1., 4., 2.]).unwrap();
+        let idx = v.argsort(false).unwrap();
+        assert_eq!(idx.as_slice(), &[1., 3., 0., 2.]);
+        let taken = v.take(&idx).unwrap();
+        assert_eq!(taken.as_slice(), &[1., 2., 3., 4.]);
+
+        let a = Array::from_shape_slice(vec![2], &[1., 2.]).unwrap();
+        let b = Array::from_shape_slice(vec![3], &[3., 4., 5.]).unwrap();
+        let o = Array::outer(&a, &b).unwrap();
+        assert_eq!(o.dims(), &[2, 3]);
+        assert_eq!(o.as_slice()[0], 3.0);
+        assert_eq!(Array::diag(&a).unwrap().dims(), &[2, 2]);
+        assert_eq!(o.diagonal().unwrap().as_slice()[0], 3.0);
+        assert!((Array::eye(2).unwrap().trace().unwrap() - 2.0).abs() < 1e-12);
+
+        // cov: 2 vars, 3 obs
+        let x = Array::from_shape_slice(vec![2, 3], &[1., 2., 3., 2., 4., 6.]).unwrap();
+        let c = Array::cov(&x, 1).unwrap();
+        assert_eq!(c.dims(), &[2, 2]);
+        // var of [1,2,3] sample = 1, var of [2,4,6] = 4, cov = 2
+        assert!((c.get(&[0, 0]).unwrap() - 1.0).abs() < 1e-9);
+        assert!((c.get(&[1, 1]).unwrap() - 4.0).abs() < 1e-9);
+        assert!((c.get(&[0, 1]).unwrap() - 2.0).abs() < 1e-9);
+        let r = Array::corrcoef(&x).unwrap();
+        assert!((r.get(&[0, 1]).unwrap() - 1.0).abs() < 1e-9);
+    }
+
     #[test]
     fn broadcast_and_compare() {
         let m = Array::from_shape_slice(vec![2, 3], &[1., 2., 3., 4., 5., 6.]).unwrap();
