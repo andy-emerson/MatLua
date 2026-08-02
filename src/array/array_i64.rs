@@ -139,6 +139,7 @@ impl ArrayI64 {
         self.data.as_ref()
     }
     #[inline]
+    #[allow(dead_code)]
     pub(crate) fn buffer_strong_count(&self) -> usize {
         Arc::strong_count(&self.data)
     }
@@ -1085,11 +1086,7 @@ impl ArrayI64 {
 
     /// Compare to scalar → 0/1 mask.
     pub fn eq_scalar(&self, s: i64) -> ArrayI64 {
-        self.owned_unary(|a, o| {
-            for i in 0..a.len() {
-                o[i] = if a[i] == s { 1 } else { 0 };
-            }
-        })
+        self.owned_unary(|a, o| kernels::eq_scalar(a, s, o))
     }
     /// `ne_scalar`.
     pub fn ne_scalar(&self, s: i64) -> ArrayI64 {

@@ -209,7 +209,7 @@ fn m7_i64_matmul_and_dot() {
 #[test]
 fn m7_i64_views_and_finish() {
     use matlua::{ArrayI64, ArrayViewI64};
-    let mut buf = vec![1i64, 2, 3, 4];
+    let buf = vec![1i64, 2, 3, 4];
     let v = ArrayViewI64::try_from_dims(vec![2, 2], &buf).unwrap();
     assert_eq!(v.get(&[1, 1]).unwrap(), 4);
     let owned = v.to_owned_array();

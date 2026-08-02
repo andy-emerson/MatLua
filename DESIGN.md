@@ -262,15 +262,19 @@ Names match the `lua` feature on `main`. Tutorial samples live in
 - **Mean** (scalar or axis) returns **`f64`** (or `f64` array).
 - **Casts:** `ArrayI64::to_f64` / `Array::to_i64` (truncate toward zero).
 - **Arrow:** `Int64Array` interchange (non-null).
-- **Lua face:** `zeros_i64` / `ones_i64` / `full_i64` / `arange_i64` / `array_i64` / `eye_i64` / `diag_i64` / `outer_i64`; userdata methods mirror a subset of the `f64` face (`get`/`set` use integers; `to_f64`).
-- **Also on i64:** `where_cond`, `concatenate`/`stack`, `sign`/`clip`, `var`/`std` (as `f64`), `any`/`all` (+ axis), views `slice`/`rows`/`row`/`col`, `broadcast_to`, full compare set on face.
-- **Not yet on i64:** float-only ufuncs (`exp`/`log`/…), `cov`/`corrcoef`, nan*, host buffer views, performance tuning.
+- **Lua face:** `*_i64` constructors above; methods include shared grammar + i64-unique (`unique`, `isin`, `bincount`, `searchsorted`, `sort`, bitwise, `rem`, `divmod`, `gcd`/`lcm`, …); `get`/`set` integers; `to_f64` / `dtype`.
+- **Also on i64 (Rust+Lua):** `where_cond`, `concatenate`/`stack`, `sign`/`clip`, `var`/`std` (as `f64`), `any`/`all` (+ axis), `slice`/`rows`/`row`/`col`, `broadcast_to`, compares (array and scalar).
+- **i64-unique (M7):** bitwise/rem/shift, `unique`/`isin`/`bincount`/`searchsorted`/`sort`, `divmod`/`gcd`/`lcm`, bit counts; **`ArrayViewI64` / `ArrayViewMutI64`** (Rust host buffers).
+- **Not M7 / later:** float-only ufuncs (`exp`/`log`/…), `cov`/`corrcoef`, nan*; **Lua** host-view userdata (M7.b/M8); performance (M7.c).
 
 
 ### 4.1 Module functions
 
-`zeros`, `ones`, `full`, `arange` (`start, stop[, step]`), `array`, `eye`, `where`,
-`matmul`, `matmul_at` (AᵀB; large same-buffer AᵀA may materialize Aᵀ once), `matmul_bt` (ABᵀ; large AAᵀ same rule), `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd`
+**`f64`:** `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`), `array`, `eye`, `where`,
+`matmul`, `matmul_at` (AᵀB; large same-buffer AᵀA may materialize Aᵀ once), `matmul_bt` (ABᵀ; large AAᵀ same rule), `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd`.
+
+**`i64` constructors / helpers:** `zeros_i64`, `ones_i64`, `full_i64`, `arange_i64`, `array_i64`, `eye_i64`, `diag_i64`, `outer_i64`, `where_i64`, `concatenate_i64`, `stack_i64`, `broadcast_to_i64`, plus `matmul_i64` / `dot_i64` / …  
+**Dual:** `matmul` / `solve` / `eigh` / … accept `ArrayI64` where applicable (integer matmul stays i64; solvers return `f64` arrays). See §3.17.
 
 ### 4.2 Array methods and metamethods
 
@@ -354,7 +358,7 @@ explicit boundaries (zero-copy views in, owned results out).
 | **M5** | Tier-1 leave-late array ops | **Done** |
 | **M6** | Tier-2 quant sugar: `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis reductions (rank-2), `any`/`all` | **Done** |
 | **v0.1** tag | Explicit release cut | **Deferred** |
-| **M7** | **`i64` surface (correctness):** shared array grammar + integer-path LA (wrapping) + **i64-unique territory** + `ArrayViewI64` + gcd/lcm/divmod/bitcount. Not a permanent f64-only LA hierarchy. | **Done** |
+| **M7** | **`i64` surface (correctness):** shared array grammar + integer-path LA (wrapping) + **i64-unique** + views + gcd/lcm/divmod/bitcount + **`from_i64` solvers** (i64 in → f64 out). | **Done** |
 | **M7.b** | **Quant leave-late pack (NumPy-class desk):** random, median/quantile, richer indexing, LA diagnostics (`det`/`rank`/`cond`/general eig as applicable), `out=` ([#21](https://github.com/andy-emerson/MatLua/issues/21)), host zero-copy into scripts — whatever a quant expects beyond M0–M7 basics | **Planned** (after M7 correctness) |
 | **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once correctness bars for M7/M7.b hold | **Planned** (after M7.b or when Human gates perf) |
 | **M8** | **Lua host-buffer / view face** — may **fold into M7.b** host zero-copy; kept as explicit embed slice until then | Planned |
@@ -446,14 +450,16 @@ Human is always **author** of record; agent may be **co-author** when allowed fo
 
 ## 10. Status
 
-**Shipped surface** matches §3–§4: row-major `f64` arrays, views, elementwise,
-Arrow interchange, faer LA, Lua face with 1-based indexing, composed paths
-(`matmul_at`, `matmul_bt`, `normal_eq`), M4a–M6 surface, reshape buffer sharing (§3.13).
+**Shipped surface** matches §3–§4: row-major `f64` arrays, **`ArrayI64` (M7)**, views
+(`f64` and `i64`), elementwise, Arrow `Float64`/`Int64`, faer LA + `i64_ops` / `from_i64`,
+Lua face (1-based) including `*_i64` and dual-dtype `solve`/`matmul`, M4a–M6, reshape COW (§3.13).
 
 Package version is **`0.0.1`**. Call **v0.1** when the human tags a release;
-until then treat the tree as a **v0.1 candidate** per §7.1. **Next open milestone: M7 (`i64`)** (§7.1).
+until then treat the tree as a **v0.1 candidate** per §7.1. **M7 (`i64`) is Done.**
+**Next open product milestone: M7.b** (quant leave-late pack); then **M7.c** (optimize).
+Embed track **M8–M11** and **M12** (arrow-lite) remain per §7.1.
 
-Open work: §7.1 M7–M12, GitHub Issues (e.g. `out=` #21), and measured tables in
+Open work: §7.1 M7.b–M12, GitHub Issues (e.g. `out=` #21 in M7.b), and measured tables in
 [`tests/README.md`](tests/README.md) — not as a living log in this file.
 
 Update this document when rulings or the frozen public face change — not on

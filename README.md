@@ -52,14 +52,14 @@ work on arrays (and array ↔ number). Matrix product is always explicit:
 | **Array methods** | `shape`, `rank`, `get` / `set`, `sum` / `mean` / `min` / `max`, `var` / `std`, `argmin` / `argmax`, ufuncs (`abs`/`sqrt`/`exp`/`log`/`log1p`/`sign`/`power`/`clip`/`isnan`/`isfinite`/`cumsum`), `copy`, `reshape` (may share; write COWs), `transpose`, `fill`, `#a` |
 | **Elementwise** | `+`, `-`, `*`, `/`, unary `-` (array–array or array–number) |
 | **Linear algebra (`f64`)** | `matmul`, `matmul_at`, `matmul_bt`, `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd` |
-| **`i64`-unique** | bitwise / rem / shift, `unique` / `isin` / `bincount` / `searchsorted` / `sort` |
-| **Linear algebra (`i64`)** | `matmul_i64`, `matmul_at_i64`, `matmul_bt_i64`, `dot_i64`, `norm_i64`, `transpose_i64`, `eye_i64` (wrapping `i64`; solvers/factorizations remain on `f64`) |
+| **`i64`-unique** | bitwise / rem / shift, `unique` / `isin` / `bincount` / `searchsorted` / `sort`, `divmod` / `gcd` / `lcm`, bit counts |
+| **Linear algebra (`i64`)** | Integer path: `matmul_i64` / … (wrapping). **Same** `solve`/`eigh`/… accept `ArrayI64` and return **`f64`** (NumPy-style). Also `linalg::from_i64` / `i64_ops` in Rust |
 | **Rust core** | `Array` (`f64`), `ArrayI64` (`i64`), views over host `f64`/`i64` buffers, Arrow `Float64`/`Int64`, LA `matlua::linalg` + `linalg::i64_ops` |
 
-Quality bar for dense LA is **`f64`**. **`i64` arrays** (M7) cover keys and exact
-integers on the Lua face (`zeros_i64`, `array_i64`, `where_i64`, `concatenate_i64`,
-`stack_i64`, …). Storage is a dense buffer, not nested Lua tables (tables are
-constructor sugar only).
+**`f64`** remains the primary continuous/LA dtype; **`i64`** (M7 **Done**) is first-class for
+keys, indices, integer arithmetic/LA, and i64-unique ops. Solvers on integer inputs
+promote to **`f64` results** (NumPy-style). Lua: `zeros_i64`, `array_i64`, `where_i64`, …
+Storage is a dense buffer, not nested Lua tables (tables are constructor sugar only).
 
 ### Crate features
 

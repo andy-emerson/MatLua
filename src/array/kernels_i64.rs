@@ -1,4 +1,5 @@
 //! Contiguous `i64` kernels (correctness-first; not yet tuned).
+#![allow(dead_code)] // scalar helpers kept for parity with f64 kernels; wire as needed
 
 #[inline]
 pub(crate) fn add_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
