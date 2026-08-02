@@ -975,13 +975,37 @@ pub(crate) fn quantile_sorted(sorted: &[f64], q: f64) -> Option<f64> {
     }
 }
 
-/// Median of unsorted data (sorts a copy). Empty → None.
+/// Median of unsorted data. Empty → None.
+///
+/// Odd length: `select_nth` (average O(n)). Even length: two order statistics
+/// then average (still cheaper than a full sort for large n).
 #[inline]
 pub(crate) fn median_slice(a: &[f64]) -> Option<f64> {
-    if a.is_empty() {
+    let n = a.len();
+    if n == 0 {
         return None;
     }
+    if n == 1 {
+        return Some(a[0]);
+    }
     let mut v = a.to_vec();
-    v.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
-    quantile_sorted(&v, 0.5)
+    if n % 2 == 1 {
+        let mid = n / 2;
+        let (_, val, _) = v.select_nth_unstable_by(mid, |x, y| {
+            x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        Some(*val)
+    } else {
+        let hi = n / 2;
+        let lo = hi - 1;
+        // After select for hi, v[hi] is the upper middle; lower middle is max of left partition.
+        v.select_nth_unstable_by(hi, |x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+        let upper = v[hi];
+        let lower = v[..hi]
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        Some(0.5 * (lower + upper))
+    }
 }
+

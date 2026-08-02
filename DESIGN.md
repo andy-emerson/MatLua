@@ -422,14 +422,14 @@ explicit boundaries (zero-copy views in, owned results out).
 | **v0.1** tag | Explicit release cut | **Deferred** |
 | **M7** | **`i64` surface (correctness):** shared array grammar + integer-path LA (wrapping) + **i64-unique** + views + gcd/lcm/divmod/bitcount + **`from_i64` solvers** (i64 in → f64 out). | **Done** |
 | **M7.b** | **Quant leave-late pack:** LA diagnostics, median/quantile, random, indexing, partial `out=` (#21), host view entry (`push_view_*` / `push_array_copy_*`). | **Done** |
-| **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once M7/M7.b correctness holds | **Planned** (next product branch after merge) |
+| **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once M7/M7.b correctness holds | **In progress** |
 | **M8** | **Host integration depth** (TallyDB letter §5–§6 + view face): see **§7.1.1** | **Planned** |
 | **M9** | **Small-window pool** — freelist for *n* ≪ 256 (TallyDB hot path; letter pressure) | **Planned** |
 | **M10** | **Embed-safe Lua boundary** — letter **§1.1–§1.3** (feature-split face, longjmp/`Drop`, no panic across C) | **Planned** |
 | **M11** | **CI + embed hygiene** — letter **§7** (APICHECK, ASan) + no `DLOPEN` embed profile, Miri-clean `take_uninit` | **Planned** |
 | **M12** | **Arrow C Data Interface + `arrow-lite`** — letter **§3**; cutover when shared lite v0.1 ships | **Gated** |
 
-**Priority after M7.b merge:** **M7.c** (optimize) on its own branch, then or in parallel the embed track **M8→M11**, then **M12**. Further dtypes (`f32`, complex, …) after this arc unless a new need appears.
+**Priority:** **M7.c** (in progress on `feat-m7c-optimize`) → embed **M8–M11** → **M12**. Further dtypes (`f32`, complex, …) after this arc unless a new need appears.
 
 **Also tracked:** GitHub **#21** full `out=` surface (beyond M7.b partial); TallyDB engine cutover (other repo).
 
@@ -475,6 +475,18 @@ M7.b delivered **host entry** (`push_view_f64`/`i64`, `push_array_copy_*`) as re
 3. Optional: `linalg` accepting views / `ArrayView` to cut allocs on small windows when measured.
 4. Alignment helpers so TallyDB can present **one** array type to scripts (conversions or direct userdata accept — design at M8 kickoff, MatLua-led).
 5. Does **not** replace M10 safety or M12 Arrow C ABI.
+
+### 7.1.2 M7.c optimization program (in progress)
+
+**Goal:** whole-surface performance (f64 + i64) without breaking correctness contracts.
+
+**Wave 1 (landed on this branch):**
+- `i64` matmul / `matmul_at` / `matmul_bt` / `dot`: `i–k–j` / unrolled accumulation (wrapping preserved).
+- `i64` elementwise add/mul/sum: 4-wide unroll.
+- `ArrayI64::transpose`: blocked out-of-place (same idea as f64).
+- `median`: order-statistic path (`select_nth`) instead of full sort for scalar median.
+
+**Next waves (planned):** re-run fair table (`compare_fair.py`); attack remaining Rust/NumPy ≫ 1 and Lua/Rust ≫ 2; extend `out=` paths where they remove allocs; avoid scale-hostile fixed chunking (prefer algorithms that scale past n=1024).
 
 #### What remains explicitly *not* TallyDB-owned
 

@@ -11,6 +11,23 @@ use super::shape::{broadcast_shapes, Shape};
 use super::Array;
 use crate::error::{Error, Result};
 
+/// Cache-blocked out-of-place transpose: `dst` is `cols × rows` row-major.
+fn blocked_transpose_i64(src: &[i64], rows: usize, cols: usize, dst: &mut [i64]) {
+    const BS: usize = 32;
+    for i0 in (0..rows).step_by(BS) {
+        for j0 in (0..cols).step_by(BS) {
+            let i1 = (i0 + BS).min(rows);
+            let j1 = (j0 + BS).min(cols);
+            for i in i0..i1 {
+                for j in j0..j1 {
+                    dst[j * rows + i] = src[i * cols + j];
+                }
+            }
+        }
+    }
+}
+
+
 fn gcd_i64(a: i64, b: i64) -> i64 {
     let mut a = a.unsigned_abs();
     let mut b = b.unsigned_abs();
@@ -860,6 +877,7 @@ impl ArrayI64 {
     }
 
     /// `transpose` (see `f64` [`Array`] counterpart).
+    /// Transpose rank-1 → `(1,n)` row matrix; rank-2 uses blocked out-of-place transpose.
     pub fn transpose(&self) -> Result<ArrayI64> {
         match self.rank() {
             1 => {
@@ -870,20 +888,16 @@ impl ArrayI64 {
             }
             2 => {
                 let (rows, cols) = (self.dims()[0], self.dims()[1]);
-                let src = self.as_slice();
                 let mut data = pool::take_uninit(rows * cols);
-                for i in 0..rows {
-                    for j in 0..cols {
-                        data[j * rows + i] = src[i * cols + j];
-                    }
-                }
+                blocked_transpose_i64(self.as_slice(), rows, cols, &mut data);
                 Ok(Self::from_parts(Shape::matrix(cols, rows)?, data))
             }
             r => Err(Error::Shape(format!(
-                "transpose expects rank 1 or 2, got {r}"
+                "transpose expects rank 1 or 2, got rank {r}"
             ))),
         }
     }
+
 
     /// `diagonal` (see `f64` [`Array`] counterpart).
     pub fn diagonal(&self) -> Result<ArrayI64> {

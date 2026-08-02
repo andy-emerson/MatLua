@@ -3,8 +3,18 @@
 
 #[inline]
 pub(crate) fn add_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
-    for i in 0..a.len() {
+    let n = a.len();
+    let mut i = 0;
+    while i + 4 <= n {
         out[i] = a[i].wrapping_add(b[i]);
+        out[i + 1] = a[i + 1].wrapping_add(b[i + 1]);
+        out[i + 2] = a[i + 2].wrapping_add(b[i + 2]);
+        out[i + 3] = a[i + 3].wrapping_add(b[i + 3]);
+        i += 4;
+    }
+    while i < n {
+        out[i] = a[i].wrapping_add(b[i]);
+        i += 1;
     }
 }
 #[inline]
@@ -15,8 +25,18 @@ pub(crate) fn sub_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
 }
 #[inline]
 pub(crate) fn mul_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
-    for i in 0..a.len() {
+    let n = a.len();
+    let mut i = 0;
+    while i + 4 <= n {
         out[i] = a[i].wrapping_mul(b[i]);
+        out[i + 1] = a[i + 1].wrapping_mul(b[i + 1]);
+        out[i + 2] = a[i + 2].wrapping_mul(b[i + 2]);
+        out[i + 3] = a[i + 3].wrapping_mul(b[i + 3]);
+        i += 4;
+    }
+    while i < n {
+        out[i] = a[i].wrapping_mul(b[i]);
+        i += 1;
     }
 }
 /// Truncating division (Rust `/`); division by zero yields 0 (document; avoid panic).
@@ -89,8 +109,18 @@ pub(crate) fn abs_slice(a: &[i64], out: &mut [i64]) {
 #[inline]
 pub(crate) fn sum_slice(a: &[i64]) -> i64 {
     let mut s: i64 = 0;
-    for &x in a {
-        s = s.wrapping_add(x);
+    let mut i = 0;
+    let n = a.len();
+    while i + 4 <= n {
+        s = s.wrapping_add(a[i]);
+        s = s.wrapping_add(a[i + 1]);
+        s = s.wrapping_add(a[i + 2]);
+        s = s.wrapping_add(a[i + 3]);
+        i += 4;
+    }
+    while i < n {
+        s = s.wrapping_add(a[i]);
+        i += 1;
     }
     s
 }
