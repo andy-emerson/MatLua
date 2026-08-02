@@ -334,3 +334,194 @@ mod tests {
         assert_eq!(min_slice(&[]), None);
     }
 }
+
+
+// --- M5 Tier-1 ufuncs (IEEE NaN propagate unless noted) ---
+
+#[inline]
+pub(crate) fn abs_slice(a: &[f64], out: &mut [f64]) {
+    debug_assert_eq!(a.len(), out.len());
+    for i in 0..a.len() {
+        out[i] = a[i].abs();
+    }
+}
+
+#[inline]
+pub(crate) fn sqrt_slice(a: &[f64], out: &mut [f64]) {
+    debug_assert_eq!(a.len(), out.len());
+    for i in 0..a.len() {
+        out[i] = a[i].sqrt();
+    }
+}
+
+#[inline]
+pub(crate) fn exp_slice(a: &[f64], out: &mut [f64]) {
+    debug_assert_eq!(a.len(), out.len());
+    for i in 0..a.len() {
+        out[i] = a[i].exp();
+    }
+}
+
+#[inline]
+pub(crate) fn log_slice(a: &[f64], out: &mut [f64]) {
+    debug_assert_eq!(a.len(), out.len());
+    for i in 0..a.len() {
+        out[i] = a[i].ln();
+    }
+}
+
+#[inline]
+pub(crate) fn log1p_slice(a: &[f64], out: &mut [f64]) {
+    debug_assert_eq!(a.len(), out.len());
+    for i in 0..a.len() {
+        out[i] = a[i].ln_1p();
+    }
+}
+
+#[inline]
+pub(crate) fn sign_slice(a: &[f64], out: &mut [f64]) {
+    debug_assert_eq!(a.len(), out.len());
+    for i in 0..a.len() {
+        let x = a[i];
+        out[i] = if x.is_nan() {
+            f64::NAN
+        } else if x > 0.0 {
+            1.0
+        } else if x < 0.0 {
+            -1.0
+        } else {
+            0.0
+        };
+    }
+}
+
+#[inline]
+pub(crate) fn power_slices(a: &[f64], b: &[f64], out: &mut [f64]) {
+    debug_assert_eq!(a.len(), b.len());
+    debug_assert_eq!(a.len(), out.len());
+    for i in 0..a.len() {
+        out[i] = a[i].powf(b[i]);
+    }
+}
+
+#[inline]
+pub(crate) fn power_scalar(a: &[f64], p: f64, out: &mut [f64]) {
+    debug_assert_eq!(a.len(), out.len());
+    for i in 0..a.len() {
+        out[i] = a[i].powf(p);
+    }
+}
+
+#[inline]
+pub(crate) fn clip_slice(a: &[f64], lo: f64, hi: f64, out: &mut [f64]) {
+    debug_assert_eq!(a.len(), out.len());
+    for i in 0..a.len() {
+        let x = a[i];
+        out[i] = if x < lo {
+            lo
+        } else if x > hi {
+            hi
+        } else {
+            x
+        };
+    }
+}
+
+/// 1.0 where NaN, else 0.0 (dense f64 mask; not a separate bool dtype).
+#[inline]
+pub(crate) fn isnan_slice(a: &[f64], out: &mut [f64]) {
+    debug_assert_eq!(a.len(), out.len());
+    for i in 0..a.len() {
+        out[i] = if a[i].is_nan() { 1.0 } else { 0.0 };
+    }
+}
+
+#[inline]
+pub(crate) fn isfinite_slice(a: &[f64], out: &mut [f64]) {
+    debug_assert_eq!(a.len(), out.len());
+    for i in 0..a.len() {
+        out[i] = if a[i].is_finite() { 1.0 } else { 0.0 };
+    }
+}
+
+#[inline]
+pub(crate) fn where_slices(cond: &[f64], a: &[f64], b: &[f64], out: &mut [f64]) {
+    debug_assert_eq!(cond.len(), a.len());
+    debug_assert_eq!(a.len(), b.len());
+    debug_assert_eq!(a.len(), out.len());
+    for i in 0..a.len() {
+        // Nonzero (and not NaN) is true — Lua/C style; NaN condition → false branch.
+        out[i] = if cond[i] != 0.0 && !cond[i].is_nan() {
+            a[i]
+        } else {
+            b[i]
+        };
+    }
+}
+
+#[inline]
+pub(crate) fn cumsum_slice(a: &[f64], out: &mut [f64]) {
+    debug_assert_eq!(a.len(), out.len());
+    let mut s = 0.0;
+    for i in 0..a.len() {
+        s += a[i];
+        out[i] = s;
+    }
+}
+
+#[inline]
+pub(crate) fn argmin_slice(a: &[f64]) -> Option<usize> {
+    if a.is_empty() {
+        return None;
+    }
+    let mut best_i = 0usize;
+    let mut best = f64::INFINITY;
+    for (i, &x) in a.iter().enumerate() {
+        if x < best {
+            best = x;
+            best_i = i;
+        }
+    }
+    // If all NaN, best stays ∞ — return 0 like a weak default; callers with all-NaN rare.
+    if best.is_infinite() && a.iter().all(|x| x.is_nan()) {
+        Some(0)
+    } else {
+        Some(best_i)
+    }
+}
+
+#[inline]
+pub(crate) fn argmax_slice(a: &[f64]) -> Option<usize> {
+    if a.is_empty() {
+        return None;
+    }
+    let mut best_i = 0usize;
+    let mut best = f64::NEG_INFINITY;
+    for (i, &x) in a.iter().enumerate() {
+        if x > best {
+            best = x;
+            best_i = i;
+        }
+    }
+    if best.is_infinite() && a.iter().all(|x| x.is_nan()) {
+        Some(0)
+    } else {
+        Some(best_i)
+    }
+}
+
+/// Population or sample variance from Welford; `ddof` is degrees of freedom subtract.
+#[inline]
+pub(crate) fn var_slice(a: &[f64], ddof: usize) -> Option<f64> {
+    let n = a.len();
+    if n == 0 || n <= ddof {
+        return None;
+    }
+    let mean = a.iter().sum::<f64>() / n as f64;
+    let mut ss = 0.0;
+    for &x in a {
+        let d = x - mean;
+        ss += d * d;
+    }
+    Some(ss / (n - ddof) as f64)
+}

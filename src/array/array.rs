@@ -431,6 +431,210 @@ impl Array {
     pub(crate) fn scalar_div(&self, scalar: f64) -> Array {
         self.owned_unary_kernel(|a, out| kernels::scalar_div(a, scalar, out))
     }
+
+    /// Element-wise absolute value (IEEE).
+    pub fn abs(&self) -> Array {
+        self.owned_unary_kernel(kernels::abs_slice)
+    }
+
+    /// Element-wise square root (IEEE; domain errors → NaN).
+    pub fn sqrt(&self) -> Array {
+        self.owned_unary_kernel(kernels::sqrt_slice)
+    }
+
+    /// Element-wise exponential.
+    pub fn exp(&self) -> Array {
+        self.owned_unary_kernel(kernels::exp_slice)
+    }
+
+    /// Element-wise natural logarithm.
+    pub fn log(&self) -> Array {
+        self.owned_unary_kernel(kernels::log_slice)
+    }
+
+    /// Element-wise `ln(1 + x)`.
+    pub fn log1p(&self) -> Array {
+        self.owned_unary_kernel(kernels::log1p_slice)
+    }
+
+    /// Element-wise sign: −1, 0, +1 (NaN → NaN).
+    pub fn sign(&self) -> Array {
+        self.owned_unary_kernel(kernels::sign_slice)
+    }
+
+    /// Element-wise power `self ** other` (same shape).
+    pub fn power(&self, other: &Array) -> Result<Array> {
+        self.owned_from_kernel(other, kernels::power_slices)
+    }
+
+    /// Element-wise power with a scalar exponent.
+    pub fn power_scalar(&self, p: f64) -> Array {
+        self.owned_unary_kernel(|a, out| kernels::power_scalar(a, p, out))
+    }
+
+    /// Clip values to `[lo, hi]` (NaNs unchanged if outside compare fails).
+    pub fn clip(&self, lo: f64, hi: f64) -> Result<Array> {
+        if lo > hi {
+            return Err(Error::shape(format!("clip lo {lo} > hi {hi}")));
+        }
+        Ok(self.owned_unary_kernel(|a, out| kernels::clip_slice(a, lo, hi, out)))
+    }
+
+    /// Dense mask: 1.0 where NaN, else 0.0.
+    pub fn isnan(&self) -> Array {
+        self.owned_unary_kernel(kernels::isnan_slice)
+    }
+
+    /// Dense mask: 1.0 where finite, else 0.0.
+    pub fn isfinite(&self) -> Array {
+        self.owned_unary_kernel(kernels::isfinite_slice)
+    }
+
+    /// `where(cond, x, y)` — nonzero finite `cond` selects `x`, else `y` (same shape).
+    pub fn where_cond(cond: &Array, x: &Array, y: &Array) -> Result<Array> {
+        cond.same_shape(x)?;
+        cond.same_shape(y)?;
+        let n = cond.len();
+        let mut data = pool::take_uninit(n);
+        kernels::where_slices(cond.as_slice(), x.as_slice(), y.as_slice(), &mut data);
+        Ok(Self::from_parts(cond.shape.clone(), data))
+    }
+
+    /// Inclusive cumulative sum along the flat row-major buffer.
+    pub fn cumsum(&self) -> Array {
+        self.owned_unary_kernel(kernels::cumsum_slice)
+    }
+
+    /// Index of minimum in flat order (0-based). Empty → error.
+    pub fn argmin(&self) -> Result<usize> {
+        kernels::argmin_slice(self.as_slice()).ok_or_else(|| Error::shape("argmin of empty array"))
+    }
+
+    /// Index of maximum in flat order (0-based). Empty → error.
+    pub fn argmax(&self) -> Result<usize> {
+        kernels::argmax_slice(self.as_slice()).ok_or_else(|| Error::shape("argmax of empty array"))
+    }
+
+    /// Variance; `ddof` matches NumPy (`0` population, `1` sample).
+    pub fn var(&self, ddof: usize) -> Result<f64> {
+        kernels::var_slice(self.as_slice(), ddof).ok_or_else(|| {
+            Error::shape(format!(
+                "var requires len > ddof (len={}, ddof={ddof})",
+                self.len()
+            ))
+        })
+    }
+
+    /// Standard deviation; `ddof` matches NumPy.
+    pub fn std(&self, ddof: usize) -> Result<f64> {
+        Ok(self.var(ddof)?.sqrt())
+    }
+
+    /// Concatenate arrays along `axis` (0 or 1 for rank ≤ 2).
+    ///
+    /// All inputs must share the same rank and matching sizes on non-`axis` dims.
+    pub fn concatenate(axis: usize, parts: &[&Array]) -> Result<Array> {
+        if parts.is_empty() {
+            return Err(Error::shape("concatenate needs at least one array"));
+        }
+        let rank = parts[0].rank();
+        if rank == 0 || rank > 2 {
+            return Err(Error::shape("concatenate supports rank 1 or 2"));
+        }
+        if axis >= rank {
+            return Err(Error::shape(format!("axis {axis} out of range for rank {rank}")));
+        }
+        for p in parts {
+            if p.rank() != rank {
+                return Err(Error::shape("concatenate: rank mismatch"));
+            }
+            for d in 0..rank {
+                if d != axis && p.dims()[d] != parts[0].dims()[d] {
+                    return Err(Error::shape("concatenate: shape mismatch on non-axis"));
+                }
+            }
+        }
+        let mut out_dims = parts[0].dims().to_vec();
+        out_dims[axis] = parts.iter().map(|p| p.dims()[axis]).sum();
+        let shape = Shape::new(out_dims)?;
+        let mut data = pool::take_uninit(shape.numel());
+        if rank == 1 {
+            let mut off = 0;
+            for p in parts {
+                let n = p.len();
+                data[off..off + n].copy_from_slice(p.as_slice());
+                off += n;
+            }
+        } else {
+            // rank 2
+            let cols_out = shape.dims()[1];
+            if axis == 0 {
+                let mut row = 0usize;
+                for p in parts {
+                    let pr = p.dims()[0];
+                    let pc = p.dims()[1];
+                    for i in 0..pr {
+                        let src = &p.as_slice()[i * pc..(i + 1) * pc];
+                        let dst = &mut data[(row + i) * cols_out..(row + i) * cols_out + pc];
+                        dst.copy_from_slice(src);
+                    }
+                    row += pr;
+                }
+            } else {
+                // axis 1
+                let rows = shape.dims()[0];
+                for i in 0..rows {
+                    let mut col = 0usize;
+                    for p in parts {
+                        let pc = p.dims()[1];
+                        let src = &p.as_slice()[i * pc..(i + 1) * pc];
+                        data[i * cols_out + col..i * cols_out + col + pc].copy_from_slice(src);
+                        col += pc;
+                    }
+                }
+            }
+        }
+        Ok(Self::from_parts(shape, data))
+    }
+
+    /// Stack arrays along a new axis (0 or 1); inputs must be same shape, rank 1.
+    ///
+    /// Rank-1 inputs → rank-2. `axis=0` stacks as rows; `axis=1` as columns.
+    pub fn stack(axis: usize, parts: &[&Array]) -> Result<Array> {
+        if parts.is_empty() {
+            return Err(Error::shape("stack needs at least one array"));
+        }
+        if !parts.iter().all(|p| p.rank() == 1) {
+            return Err(Error::shape("stack currently supports rank-1 inputs only"));
+        }
+        let n = parts[0].len();
+        if parts.iter().any(|p| p.len() != n) {
+            return Err(Error::shape("stack: length mismatch"));
+        }
+        let k = parts.len();
+        match axis {
+            0 => {
+                // k × n
+                let mut data = pool::take_uninit(k * n);
+                for (i, p) in parts.iter().enumerate() {
+                    data[i * n..(i + 1) * n].copy_from_slice(p.as_slice());
+                }
+                Ok(Self::from_parts(Shape::matrix(k, n)?, data))
+            }
+            1 => {
+                // n × k
+                let mut data = pool::take_uninit(n * k);
+                for i in 0..n {
+                    for (j, p) in parts.iter().enumerate() {
+                        data[i * k + j] = p.as_slice()[i];
+                    }
+                }
+                Ok(Self::from_parts(Shape::matrix(n, k)?, data))
+            }
+            _ => Err(Error::shape("stack axis must be 0 or 1")),
+        }
+    }
+
 }
 
 impl PartialEq for Array {
@@ -459,6 +663,21 @@ impl Drop for Array {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ufuncs_and_var() {
+        let a = Array::from_shape_slice(vec![3], &[-1., 4., 9.]).unwrap();
+        assert_eq!(a.abs().as_slice(), &[1., 4., 9.]);
+        assert!((a.sqrt().get(&[1]).unwrap() - 2.0).abs() < 1e-12);
+        let b = Array::from_shape_slice(vec![3], &[1., 2., 3.]).unwrap();
+        assert!((b.var(0).unwrap() - 2.0 / 3.0).abs() < 1e-12);
+        assert_eq!(b.argmin().unwrap(), 0);
+        assert_eq!(b.argmax().unwrap(), 2);
+        assert_eq!(b.cumsum().as_slice(), &[1., 3., 6.]);
+        let c = Array::from_shape_slice(vec![2], &[1., f64::NAN]).unwrap();
+        assert_eq!(c.isnan().as_slice(), &[0., 1.]);
+    }
+
+
     use super::*;
     use crate::array::{ArrayView, ArrayViewMut};
 
