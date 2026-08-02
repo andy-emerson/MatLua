@@ -315,3 +315,21 @@ fn m7b_indexing() {
     let i = ArrayI64::from_shape_slice(vec![4], &[0, 5, 0, 7]).unwrap();
     assert_eq!(i.nonzero().as_slice(), &[1, 3]);
 }
+
+#[test]
+fn m7b_out_buffers() {
+    use matlua::array::Array;
+    use matlua::linalg;
+    let a = Array::from_shape_slice(vec![3], &[1., 2., 3.]).unwrap();
+    let b = Array::from_shape_slice(vec![3], &[4., 5., 6.]).unwrap();
+    let mut out = Array::zeros(vec![3]).unwrap();
+    a.add_out(&b, &mut out).unwrap();
+    assert_eq!(out.as_slice(), &[5., 7., 9.]);
+    a.mul_out(&b, &mut out).unwrap();
+    assert_eq!(out.as_slice(), &[4., 10., 18.]);
+    let a2 = Array::from_shape_slice(vec![2, 2], &[1., 2., 3., 4.]).unwrap();
+    let b2 = Array::from_shape_slice(vec![2, 2], &[5., 6., 7., 8.]).unwrap();
+    let mut c = Array::zeros(vec![2, 2]).unwrap();
+    linalg::matmul_out(&a2, &b2, &mut c).unwrap();
+    assert_eq!(c.as_slice(), &[19., 22., 43., 50.]);
+}

@@ -478,3 +478,25 @@ assert(t:get(1) == 1 and t:get(2) == 3)
     )
     .unwrap();
 }
+
+#[test]
+fn m7b_out_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local a = ml.array({1,2,3})
+local b = ml.array({4,5,6})
+local out = ml.zeros(3)
+a:add_out(b, out)
+assert(out:get(1) == 5 and out:get(3) == 9)
+local A = ml.array({{1,2},{3,4}})
+local B = ml.array({{5,6},{7,8}})
+local C = ml.zeros(2,2)
+ml.matmul_out(A, B, C)
+assert(C:get(1,1) == 19 and C:get(2,2) == 50)
+"#,
+    )
+    .unwrap();
+}

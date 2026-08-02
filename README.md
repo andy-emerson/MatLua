@@ -52,7 +52,7 @@ work on arrays (and array ↔ number). Matrix product is always explicit:
 | **Random** | `seed`, `random`, `randn`, `uniform`, `normal`, `integers` (i64), `choice` |
 | **Constructors** | `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`, half-open), `array` (nested tables → dense `f64`), `eye` |
 | **Array methods** | `shape`, `rank`, `get` / `set`, `sum` / `mean` / `min` / `max`, `var` / `std`, **`median`/`quantile`**, `argmin` / `argmax`, ufuncs (`abs`/`sqrt`/`exp`/`log`/`log1p`/`sign`/`power`/`clip`/`isnan`/`isfinite`/`cumsum`), `copy`, `reshape` (may share; write COWs), `transpose`, `fill`, `#a` |
-| **Elementwise** | `+`, `-`, `*`, `/`, unary `-` (array–array or array–number) |
+| **Elementwise** | `+`, `-`, `*`, `/`, unary `-`; **`add_out`/`mul_out`/…** and **`matmul_out`** (preallocated) |
 | **Linear algebra (`f64`)** | `matmul`, …, `solve`, `lstsq`, `eigh`, `pinv`, `cholesky`, `qr`, `svd`, **`det`/`slogdet`/`matrix_rank`/`cond`/`eig`/`eigvals`** (M7.b) |
 | **`i64`-unique** | bitwise / rem / shift, `unique` / `isin` / `bincount` / `searchsorted` / `sort`, `divmod` / `gcd` / `lcm`, bit counts |
 | **Linear algebra (`i64`)** | Integer path: `matmul_i64` / … (wrapping). **Same** `solve`/`eigh`/… accept `ArrayI64` and return **`f64`** (NumPy-style). Also `linalg::from_i64` / `i64_ops` in Rust |

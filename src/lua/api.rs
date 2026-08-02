@@ -680,6 +680,64 @@ pub unsafe extern "C" fn a_take(L: *mut lua_State) -> c_int {
     1
 }
 
+
+pub unsafe extern "C" fn a_add_out(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let b = unsafe { &*check_array(L, 2) };
+    let o = unsafe { &mut *check_array(L, 3) };
+    lua_try!(L, a.array.add_out(&b.array, &mut o.array));
+    unsafe { lua_settop(L, 3) }; // leave out on stack... better push
+    unsafe { lua_pushvalue(L, 3) };
+    1
+}
+pub unsafe extern "C" fn a_sub_out(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let b = unsafe { &*check_array(L, 2) };
+    let o = unsafe { &mut *check_array(L, 3) };
+    lua_try!(L, a.array.sub_out(&b.array, &mut o.array));
+    unsafe { lua_pushvalue(L, 3) };
+    1
+}
+pub unsafe extern "C" fn a_mul_out(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let b = unsafe { &*check_array(L, 2) };
+    let o = unsafe { &mut *check_array(L, 3) };
+    lua_try!(L, a.array.mul_out(&b.array, &mut o.array));
+    unsafe { lua_pushvalue(L, 3) };
+    1
+}
+pub unsafe extern "C" fn a_div_out(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let b = unsafe { &*check_array(L, 2) };
+    let o = unsafe { &mut *check_array(L, 3) };
+    lua_try!(L, a.array.div_out(&b.array, &mut o.array));
+    unsafe { lua_pushvalue(L, 3) };
+    1
+}
+pub unsafe extern "C" fn a_neg_out(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let o = unsafe { &mut *check_array(L, 2) };
+    lua_try!(L, a.array.neg_out(&mut o.array));
+    unsafe { lua_pushvalue(L, 2) };
+    1
+}
+pub unsafe extern "C" fn a_abs_out(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let o = unsafe { &mut *check_array(L, 2) };
+    lua_try!(L, a.array.abs_out(&mut o.array));
+    unsafe { lua_pushvalue(L, 2) };
+    1
+}
+
+pub unsafe extern "C" fn l_matmul_out(L: *mut lua_State) -> c_int {
+    let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
+    let b = lua_try!(L, unsafe { arg_as_f64(L, 2) });
+    let o = unsafe { &mut *check_array(L, 3) };
+    lua_try!(L, linalg::matmul_out(&a, &b, &mut o.array));
+    unsafe { lua_pushvalue(L, 3) };
+    1
+}
+
 // ----- array methods / metamethods -----
 
 pub unsafe extern "C" fn a_gc(L: *mut lua_State) -> c_int {
@@ -1419,7 +1477,7 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
     unsafe {
         if luaL_newmetatable(L, ARRAY_MT.as_ptr()) != 0 {
             lua_newtable(L);
-            let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 57] = [
+            let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 63] = [
             (c"shape", a_shape),
             (c"rank", a_rank),
             (c"get", a_get),
@@ -1477,6 +1535,12 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
             (c"compress", a_compress),
             (c"put", a_put),
             (c"put_mask", a_put_mask),
+            (c"add_out", a_add_out),
+            (c"sub_out", a_sub_out),
+            (c"mul_out", a_mul_out),
+            (c"div_out", a_div_out),
+            (c"neg_out", a_neg_out),
+            (c"abs_out", a_abs_out),
         ];
             for (name, f) in methods {
                 lua_pushcfunction(L, Some(f));
@@ -1504,7 +1568,7 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
         lua_pop(L, 1);
 
         lua_newtable(L);
-        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 41] = [
+        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 42] = [
             (c"zeros", l_zeros),
             (c"ones", l_ones),
             (c"full", l_full),
@@ -1546,6 +1610,7 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
             (c"normal", l_normal),
             (c"integers", l_integers),
             (c"choice", l_choice),
+            (c"matmul_out", l_matmul_out),
         ];
         for (name, f) in funcs {
             lua_pushcfunction(L, Some(f));

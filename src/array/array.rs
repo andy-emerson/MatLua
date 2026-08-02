@@ -429,6 +429,53 @@ impl Array {
         self.owned_from_kernel(other, |a, b, o| op.apply_same(a, b, o))
     }
 
+    /// Write binary broadcast op into `out` (must match result shape). Avoids alloc when `out` is sized.
+    fn binary_broadcast_out(&self, other: &Array, out: &mut Array, op: BroadcastOp) -> Result<()> {
+        if self.shape.same_as(other.shape()) {
+            if !out.shape().same_as(&self.shape) {
+                return Err(Error::Shape(format!(
+                    "out shape {} != operand shape {}",
+                    out.shape(),
+                    self.shape()
+                )));
+            }
+            op.apply_same(self.as_slice(), other.as_slice(), out.as_mut_slice());
+            return Ok(());
+        }
+        if self.rank() == 2 {
+            let (m, n) = (self.dims()[0], self.dims()[1]);
+            if (other.rank() == 1 && other.len() == n)
+                || (other.rank() == 2 && other.dims() == [1, n])
+            {
+                if out.dims() != [m, n] {
+                    return Err(Error::Shape("out shape mismatch for matrix×row broadcast".into()));
+                }
+                op.apply_row(m, n, self.as_slice(), other.as_slice(), out.as_mut_slice());
+                return Ok(());
+            }
+            if other.rank() == 2 && other.dims() == [m, 1] {
+                if out.dims() != [m, n] {
+                    return Err(Error::Shape("out shape mismatch for matrix×col broadcast".into()));
+                }
+                op.apply_col(m, n, self.as_slice(), other.as_slice(), out.as_mut_slice());
+                return Ok(());
+            }
+        }
+        let out_dims = broadcast_shapes(self.dims(), other.dims())?;
+        if out.dims() != out_dims.as_slice() {
+            return Err(Error::Shape(format!(
+                "out shape {:?} != broadcast shape {:?}",
+                out.dims(),
+                out_dims
+            )));
+        }
+        let left = self.broadcast_to(out_dims.clone())?;
+        let right = other.broadcast_to(out_dims.clone())?;
+        op.apply_same(left.as_slice(), right.as_slice(), out.as_mut_slice());
+        Ok(())
+    }
+
+
     fn owned_unary_kernel<F>(&self, f: F) -> Array
     where
         F: FnOnce(&[f64], &mut [f64]),
@@ -458,6 +505,40 @@ impl Array {
     pub fn div(&self, other: &Array) -> Result<Array> {
         self.owned_binary_broadcast(other, BroadcastOp::Div)
     }
+
+    /// `out = self + other` (see [`add`]); `out` must match the result shape.
+    pub fn add_out(&self, other: &Array, out: &mut Array) -> Result<()> {
+        self.binary_broadcast_out(other, out, BroadcastOp::Add)
+    }
+    /// `out = self - other`.
+    pub fn sub_out(&self, other: &Array, out: &mut Array) -> Result<()> {
+        self.binary_broadcast_out(other, out, BroadcastOp::Sub)
+    }
+    /// `out = self * other` (elementwise).
+    pub fn mul_out(&self, other: &Array, out: &mut Array) -> Result<()> {
+        self.binary_broadcast_out(other, out, BroadcastOp::Mul)
+    }
+    /// `out = self / other` (elementwise).
+    pub fn div_out(&self, other: &Array, out: &mut Array) -> Result<()> {
+        self.binary_broadcast_out(other, out, BroadcastOp::Div)
+    }
+    /// `out = -self` (same shape).
+    pub fn neg_out(&self, out: &mut Array) -> Result<()> {
+        if !out.shape().same_as(&self.shape) {
+            return Err(Error::Shape("neg_out shape mismatch".into()));
+        }
+        kernels::neg_slice(self.as_slice(), out.as_mut_slice());
+        Ok(())
+    }
+    /// `out = abs(self)`.
+    pub fn abs_out(&self, out: &mut Array) -> Result<()> {
+        if !out.shape().same_as(&self.shape) {
+            return Err(Error::Shape("abs_out shape mismatch".into()));
+        }
+        kernels::abs_slice(self.as_slice(), out.as_mut_slice());
+        Ok(())
+    }
+
 
     /// Element-wise negation.
     pub fn neg(&self) -> Array {

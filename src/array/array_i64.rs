@@ -475,6 +475,42 @@ impl ArrayI64 {
     pub fn div(&self, other: &ArrayI64) -> Result<ArrayI64> {
         self.owned_binary_broadcast(other, BroadcastOp::Div)
     }
+
+    /// Write `self + other` into `out` (same shape; no alloc).
+    pub fn add_out(&self, other: &ArrayI64, out: &mut ArrayI64) -> Result<()> {
+        self.same_shape(other)?;
+        self.same_shape(out)?;
+        kernels::add_slices(self.as_slice(), other.as_slice(), out.as_mut_slice());
+        Ok(())
+    }
+    /// `sub_out`.
+    pub fn sub_out(&self, other: &ArrayI64, out: &mut ArrayI64) -> Result<()> {
+        self.same_shape(other)?;
+        self.same_shape(out)?;
+        kernels::sub_slices(self.as_slice(), other.as_slice(), out.as_mut_slice());
+        Ok(())
+    }
+    /// `mul_out`.
+    pub fn mul_out(&self, other: &ArrayI64, out: &mut ArrayI64) -> Result<()> {
+        self.same_shape(other)?;
+        self.same_shape(out)?;
+        kernels::mul_slices(self.as_slice(), other.as_slice(), out.as_mut_slice());
+        Ok(())
+    }
+    /// `div_out`.
+    pub fn div_out(&self, other: &ArrayI64, out: &mut ArrayI64) -> Result<()> {
+        self.same_shape(other)?;
+        self.same_shape(out)?;
+        kernels::div_slices(self.as_slice(), other.as_slice(), out.as_mut_slice());
+        Ok(())
+    }
+    /// `neg_out`.
+    pub fn neg_out(&self, out: &mut ArrayI64) -> Result<()> {
+        self.same_shape(out)?;
+        kernels::neg_slice(self.as_slice(), out.as_mut_slice());
+        Ok(())
+    }
+
     /// `neg` (see `f64` [`Array`] counterpart).
     pub fn neg(&self) -> ArrayI64 {
         self.owned_unary(kernels::neg_slice)

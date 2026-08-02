@@ -153,6 +153,38 @@ pub fn matmul(a: &Array, b: &Array) -> Result<Array> {
     matmul_result(data, am, bn, prefer_vec)
 }
 
+/// GEMM into a preallocated `out` with shape `(am, bn)` (rank-2). Does not collapse to rank-1.
+pub fn matmul_out(a: &Array, b: &Array, out: &mut Array) -> Result<()> {
+    let (am, an) = array_as_matrix_dims(a)?;
+    let (bm, bn) = array_as_matrix_dims(b)?;
+    if an != bm {
+        return Err(Error::shape(format!(
+            "matmul shape mismatch: ({am}, {an}) vs ({bm}, {bn})"
+        )));
+    }
+    if out.rank() != 2 || out.dims() != [am, bn] {
+        return Err(Error::shape(format!(
+            "matmul_out expects out shape ({am}, {bn}), got {:?}",
+            out.dims()
+        )));
+    }
+    let lhs = array_as_mat_ref(a)?;
+    let rhs = array_as_mat_ref(b)?;
+    if am * bn > 0 {
+        let mut dst = MatMut::from_row_major_slice_mut(out.as_mut_slice(), am, bn);
+        faer_matmul(
+            &mut dst,
+            Accum::Replace,
+            lhs,
+            rhs,
+            1.0,
+            matmul_par(am, bn, an),
+        );
+    }
+    Ok(())
+}
+
+
 /// Matrix product `aᵀ @ b`.
 ///
 /// Shapes: `(m, k)ᵀ × (m, n) → (k, n)` i.e. `a` is `m×k`, `b` is `m×n`.

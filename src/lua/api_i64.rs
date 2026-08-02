@@ -866,13 +866,38 @@ pub unsafe extern "C" fn a_i64_put_mask(L: *mut lua_State) -> c_int {
     0
 }
 
+
+pub unsafe extern "C" fn a_i64_add_out(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let b = unsafe { &*check_array_i64(L, 2) };
+    let o = unsafe { &mut *check_array_i64(L, 3) };
+    lua_try!(L, a.array.add_out(&b.array, &mut o.array));
+    unsafe { lua_pushvalue(L, 3) };
+    1
+}
+pub unsafe extern "C" fn a_i64_mul_out(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let b = unsafe { &*check_array_i64(L, 2) };
+    let o = unsafe { &mut *check_array_i64(L, 3) };
+    lua_try!(L, a.array.mul_out(&b.array, &mut o.array));
+    unsafe { lua_pushvalue(L, 3) };
+    1
+}
+pub unsafe extern "C" fn a_i64_neg_out(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let o = unsafe { &mut *check_array_i64(L, 2) };
+    lua_try!(L, a.array.neg_out(&mut o.array));
+    unsafe { lua_pushvalue(L, 2) };
+    1
+}
+
 /// Install `ArrayI64` metatable.
 pub unsafe fn install_metatable(L: *mut lua_State) {
     unsafe {
         luaL_newmetatable(L, ARRAY_I64_MT.as_ptr());
         lua_pushvalue(L, -1);
         lua_setfield(L, -2, c"__index".as_ptr());
-        let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 73] = [
+        let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 76] = [
             (c"__gc", a_i64_gc),
             (c"__len", a_i64_len),
             (c"__tostring", a_i64_tostring),
@@ -946,6 +971,9 @@ pub unsafe fn install_metatable(L: *mut lua_State) {
             (c"compress", a_i64_compress),
             (c"put", a_i64_put),
             (c"put_mask", a_i64_put_mask),
+            (c"add_out", a_i64_add_out),
+            (c"mul_out", a_i64_mul_out),
+            (c"neg_out", a_i64_neg_out),
         ];
         for (name, f) in methods {
             lua_pushcfunction(L, Some(f));

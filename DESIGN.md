@@ -296,6 +296,12 @@ Names match the `lua` feature on `main`. Tutorial samples live in
 - **`put` / `put_mask`**: scatter by indices or mask (in-place).
 - **`take` / `take_i64`**: gather; Lua `take` accepts f64 or i64 index arrays (1-based).
 
+### 3.22 M7.b `out=` (partial, #21)
+
+- **Rust:** `add_out`/`sub_out`/`mul_out`/`div_out`/`neg_out`/`abs_out` on `Array`; same-shape `*_out` on `ArrayI64`; `linalg::matmul_out`.
+- **Lua:** `a:add_out(b, out)`, …, `ml.matmul_out(A,B,out)` — returns `out`.
+- **Not yet:** full surface `out=` on reductions/LA/ufuncs (tracked #21).
+
 ### 4.1 Module functions
 
 **`f64`:** `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`), `array`, `eye`, `where`,
@@ -387,7 +393,7 @@ explicit boundaries (zero-copy views in, owned results out).
 | **M6** | Tier-2 quant sugar: `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis reductions (rank-2), `any`/`all` | **Done** |
 | **v0.1** tag | Explicit release cut | **Deferred** |
 | **M7** | **`i64` surface (correctness):** shared array grammar + integer-path LA (wrapping) + **i64-unique** + views + gcd/lcm/divmod/bitcount + **`from_i64` solvers** (i64 in → f64 out). | **Done** |
-| **M7.b** | **Quant leave-late pack:** (1)–(3) **done** → (4) indexing **done** → (5) `out=` #21 → (6) host Lua views. | **In progress** |
+| **M7.b** | **Quant leave-late pack:** (1)–(4) **done** → (5) `out=` **partial** (elementwise + `matmul_out`; more ops later / #21) → (6) host Lua views. | **In progress** |
 | **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once correctness bars for M7/M7.b hold | **Planned** (after M7.b or when Human gates perf) |
 | **M8** | **Lua host-buffer / view face** — may **fold into M7.b** host zero-copy; kept as explicit embed slice until then | Planned |
 | **M9** | **Small-window pool** — freelist for *n* ≪ 256 | Planned |
