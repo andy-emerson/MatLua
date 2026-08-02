@@ -630,6 +630,102 @@ pub(crate) fn axis1_sum(m: usize, n: usize, a: &[f64], out: &mut [f64]) {
     }
 }
 
+/// Fused mean over axis 0 (rows): one pass, write means of length n.
+#[inline]
+pub(crate) fn axis0_mean(m: usize, n: usize, a: &[f64], out: &mut [f64]) {
+    debug_assert_eq!(out.len(), n);
+    if m == 0 {
+        out.fill(f64::NAN);
+        return;
+    }
+    out.fill(0.0);
+    for i in 0..m {
+        let row = &a[i * n..(i + 1) * n];
+        for j in 0..n {
+            out[j] += row[j];
+        }
+    }
+    let inv = 1.0 / m as f64;
+    for j in 0..n {
+        out[j] *= inv;
+    }
+}
+
+/// Fused mean over axis 1 (cols): one pass, write means of length m.
+#[inline]
+pub(crate) fn axis1_mean(m: usize, n: usize, a: &[f64], out: &mut [f64]) {
+    debug_assert_eq!(out.len(), m);
+    if n == 0 {
+        out.fill(f64::NAN);
+        return;
+    }
+    let inv = 1.0 / n as f64;
+    for i in 0..m {
+        let mut s = 0.0;
+        for j in 0..n {
+            s += a[i * n + j];
+        }
+        out[i] = s * inv;
+    }
+}
+
+/// Fused variance over axis 0: two-pass in one function (no intermediate Array).
+#[inline]
+pub(crate) fn axis0_var(m: usize, n: usize, a: &[f64], ddof: usize, out: &mut [f64]) {
+    debug_assert_eq!(out.len(), n);
+    if m <= ddof {
+        out.fill(f64::NAN);
+        return;
+    }
+    let mut mean = vec![0.0; n];
+    for i in 0..m {
+        for j in 0..n {
+            mean[j] += a[i * n + j];
+        }
+    }
+    let inv = 1.0 / m as f64;
+    for j in 0..n {
+        mean[j] *= inv;
+    }
+    out.fill(0.0);
+    for i in 0..m {
+        for j in 0..n {
+            let d = a[i * n + j] - mean[j];
+            out[j] += d * d;
+        }
+    }
+    let scale = 1.0 / (m - ddof) as f64;
+    for j in 0..n {
+        out[j] *= scale;
+    }
+}
+
+/// Fused variance over axis 1 (no intermediate mean Array).
+#[inline]
+pub(crate) fn axis1_var(m: usize, n: usize, a: &[f64], ddof: usize, out: &mut [f64]) {
+    debug_assert_eq!(out.len(), m);
+    if n <= ddof {
+        out.fill(f64::NAN);
+        return;
+    }
+    let scale = 1.0 / (n - ddof) as f64;
+    let inv = 1.0 / n as f64;
+    for i in 0..m {
+        let mut s = 0.0;
+        for j in 0..n {
+            s += a[i * n + j];
+        }
+        let mu = s * inv;
+        let mut ss = 0.0;
+        for j in 0..n {
+            let d = a[i * n + j] - mu;
+            ss += d * d;
+        }
+        out[i] = ss * scale;
+    }
+}
+
+
 // --- Fused broadcast binary (matrix ± row / col) ---
 
 /// `out[i,j] = a[i,j] op row[j]` for rank-2 `m×n` and length-`n` row.
