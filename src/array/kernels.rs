@@ -201,13 +201,9 @@ pub(crate) fn sum_sq_slice(a: &[f64]) -> f64 {
     s
 }
 
-/// Min with four-way reduction (IEEE `f64::min`, NaN-propagating). Empty → None.
+/// Sequential four-way min (IEEE `f64::min`, NaN-propagating).
 #[inline]
-pub(crate) fn min_slice(a: &[f64]) -> Option<f64> {
-    if a.is_empty() {
-        return None;
-    }
-    // Seed from first element so all-NaN works without a second pass.
+fn min_slice_seq(a: &[f64]) -> f64 {
     let mut m0 = a[0];
     let mut m1 = a[0];
     let mut m2 = a[0];
@@ -222,15 +218,12 @@ pub(crate) fn min_slice(a: &[f64]) -> Option<f64> {
     for &x in chunks.remainder() {
         m0 = m0.min(x);
     }
-    Some(m0.min(m1).min(m2).min(m3))
+    m0.min(m1).min(m2).min(m3)
 }
 
-/// Max with four-way reduction (IEEE `f64::max`, NaN-propagating). Empty → None.
+/// Sequential four-way max.
 #[inline]
-pub(crate) fn max_slice(a: &[f64]) -> Option<f64> {
-    if a.is_empty() {
-        return None;
-    }
+fn max_slice_seq(a: &[f64]) -> f64 {
     let mut m0 = a[0];
     let mut m1 = a[0];
     let mut m2 = a[0];
@@ -245,7 +238,42 @@ pub(crate) fn max_slice(a: &[f64]) -> Option<f64> {
     for &x in chunks.remainder() {
         m0 = m0.max(x);
     }
-    Some(m0.max(m1).max(m2).max(m3))
+    m0.max(m1).max(m2).max(m3)
+}
+
+/// Min with four-way reduction; Rayon over chunks when large (NaN-propagating).
+#[inline]
+pub(crate) fn min_slice(a: &[f64]) -> Option<f64> {
+    if a.is_empty() {
+        return None;
+    }
+    // ~256² elements: sequential; larger matrices benefit from parallel chunks.
+    if a.len() >= 131_072 {
+        use rayon::prelude::*;
+        const CS: usize = 4096;
+        return a
+            .par_chunks(CS)
+            .map(min_slice_seq)
+            .reduce_with(|x, y| x.min(y));
+    }
+    Some(min_slice_seq(a))
+}
+
+/// Max with four-way reduction; Rayon over chunks when large.
+#[inline]
+pub(crate) fn max_slice(a: &[f64]) -> Option<f64> {
+    if a.is_empty() {
+        return None;
+    }
+    if a.len() >= 131_072 {
+        use rayon::prelude::*;
+        const CS: usize = 4096;
+        return a
+            .par_chunks(CS)
+            .map(max_slice_seq)
+            .reduce_with(|x, y| x.max(y));
+    }
+    Some(max_slice_seq(a))
 }
 
 #[inline]

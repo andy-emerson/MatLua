@@ -242,15 +242,32 @@ fn gemm_simple(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &m
     }
 }
 
-/// Entry: packed GEBP for matrices; simple path for tiny; Rayon over row panels.
+/// Entry: packed GEBP for matrices; simple path for tiny; optional Rayon over row panels.
 fn gemm_blocked(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &mut [i64]) {
+    gemm_blocked_ex(am, an, bn, aa, bb, data, true);
+}
+
+/// GEBP without outer Rayon — used as Strassen leaf under parallel M1..M7.
+fn gemm_blocked_seq(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &mut [i64]) {
+    gemm_blocked_ex(am, an, bn, aa, bb, data, false);
+}
+
+fn gemm_blocked_ex(
+    am: usize,
+    an: usize,
+    bn: usize,
+    aa: &[i64],
+    bb: &[i64],
+    data: &mut [i64],
+    parallel: bool,
+) {
     let flops = am.saturating_mul(an).saturating_mul(bn);
     if flops < 48 * 48 * 48 {
         gemm_simple(am, an, bn, aa, bb, data);
         return;
     }
 
-    if flops >= 64 * 64 * 64 && am >= 8 {
+    if parallel && flops >= 64 * 64 * 64 && am >= 8 {
         use rayon::prelude::*;
         // Build list of (i0, mb) panels and process in parallel with correct splits.
         let mut panels = Vec::new();
@@ -290,6 +307,236 @@ fn gemm_blocked(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &
     }
 }
 
+
+// --- Strassen (square, wrapping ring) -----------------------------------------
+// Leaf multiplies use packed GEBP. Threshold tuned on this host (see
+// tests/bench/strassen_crossover.rs); portable default below.
+
+/// Below this order, square products use GEBP only (no Strassen recursion).
+/// Tuned via `strassen_crossover` (GEBP vs Strassen). On 2-core hosts GEBP wins
+/// through at least n=1024; leaf set high so default tables stay on GEBP.
+/// Lower (e.g. 512–768) on many-core machines after re-running the harness.
+/// Path remains: square `n ≥ STRASSEN_LEAF` → Strassen → sequential GEBP leaves.
+pub const STRASSEN_LEAF: usize = 1536;
+
+#[inline]
+fn add_mat(n: usize, a: &[i64], b: &[i64], out: &mut [i64]) {
+    debug_assert_eq!(a.len(), n * n);
+    for i in 0..n * n {
+        out[i] = a[i].wrapping_add(b[i]);
+    }
+}
+
+#[inline]
+fn sub_mat(n: usize, a: &[i64], b: &[i64], out: &mut [i64]) {
+    for i in 0..n * n {
+        out[i] = a[i].wrapping_sub(b[i]);
+    }
+}
+
+/// Extract n×n quadrant (r0,c0) from N×N row-major into contiguous out.
+fn extract_quad(n: usize, n_full: usize, a: &[i64], r0: usize, c0: usize, out: &mut [i64]) {
+    for i in 0..n {
+        let src = &a[(r0 + i) * n_full + c0..(r0 + i) * n_full + c0 + n];
+        out[i * n..(i + 1) * n].copy_from_slice(src);
+    }
+}
+
+fn insert_quad(n: usize, n_full: usize, src: &[i64], r0: usize, c0: usize, dest: &mut [i64]) {
+    for i in 0..n {
+        dest[(r0 + i) * n_full + c0..(r0 + i) * n_full + c0 + n]
+            .copy_from_slice(&src[i * n..(i + 1) * n]);
+    }
+}
+
+/// Square n×n matmul into zeroed `c` (row-major). Uses Strassen when `n >= STRASSEN_LEAF`
+/// (after even pad), else GEBP.
+fn gemm_square(n: usize, a: &[i64], b: &[i64], c: &mut [i64]) {
+    gemm_square_ex(n, a, b, c, /*outer*/ true);
+}
+
+fn gemm_square_ex(n: usize, a: &[i64], b: &[i64], c: &mut [i64], outer: bool) {
+    if n == 0 {
+        return;
+    }
+    if n < STRASSEN_LEAF {
+        // Outer top-level square: parallel GEBP. Nested under Strassen products: sequential.
+        if outer {
+            gemm_blocked(n, n, n, a, b, c);
+        } else {
+            gemm_blocked_seq(n, n, n, a, b, c);
+        }
+        return;
+    }
+    // Pad to even if odd
+    if n % 2 == 1 {
+        let np = n + 1;
+        let mut ap = vec![0i64; np * np];
+        let mut bp = vec![0i64; np * np];
+        let mut cp = vec![0i64; np * np];
+        for i in 0..n {
+            ap[i * np..i * np + n].copy_from_slice(&a[i * n..i * n + n]);
+            bp[i * np..i * np + n].copy_from_slice(&b[i * n..i * n + n]);
+        }
+        gemm_strassen_even(np, &ap, &bp, &mut cp);
+        for i in 0..n {
+            c[i * n..i * n + n].copy_from_slice(&cp[i * np..i * np + n]);
+        }
+        return;
+    }
+    gemm_strassen_even(n, a, b, c);
+}
+
+/// Strassen for even n ≥ STRASSEN_LEAF (or recursive halves).
+/// Seven independent products run via Rayon when the half is still large.
+fn gemm_strassen_even(n: usize, a: &[i64], b: &[i64], c: &mut [i64]) {
+    if n < STRASSEN_LEAF || n % 2 == 1 {
+        gemm_blocked_seq(n, n, n, a, b, c);
+        return;
+    }
+    let m = n / 2;
+    let sz = m * m;
+
+    let mut a11 = vec![0i64; sz];
+    let mut a12 = vec![0i64; sz];
+    let mut a21 = vec![0i64; sz];
+    let mut a22 = vec![0i64; sz];
+    let mut b11 = vec![0i64; sz];
+    let mut b12 = vec![0i64; sz];
+    let mut b21 = vec![0i64; sz];
+    let mut b22 = vec![0i64; sz];
+    extract_quad(m, n, a, 0, 0, &mut a11);
+    extract_quad(m, n, a, 0, m, &mut a12);
+    extract_quad(m, n, a, m, 0, &mut a21);
+    extract_quad(m, n, a, m, m, &mut a22);
+    extract_quad(m, n, b, 0, 0, &mut b11);
+    extract_quad(m, n, b, 0, m, &mut b12);
+    extract_quad(m, n, b, m, 0, &mut b21);
+    extract_quad(m, n, b, m, m, &mut b22);
+
+    // Left/right factors for each of M1..M7 (precompute add/sub).
+    let mut l1 = vec![0i64; sz];
+    let mut r1 = vec![0i64; sz];
+    let mut l2 = vec![0i64; sz];
+    let mut r3 = vec![0i64; sz];
+    let mut r4 = vec![0i64; sz];
+    let mut l5 = vec![0i64; sz];
+    let mut l6 = vec![0i64; sz];
+    let mut r6 = vec![0i64; sz];
+    let mut l7 = vec![0i64; sz];
+    let mut r7 = vec![0i64; sz];
+
+    add_mat(m, &a11, &a22, &mut l1);
+    add_mat(m, &b11, &b22, &mut r1);
+    add_mat(m, &a21, &a22, &mut l2);
+    // M2 right = B11
+    sub_mat(m, &b12, &b22, &mut r3);
+    sub_mat(m, &b21, &b11, &mut r4);
+    add_mat(m, &a11, &a12, &mut l5);
+    // M5 right = B22
+    sub_mat(m, &a21, &a11, &mut l6);
+    add_mat(m, &b11, &b12, &mut r6);
+    sub_mat(m, &a12, &a22, &mut l7);
+    add_mat(m, &b21, &b22, &mut r7);
+
+    let mut m1 = vec![0i64; sz];
+    let mut m2 = vec![0i64; sz];
+    let mut m3 = vec![0i64; sz];
+    let mut m4 = vec![0i64; sz];
+    let mut m5 = vec![0i64; sz];
+    let mut m6 = vec![0i64; sz];
+    let mut m7 = vec![0i64; sz];
+
+    // Parallel independent products (major Strassen win on multi-core).
+    // Explicit parallel scope with disjoint mut refs:
+    rayon::join(
+        || {
+            rayon::join(
+                || {
+                    rayon::join(
+                        || gemm_square_into(m, &l1, &r1, &mut m1),
+                        || gemm_square_into(m, &l2, &b11, &mut m2),
+                    )
+                },
+                || {
+                    rayon::join(
+                        || gemm_square_into(m, &a11, &r3, &mut m3),
+                        || gemm_square_into(m, &a22, &r4, &mut m4),
+                    )
+                },
+            )
+        },
+        || {
+            rayon::join(
+                || {
+                    rayon::join(
+                        || gemm_square_into(m, &l5, &b22, &mut m5),
+                        || gemm_square_into(m, &l6, &r6, &mut m6),
+                    )
+                },
+                || gemm_square_into(m, &l7, &r7, &mut m7),
+            )
+        },
+    );
+
+    let mut c11 = vec![0i64; sz];
+    let mut c12 = vec![0i64; sz];
+    let mut c21 = vec![0i64; sz];
+    let mut c22 = vec![0i64; sz];
+    for i in 0..sz {
+        c11[i] = m1[i]
+            .wrapping_add(m4[i])
+            .wrapping_sub(m5[i])
+            .wrapping_add(m7[i]);
+        c12[i] = m3[i].wrapping_add(m5[i]);
+        c21[i] = m2[i].wrapping_add(m4[i]);
+        c22[i] = m1[i]
+            .wrapping_sub(m2[i])
+            .wrapping_add(m3[i])
+            .wrapping_add(m6[i]);
+    }
+    insert_quad(m, n, &c11, 0, 0, c);
+    insert_quad(m, n, &c12, 0, m, c);
+    insert_quad(m, n, &c21, m, 0, c);
+    insert_quad(m, n, &c22, m, m, c);
+}
+
+/// Multiply square into zeroed buffer (zeros first).
+fn gemm_square_into(n: usize, a: &[i64], b: &[i64], c: &mut [i64]) {
+    c.fill(0);
+    // Nested product (Strassen M_i or recursive half): not outer.
+    gemm_square_ex(n, a, b, c, false);
+}
+
+/// Dispatch: square + large → Strassen path; else GEBP/simple.
+fn gemm_dispatch(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &mut [i64]) {
+    if am == an && an == bn && am >= STRASSEN_LEAF {
+        gemm_square(am, aa, bb, data);
+    } else {
+        gemm_blocked(am, an, bn, aa, bb, data);
+    }
+}
+
+/// Force GEBP (no Strassen) — for crossover measurement only.
+#[doc(hidden)]
+pub fn matmul_gebp_only(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
+    let (am, an) = as_matrix_dims(a)?;
+    let (bm, bn) = as_matrix_dims(b)?;
+    if an != bm {
+        return Err(Error::shape(format!(
+            "matmul shape mismatch: ({am}, {an}) vs ({bm}, {bn})"
+        )));
+    }
+    let prefer_vec = b.rank() == 1 || (a.rank() == 1 && bn == 1);
+    let mut data = pool_i64::take_zeroed(am.saturating_mul(bn));
+    if b.rank() == 1 {
+        // fall back to matmul path
+        return matmul(a, b);
+    }
+    gemm_blocked(am, an, bn, a.as_slice(), b.as_slice(), &mut data);
+    matmul_result(data, am, bn, prefer_vec)
+}
+
 /// Matrix product `a @ b` with wrapping `i64` accumulation.
 pub fn matmul(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
     let (am, an) = as_matrix_dims(a)?;
@@ -324,7 +571,7 @@ pub fn matmul(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
             data[i] = s;
         }
     } else {
-        gemm_blocked(am, an, bn, aa, bb, &mut data);
+        gemm_dispatch(am, an, bn, aa, bb, &mut data);
     }
     matmul_result(data, am, bn, prefer_vec)
 }
@@ -358,7 +605,7 @@ pub fn matmul_out(a: &ArrayI64, b: &ArrayI64, out: &mut ArrayI64) -> Result<()> 
             data[i] = s;
         }
     } else {
-        gemm_blocked(am, an, bn, aa, bb, data);
+        gemm_dispatch(am, an, bn, aa, bb, data);
     }
     Ok(())
 }
@@ -500,6 +747,83 @@ pub fn eye(n: usize) -> Result<ArrayI64> {
     ArrayI64::eye(n)
 }
 
+
+/// Always one Strassen step (even n≥2); sequential GEBP leaves. Test/helper.
+fn gemm_strassen_even_force(n: usize, a: &[i64], b: &[i64], c: &mut [i64]) {
+    assert!(n >= 2 && n % 2 == 0);
+    let m = n / 2;
+    let sz = m * m;
+    let mut a11 = vec![0i64; sz];
+    let mut a12 = vec![0i64; sz];
+    let mut a21 = vec![0i64; sz];
+    let mut a22 = vec![0i64; sz];
+    let mut b11 = vec![0i64; sz];
+    let mut b12 = vec![0i64; sz];
+    let mut b21 = vec![0i64; sz];
+    let mut b22 = vec![0i64; sz];
+    extract_quad(m, n, a, 0, 0, &mut a11);
+    extract_quad(m, n, a, 0, m, &mut a12);
+    extract_quad(m, n, a, m, 0, &mut a21);
+    extract_quad(m, n, a, m, m, &mut a22);
+    extract_quad(m, n, b, 0, 0, &mut b11);
+    extract_quad(m, n, b, 0, m, &mut b12);
+    extract_quad(m, n, b, m, 0, &mut b21);
+    extract_quad(m, n, b, m, m, &mut b22);
+    let mut l1 = vec![0i64; sz];
+    let mut r1 = vec![0i64; sz];
+    let mut l2 = vec![0i64; sz];
+    let mut r3 = vec![0i64; sz];
+    let mut r4 = vec![0i64; sz];
+    let mut l5 = vec![0i64; sz];
+    let mut l6 = vec![0i64; sz];
+    let mut r6 = vec![0i64; sz];
+    let mut l7 = vec![0i64; sz];
+    let mut r7 = vec![0i64; sz];
+    add_mat(m, &a11, &a22, &mut l1);
+    add_mat(m, &b11, &b22, &mut r1);
+    add_mat(m, &a21, &a22, &mut l2);
+    sub_mat(m, &b12, &b22, &mut r3);
+    sub_mat(m, &b21, &b11, &mut r4);
+    add_mat(m, &a11, &a12, &mut l5);
+    sub_mat(m, &a21, &a11, &mut l6);
+    add_mat(m, &b11, &b12, &mut r6);
+    sub_mat(m, &a12, &a22, &mut l7);
+    add_mat(m, &b21, &b22, &mut r7);
+    let mut m1 = vec![0i64; sz];
+    let mut m2 = vec![0i64; sz];
+    let mut m3 = vec![0i64; sz];
+    let mut m4 = vec![0i64; sz];
+    let mut m5 = vec![0i64; sz];
+    let mut m6 = vec![0i64; sz];
+    let mut m7 = vec![0i64; sz];
+    for (prod, left, right) in [
+        (&mut m1, l1.as_slice(), r1.as_slice()),
+        (&mut m2, l2.as_slice(), b11.as_slice()),
+        (&mut m3, a11.as_slice(), r3.as_slice()),
+        (&mut m4, a22.as_slice(), r4.as_slice()),
+        (&mut m5, l5.as_slice(), b22.as_slice()),
+        (&mut m6, l6.as_slice(), r6.as_slice()),
+        (&mut m7, l7.as_slice(), r7.as_slice()),
+    ] {
+        prod.fill(0);
+        gemm_blocked_seq(m, m, m, left, right, prod);
+    }
+    let mut c11 = vec![0i64; sz];
+    let mut c12 = vec![0i64; sz];
+    let mut c21 = vec![0i64; sz];
+    let mut c22 = vec![0i64; sz];
+    for i in 0..sz {
+        c11[i] = m1[i].wrapping_add(m4[i]).wrapping_sub(m5[i]).wrapping_add(m7[i]);
+        c12[i] = m3[i].wrapping_add(m5[i]);
+        c21[i] = m2[i].wrapping_add(m4[i]);
+        c22[i] = m1[i].wrapping_sub(m2[i]).wrapping_add(m3[i]).wrapping_add(m6[i]);
+    }
+    insert_quad(m, n, &c11, 0, 0, c);
+    insert_quad(m, n, &c12, 0, m, c);
+    insert_quad(m, n, &c21, m, 0, c);
+    insert_quad(m, n, &c22, m, m, c);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,6 +895,33 @@ mod tests {
                 }
             }
         }
+        assert_eq!(c.as_slice(), r.as_slice());
+    }
+}
+
+#[cfg(test)]
+mod strassen_tests {
+    use super::*;
+
+    #[test]
+    fn strassen_step_matches_gebp() {
+        // Force one Strassen level at n=128 (below production leaf) for correctness.
+        let n = 128usize;
+        let mut da = Vec::with_capacity(n * n);
+        let mut db = Vec::with_capacity(n * n);
+        let mut x = 1i64;
+        for _ in 0..n * n {
+            da.push(x);
+            x = x.wrapping_add(3);
+            db.push(x);
+            x = x.wrapping_add(5);
+        }
+        let mut c = vec![0i64; n * n];
+        // Call even-Strassen directly (ignores STRASSEN_LEAF early-out by using
+        // a local recurse that always splits once).
+        gemm_strassen_even_force(n, &da, &db, &mut c);
+        let mut r = vec![0i64; n * n];
+        gemm_blocked(n, n, n, &da, &db, &mut r);
         assert_eq!(c.as_slice(), r.as_slice());
     }
 }
