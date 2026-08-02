@@ -236,3 +236,27 @@ fn m7_from_i64_solve_and_eigh() {
     let p = from_i64::pinv(&ArrayI64::from_shape_slice(vec![2, 2], &[1, 0, 0, 1]).unwrap()).unwrap();
     assert!((p.as_slice()[0] - 1.0).abs() < 1e-10);
 }
+
+#[test]
+fn m7b_diagnostics_f64() {
+    use matlua::array::Array;
+    use matlua::linalg::{cond, det, eigvals, matrix_rank, slogdet};
+    let a = Array::from_shape_slice(vec![2, 2], &[1., 2., 3., 4.]).unwrap();
+    assert!((det(&a).unwrap() + 2.0).abs() < 1e-10);
+    let (s, _) = slogdet(&a).unwrap();
+    assert!((s + 1.0).abs() < 1e-12);
+    assert_eq!(matrix_rank(&a, None).unwrap(), 2);
+    assert!(cond(&Array::eye(2).unwrap()).unwrap() < 1.01);
+    let (wr, wi) = eigvals(&Array::eye(2).unwrap()).unwrap();
+    assert!(wr.as_slice().iter().all(|&x| (x - 1.0).abs() < 1e-9));
+    assert!(wi.as_slice().iter().all(|&x| x.abs() < 1e-12));
+}
+
+#[test]
+fn m7b_diagnostics_from_i64() {
+    use matlua::array::ArrayI64;
+    use matlua::linalg::from_i64;
+    let a = ArrayI64::from_shape_slice(vec![2, 2], &[1, 2, 3, 4]).unwrap();
+    assert!((from_i64::det(&a).unwrap() + 2.0).abs() < 1e-10);
+    assert_eq!(from_i64::matrix_rank(&a, None).unwrap(), 2);
+}

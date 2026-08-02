@@ -332,6 +332,112 @@ pub unsafe extern "C" fn l_svd(L: *mut lua_State) -> c_int {
     3
 }
 
+
+pub unsafe extern "C" fn l_det(L: *mut lua_State) -> c_int {
+    if unsafe { is_i64(L, 1) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let d = lua_try!(L, linalg::from_i64::det(&a.array));
+        unsafe { lua_pushnumber(L, d) };
+        return 1;
+    }
+    let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
+    let d = lua_try!(L, linalg::det(&a));
+    unsafe { lua_pushnumber(L, d) };
+    1
+}
+
+pub unsafe extern "C" fn l_slogdet(L: *mut lua_State) -> c_int {
+    if unsafe { is_i64(L, 1) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let (s, la) = lua_try!(L, linalg::from_i64::slogdet(&a.array));
+        unsafe {
+            lua_pushnumber(L, s);
+            lua_pushnumber(L, la);
+        }
+        return 2;
+    }
+    let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
+    let (s, la) = lua_try!(L, linalg::slogdet(&a));
+    unsafe {
+        lua_pushnumber(L, s);
+        lua_pushnumber(L, la);
+    }
+    2
+}
+
+pub unsafe extern "C" fn l_matrix_rank(L: *mut lua_State) -> c_int {
+    let tol = if unsafe { lua_gettop(L) } >= 2 && unsafe { lua_type(L, 2) } != LUA_TNIL {
+        Some(unsafe { luaL_checknumber(L, 2) })
+    } else {
+        None
+    };
+    if unsafe { is_i64(L, 1) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let r = lua_try!(L, linalg::from_i64::matrix_rank(&a.array, tol));
+        unsafe { lua_pushinteger(L, r as lua_Integer) };
+        return 1;
+    }
+    let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
+    let r = lua_try!(L, linalg::matrix_rank(&a, tol));
+    unsafe { lua_pushinteger(L, r as lua_Integer) };
+    1
+}
+
+pub unsafe extern "C" fn l_cond(L: *mut lua_State) -> c_int {
+    if unsafe { is_i64(L, 1) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let c = lua_try!(L, linalg::from_i64::cond(&a.array));
+        unsafe { lua_pushnumber(L, c) };
+        return 1;
+    }
+    let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
+    let c = lua_try!(L, linalg::cond(&a));
+    unsafe { lua_pushnumber(L, c) };
+    1
+}
+
+pub unsafe extern "C" fn l_eigvals(L: *mut lua_State) -> c_int {
+    if unsafe { is_i64(L, 1) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let (wr, wi) = lua_try!(L, linalg::from_i64::eigvals(&a.array));
+        unsafe {
+            push_array(L, wr);
+            push_array(L, wi);
+        }
+        return 2;
+    }
+    let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
+    let (wr, wi) = lua_try!(L, linalg::eigvals(&a));
+    unsafe {
+        push_array(L, wr);
+        push_array(L, wi);
+    }
+    2
+}
+
+pub unsafe extern "C" fn l_eig(L: *mut lua_State) -> c_int {
+    if unsafe { is_i64(L, 1) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let (wr, wi, vr, vi) = lua_try!(L, linalg::from_i64::eig(&a.array));
+        unsafe {
+            push_array(L, wr);
+            push_array(L, wi);
+            push_array(L, vr);
+            push_array(L, vi);
+        }
+        return 4;
+    }
+    let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
+    let (wr, wi, vr, vi) = lua_try!(L, linalg::eig(&a));
+    unsafe {
+        push_array(L, wr);
+        push_array(L, wi);
+        push_array(L, vr);
+        push_array(L, vi);
+    }
+    4
+}
+
 // ----- array methods / metamethods -----
 
 pub unsafe extern "C" fn a_gc(L: *mut lua_State) -> c_int {
@@ -1163,7 +1269,7 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
         lua_pop(L, 1);
 
         lua_newtable(L);
-        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 28] = [
+        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 34] = [
             (c"zeros", l_zeros),
             (c"ones", l_ones),
             (c"full", l_full),
@@ -1192,6 +1298,12 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
             (c"cholesky", l_cholesky),
             (c"qr", l_qr),
             (c"svd", l_svd),
+            (c"det", l_det),
+            (c"slogdet", l_slogdet),
+            (c"matrix_rank", l_matrix_rank),
+            (c"cond", l_cond),
+            (c"eigvals", l_eigvals),
+            (c"eig", l_eig),
         ];
         for (name, f) in funcs {
             lua_pushcfunction(L, Some(f));

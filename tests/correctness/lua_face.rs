@@ -388,3 +388,25 @@ assert(C:get(2,1) == 3)
     )
     .unwrap();
 }
+
+#[test]
+fn m7b_diagnostics_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local A = ml.array({{1,2},{3,4}})
+assert(math.abs(ml.det(A) + 2) < 1e-9)
+local sign, logabs = ml.slogdet(A)
+assert(sign < 0)
+assert(ml.matrix_rank(A) == 2)
+assert(ml.cond(ml.eye(2)) < 1.01)
+local wr, wi = ml.eigvals(ml.eye(3))
+assert(#wr == 3)
+-- i64 promote
+assert(math.abs(ml.det(ml.array_i64({{1,2},{3,4}})) + 2) < 1e-9)
+"#,
+    )
+    .unwrap();
+}
