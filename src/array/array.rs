@@ -940,18 +940,31 @@ impl Array {
     }
 
     /// Mean along `axis` for rank-2.
+    ///
+    /// Fused one-pass kernel (single result buffer; no intermediate sum `Array`).
+    /// Wall-clock ≈ prior `sum_axis`+scale path; switch is for fewer allocs / clearer
+    /// `out=` readiness.
     pub fn mean_axis(&self, axis: usize) -> Result<Array> {
         let (m, n) = self.rank2_dims()?;
-        let s = self.sum_axis(axis)?;
-        let denom = match axis {
-            0 => m as f64,
-            1 => n as f64,
-            _ => unreachable!(),
-        };
-        if denom == 0.0 {
-            return Err(Error::Shape("mean_axis of empty dimension".into()));
+        match axis {
+            0 => {
+                if m == 0 {
+                    return Err(Error::Shape("mean_axis of empty dimension".into()));
+                }
+                let mut out = pool::take_uninit(n);
+                kernels::axis0_mean(m, n, self.as_slice(), &mut out);
+                Ok(Self::from_parts(Shape::from_len(n), out))
+            }
+            1 => {
+                if n == 0 {
+                    return Err(Error::Shape("mean_axis of empty dimension".into()));
+                }
+                let mut out = pool::take_uninit(m);
+                kernels::axis1_mean(m, n, self.as_slice(), &mut out);
+                Ok(Self::from_parts(Shape::from_len(m), out))
+            }
+            _ => Err(Error::Shape(format!("axis {axis} out of range for rank-2"))),
         }
-        Ok(s.mul_scalar(1.0 / denom))
     }
 
     /// Min along `axis` for rank-2.
@@ -997,9 +1010,11 @@ impl Array {
     }
 
     /// Variance along `axis` for rank-2 (`ddof` as NumPy).
+    ///
+    /// Fused two-pass kernel with **no intermediate mean [`Array`]**. Same arithmetic
+    /// as mean-then-scan; fewer allocs (Lua face / `out=` path).
     pub fn var_axis(&self, axis: usize, ddof: usize) -> Result<Array> {
         let (m, n) = self.rank2_dims()?;
-        let mean = self.mean_axis(axis)?;
         let count = match axis {
             0 => m,
             1 => n,
@@ -1010,33 +1025,19 @@ impl Array {
                 "var_axis requires size > ddof (size={count}, ddof={ddof})"
             )));
         }
-        let mut out = pool::take_uninit(mean.len());
-        let src = self.as_slice();
-        let mu = mean.as_slice();
         match axis {
             0 => {
-                for j in 0..n {
-                    let mut ss = 0.0;
-                    for i in 0..m {
-                        let d = src[i * n + j] - mu[j];
-                        ss += d * d;
-                    }
-                    out[j] = ss / (count - ddof) as f64;
-                }
+                let mut out = pool::take_uninit(n);
+                kernels::axis0_var(m, n, self.as_slice(), ddof, &mut out);
+                Ok(Self::from_parts(Shape::from_len(n), out))
             }
             1 => {
-                for i in 0..m {
-                    let mut ss = 0.0;
-                    for j in 0..n {
-                        let d = src[i * n + j] - mu[i];
-                        ss += d * d;
-                    }
-                    out[i] = ss / (count - ddof) as f64;
-                }
+                let mut out = pool::take_uninit(m);
+                kernels::axis1_var(m, n, self.as_slice(), ddof, &mut out);
+                Ok(Self::from_parts(Shape::from_len(m), out))
             }
             _ => unreachable!(),
         }
-        Ok(Self::from_parts(Shape::from_len(mean.len()), out))
     }
 
     /// Std-dev along `axis` for rank-2.
