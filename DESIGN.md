@@ -439,7 +439,7 @@ explicit boundaries (zero-copy views in, owned results out).
 | **v0.1** tag | Explicit release cut | **Deferred** |
 | **M7** | **`i64` surface (correctness):** shared array grammar + integer-path LA (wrapping) + **i64-unique** + views + gcd/lcm/divmod/bitcount + **`from_i64` solvers** (i64 in → f64 out). | **Done** |
 | **M7.b** | **Quant leave-late pack** (f64 + **i64 parity**, §3.25): diagnostics, order stats, random, indexing, partial `out=` (#21), host views. | **Done** (i64 residual closed on M7.c branch) |
-| **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once M7/M7.b correctness holds | **In progress** |
+| **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once M7/M7.b correctness holds | **In progress** (Strassen cut; n=4096 tables; closeout pending your OK) |
 | **M8** | **Host integration depth** (TallyDB letter §5–§6 + view face): see **§7.1.1** | **Planned** |
 | **M9** | **Small-window pool** — freelist for *n* ≪ 256 (TallyDB hot path; letter pressure) | **Planned** |
 | **M10** | **Embed-safe Lua boundary** — letter **§1.1–§1.3** (feature-split face, longjmp/`Drop`, no panic across C) | **Planned** |

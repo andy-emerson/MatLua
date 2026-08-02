@@ -52,17 +52,26 @@ def vec2_n(n: int) -> np.ndarray:
 
 
 def spd_n(n: int) -> np.ndarray:
+    if n >= 1024:
+        ii, jj = np.indices((n, n))
+        s = (0.01 * ((ii + 2 * jj) % 7)).astype(np.float64)
+        s = s + np.eye(n) * (n + 1)
+        return s
     a = dense_n(n)
     return a.T @ a + np.eye(n)
 
 
 def budget(n: int, heavy: bool) -> tuple[int, int]:
     if heavy:
+        if n >= 4096:
+            return 1, 0
         if n >= 1024:
             return 3, 1
         if n >= 256:
             return 6, 2
         return 15, 3
+    if n >= 4096:
+        return 2, 1
     if n >= 1024:
         return 8, 2
     if n >= 256:
@@ -70,9 +79,10 @@ def budget(n: int, heavy: bool) -> tuple[int, int]:
     return 40, 5
 
 
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sizes", default="64,256,1024")
+    ap.add_argument("--sizes", default="64,256,1024,4096")
     args = ap.parse_args()
     sizes = [int(s) for s in args.sizes.split(",") if s.strip()]
 
@@ -115,8 +125,9 @@ def main() -> None:
         print(f"numpy\tmatmul\t{n}\t{time_ms(it, wrm, lambda: a @ b):.6f}")
         print(f"numpy\tsolve\t{n}\t{time_ms(it, wrm, lambda: np.linalg.solve(s, rhs)):.6f}")
         print(f"numpy\tcholesky\t{n}\t{time_ms(it, wrm, lambda: np.linalg.cholesky(s)):.6f}")
-        print(f"numpy\tqr\t{n}\t{time_ms(it, wrm, lambda: np.linalg.qr(a, mode='reduced')):.6f}")
-        print(f"numpy\tsvd\t{n}\t{time_ms(it, wrm, lambda: np.linalg.svd(a, full_matrices=False)):.6f}")
+        if n < 4096:
+            print(f"numpy\tqr\t{n}\t{time_ms(it, wrm, lambda: np.linalg.qr(a, mode='reduced')):.6f}")
+            print(f"numpy\tsvd\t{n}\t{time_ms(it, wrm, lambda: np.linalg.svd(a, full_matrices=False)):.6f}")
 
 
 if __name__ == "__main__":

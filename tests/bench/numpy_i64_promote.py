@@ -26,27 +26,30 @@ def time_ms(iters: int, warm: int, fn) -> float:
 
 
 def dense(n: int) -> np.ndarray:
-    data = np.empty(n * n, dtype=np.int64)
-    x = 1
-    for i in range(n * n):
-        data[i] = np.int64(x if x < 2**63 else x - 2**64)
-        x = (x + 17) & ((1 << 64) - 1)
+    # Vectorized arithmetic progression (mod 2^64 as int64 wrap).
+    i = np.arange(n * n, dtype=np.uint64)
+    data = (1 + i * np.uint64(17)).astype(np.int64)
     return data.reshape(n, n)
 
 
 def budget(n: int, heavy: bool) -> tuple[int, int]:
     # Match tests/bench/i64_promote.rs budget()
     if heavy:
+        if n >= 4096:
+            return 1, 0
         if n >= 1024:
             return 2, 1
         if n >= 256:
             return 4, 1
         return 10, 2
+    if n >= 4096:
+        return 2, 1
     if n >= 1024:
         return 6, 2
     if n >= 256:
         return 12, 3
     return 30, 5
+
 
 
 def emit(op: str, n: int, ms: float) -> None:
@@ -55,29 +58,31 @@ def emit(op: str, n: int, ms: float) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sizes", default="64,256,1024")
+    ap.add_argument("--sizes", default="64,256,1024,4096")
     args = ap.parse_args()
     sizes = [int(s) for s in args.sizes.split(",") if s.strip()]
     print("face\top\tn\tms")
     for n in sizes:
         a = dense(n)
         af = a.astype(np.float64)
-        # Match Rust spd_i64: small-entry Gram + (n+1)I (no wrap at n=1024)
-        ii, jj = np.indices((n, n))
-        g0 = ((ii + 2 * jj) % 7).astype(np.int64)
-        s = (g0.T @ g0) + (n + 1) * np.eye(n, dtype=np.int64)
-        sf = s.astype(np.float64)
-        v = (np.arange(n, dtype=np.int64) * 3 + 1).astype(np.float64)
         it, wrm = budget(n, False)
         ith, wrmh = budget(n, True)
         emit("mean", n, time_ms(it, wrm, lambda: float(a.mean())))
         emit("std", n, time_ms(it, wrm, lambda: float(a.std(ddof=0))))
-        emit("median", n, time_ms(it, wrm, lambda: float(np.median(a))))
-        emit("quantile", n, time_ms(it, wrm, lambda: float(np.quantile(a, 0.75))))
+        if n < 4096:
+            emit("median", n, time_ms(it, wrm, lambda: float(np.median(a))))
+            emit("quantile", n, time_ms(it, wrm, lambda: float(np.quantile(a, 0.75))))
         emit("norm", n, time_ms(it, wrm, lambda: float(np.linalg.norm(af))))
-        emit("solve", n, time_ms(ith, wrmh, lambda: np.linalg.solve(sf, v)))
-        emit("cholesky", n, time_ms(ith, wrmh, lambda: np.linalg.cholesky(sf)))
-        emit("qr", n, time_ms(ith, wrmh, lambda: np.linalg.qr(af)))
+        if n < 4096:
+            # SPD only needed for LA; skip Gram setup at n=4096
+            ii, jj = np.indices((n, n))
+            g0 = ((ii + 2 * jj) % 7).astype(np.int64)
+            s = (g0.T @ g0) + (n + 1) * np.eye(n, dtype=np.int64)
+            sf = s.astype(np.float64)
+            v = (np.arange(n, dtype=np.int64) * 3 + 1).astype(np.float64)
+            emit("solve", n, time_ms(ith, wrmh, lambda: np.linalg.solve(sf, v)))
+            emit("cholesky", n, time_ms(ith, wrmh, lambda: np.linalg.cholesky(sf)))
+            emit("qr", n, time_ms(ith, wrmh, lambda: np.linalg.qr(af)))
 
 
 if __name__ == "__main__":

@@ -85,13 +85,17 @@ fn vec_n(n: usize) -> ArrayI64 {
 
 fn budget(n: usize, heavy: bool) -> (usize, usize) {
     if heavy {
-        if n >= 1024 {
+        if n >= 4096 {
+            (1, 0)
+        } else if n >= 1024 {
             (2, 1)
         } else if n >= 256 {
             (4, 1)
         } else {
             (10, 2)
         }
+    } else if n >= 4096 {
+        (2, 1)
     } else if n >= 1024 {
         (6, 2)
     } else if n >= 256 {
@@ -139,7 +143,6 @@ rhs = V
 fn bench_rust(sizes: &[usize]) {
     for &n in sizes {
         let a = dense(n);
-        let s = spd_i64(n);
         let v = vec_n(n);
         let (it, wrm) = budget(n, false);
         let (ith, wrmh) = budget(n, true);
@@ -150,24 +153,31 @@ fn bench_rust(sizes: &[usize]) {
         emit("rust", "std", n, time_ms(it, wrm, || {
             black_box(a.std(0).unwrap());
         }));
-        emit("rust", "median", n, time_ms(it, wrm, || {
-            black_box(a.median().unwrap());
-        }));
-        emit("rust", "quantile", n, time_ms(it, wrm, || {
-            black_box(a.quantile(0.75).unwrap());
-        }));
+        if n < 4096 {
+            emit("rust", "median", n, time_ms(it, wrm, || {
+                black_box(a.median().unwrap());
+            }));
+            emit("rust", "quantile", n, time_ms(it, wrm, || {
+                black_box(a.quantile(0.75).unwrap());
+            }));
+        }
         emit("rust", "norm", n, time_ms(it, wrm, || {
             black_box(i64_ops::norm(&a).unwrap());
         }));
-        emit("rust", "solve", n, time_ms(ith, wrmh, || {
-            black_box(linalg::from_i64::solve(&s, &v).unwrap());
-        }));
-        emit("rust", "cholesky", n, time_ms(ith, wrmh, || {
-            black_box(linalg::from_i64::cholesky(&s).unwrap());
-        }));
-        emit("rust", "qr", n, time_ms(ith, wrmh, || {
-            black_box(linalg::from_i64::qr(&a).unwrap());
-        }));
+        if n < 4096 {
+            let s = spd_i64(n);
+            emit("rust", "solve", n, time_ms(ith, wrmh, || {
+                black_box(linalg::from_i64::solve(&s, &v).unwrap());
+            }));
+            emit("rust", "cholesky", n, time_ms(ith, wrmh, || {
+                black_box(linalg::from_i64::cholesky(&s).unwrap());
+            }));
+            emit("rust", "qr", n, time_ms(ith, wrmh, || {
+                black_box(linalg::from_i64::qr(&a).unwrap());
+            }));
+        } else {
+            eprintln!("# skip promote LA at n={n} (O(n^3); stats/norm still measured)");
+        }
     }
 }
 
@@ -175,6 +185,10 @@ fn bench_lua(sizes: &[usize]) {
     let lua = Lua::new().unwrap();
     lua.do_string(r#"ml = require "matlua""#).unwrap();
     for &n in sizes {
+        if n >= 4096 {
+            eprintln!("# skip lua face n={n} (O(n^2) setup; rust+numpy still measured)");
+            continue;
+        }
         let build = lua_build(n);
         let (it, wrm) = budget(n, false);
         let (ith, wrmh) = budget(n, true);
@@ -198,9 +212,9 @@ fn main() {
     let sizes: Vec<usize> = if let Some(i) = args.iter().position(|a| a == "--sizes") {
         args.get(i + 1)
             .map(|s| s.split(',').filter_map(|p| p.parse().ok()).collect())
-            .unwrap_or_else(|| vec![64, 256, 1024])
+            .unwrap_or_else(|| vec![64, 256, 1024, 4096])
     } else {
-        vec![64, 256, 1024]
+        vec![64, 256, 1024, 4096]
     };
     eprintln!("# i64→f64 promote-out. sizes={sizes:?}");
     println!("face\top\tn\tms");

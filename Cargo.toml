@@ -68,11 +68,6 @@ harness = false
 required-features = ["lua"]
 
 [[test]]
-name = "strassen_crossover"
-path = "tests/bench/strassen_crossover.rs"
-harness = false
-
-[[test]]
 name = "i64_promote"
 path = "tests/bench/i64_promote.rs"
 harness = false

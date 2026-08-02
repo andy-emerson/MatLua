@@ -2,8 +2,8 @@
 //! Expanded surface (ctors + elementwise siblings + reductions + LA-ish).
 //!
 //! ```text
-//! cargo test --release --features lua --test i64_surface -- --run --sizes 64,256,1024
-//! python3 tests/bench/numpy_i64_fair.py --sizes 64,256,1024
+//! cargo test --release --features lua --test i64_surface -- --run --sizes 64,256,1024,4096
+//! python3 tests/bench/numpy_i64_fair.py --sizes 64,256,1024,4096
 //! ```
 
 use std::env;
@@ -78,13 +78,17 @@ fn vec_n(n: usize) -> ArrayI64 {
 
 fn budget(n: usize, heavy: bool) -> (usize, usize) {
     if heavy {
-        if n >= 1024 {
+        if n >= 4096 {
+            (1, 0)
+        } else if n >= 1024 {
             (3, 1)
         } else if n >= 256 {
             (6, 2)
         } else {
             (15, 3)
         }
+    } else if n >= 4096 {
+        (2, 1)
     } else if n >= 1024 {
         (8, 2)
     } else if n >= 256 {
@@ -207,6 +211,10 @@ fn bench_lua(sizes: &[usize]) {
     lua.do_string(r#"ml = require "matlua""#).unwrap();
 
     for &n in sizes {
+        if n >= 4096 {
+            eprintln!("# skip lua face n={n} (O(n^2) setup; rust+numpy still measured)");
+            continue;
+        }
         let build = lua_build_inputs(n);
         let (it, wrm) = budget(n, false);
         let (ith, wrmh) = budget(n, true);
@@ -261,9 +269,9 @@ fn main() {
     let sizes: Vec<usize> = if let Some(i) = args.iter().position(|a| a == "--sizes") {
         args.get(i + 1)
             .map(|s| s.split(',').filter_map(|p| p.parse().ok()).collect())
-            .unwrap_or_else(|| vec![64, 256, 1024])
+            .unwrap_or_else(|| vec![64, 256, 1024, 4096])
     } else {
-        vec![64, 256, 1024]
+        vec![64, 256, 1024, 4096]
     };
     eprintln!("# i64 three-face expanded. sizes={sizes:?}");
     println!("face\top\tn\tms");

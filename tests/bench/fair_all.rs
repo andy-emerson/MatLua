@@ -3,8 +3,8 @@
 //! Same generation rule for inputs; wall-clock median; setup outside timer.
 //!
 //! ```text
-//! cargo test --release --features lua --test fair_all -- --run --sizes 64,256,1024
-//! python3 tests/bench/numpy_fair.py --sizes 64,256,1024
+//! cargo test --release --features lua --test fair_all -- --run --sizes 64,256,1024,4096
+//! python3 tests/bench/numpy_fair.py --sizes 64,256,1024,4096
 //! python3 tests/bench/compare_fair.py
 //! ```
 
@@ -72,6 +72,18 @@ fn vec2_n(n: usize) -> Array {
 }
 
 fn spd_n(n: usize) -> Array {
+    // Avoid O(n³) Gram setup at huge n: diagonally dominant SPD is enough for solve/chol.
+    if n >= 1024 {
+        let mut data = vec![0.0_f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let v = 0.01 * ((i + 2 * j) % 7) as f64;
+                data[i * n + j] = v;
+            }
+            data[i * n + i] += (n as f64) + 1.0;
+        }
+        return Array::from_shape_vec(vec![n, n], data).unwrap();
+    }
     let a = dense_n(n);
     let at = linalg::transpose(&a).unwrap();
     Array::add(&linalg::matmul(&at, &a).unwrap(), &Array::eye(n).unwrap()).unwrap()
@@ -83,13 +95,17 @@ fn emit(face: &str, op: &str, n: usize, ms: f64) {
 
 fn budget(n: usize, heavy: bool) -> (usize, usize) {
     if heavy {
-        if n >= 1024 {
+        if n >= 4096 {
+            (1, 0)
+        } else if n >= 1024 {
             (3, 1)
         } else if n >= 256 {
             (6, 2)
         } else {
             (15, 3)
         }
+    } else if n >= 4096 {
+        (2, 1)
     } else if n >= 1024 {
         (8, 2)
     } else if n >= 256 {
@@ -178,6 +194,7 @@ fn bench_rust(sizes: &[usize]) {
         }));
 
         let (it, wrm) = budget(n, true);
+        let skip_huge_la = n >= 4096;
         emit("rust", "matmul", n, time_ms(it, wrm, || {
             let _ = linalg::matmul(&a, &b).unwrap();
         }));
@@ -187,12 +204,16 @@ fn bench_rust(sizes: &[usize]) {
         emit("rust", "cholesky", n, time_ms(it, wrm, || {
             let _ = linalg::cholesky(&s).unwrap();
         }));
+        if !skip_huge_la {
         emit("rust", "qr", n, time_ms(it, wrm, || {
             let _ = linalg::qr(&a).unwrap();
         }));
         emit("rust", "svd", n, time_ms(it, wrm, || {
             let _ = linalg::svd(&a).unwrap();
         }));
+        } else {
+            eprintln!("# skip qr/svd at n={n}");
+        }
     }
 }
 
@@ -255,6 +276,10 @@ fn bench_lua(sizes: &[usize]) {
     lua.do_string(r#"ml = require "matlua""#).unwrap();
 
     for &n in sizes {
+        if n >= 4096 {
+            eprintln!("# skip lua face n={n} (O(n^2) setup; rust+numpy still measured)");
+            continue;
+        }
         let build = lua_build_inputs(n);
         let (it, wrm) = budget(n, false);
 
@@ -439,9 +464,9 @@ fn main() {
     let sizes: Vec<usize> = if let Some(i) = args.iter().position(|a| a == "--sizes") {
         args.get(i + 1)
             .map(|s| s.split(',').filter_map(|p| p.parse().ok()).collect())
-            .unwrap_or_else(|| vec![64, 256, 1024])
+            .unwrap_or_else(|| vec![64, 256, 1024, 4096])
     } else {
-        vec![64, 256, 1024]
+        vec![64, 256, 1024, 4096]
     };
 
     eprintln!("# Fair full-surface bench (release, wall clock). sizes={sizes:?}");

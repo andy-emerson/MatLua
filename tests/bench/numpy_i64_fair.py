@@ -26,20 +26,15 @@ def time_ms(iters: int, warm: int, fn) -> float:
 
 
 def dense(n: int) -> np.ndarray:
-    data = np.empty(n * n, dtype=np.int64)
-    x = 1
-    for i in range(n * n):
-        data[i] = np.int64(x if x < 2**63 else x - 2**64)
-        x = (x + 17) & ((1 << 64) - 1)
+    # Vectorized arithmetic progression (mod 2^64 as int64 wrap).
+    i = np.arange(n * n, dtype=np.uint64)
+    data = (1 + i * np.uint64(17)).astype(np.int64)
     return data.reshape(n, n)
 
 
 def dense2(n: int) -> np.ndarray:
-    data = np.empty(n * n, dtype=np.int64)
-    x = 2
-    for i in range(n * n):
-        data[i] = np.int64(x if x < 2**63 else x - 2**64)
-        x = (x + 13) & ((1 << 64) - 1)
+    i = np.arange(n * n, dtype=np.uint64)
+    data = (2 + i * np.uint64(13)).astype(np.int64)
     return data.reshape(n, n)
 
 
@@ -50,16 +45,21 @@ def vec_n(n: int) -> np.ndarray:
 
 def budget(n: int, heavy: bool) -> tuple[int, int]:
     if heavy:
+        if n >= 4096:
+            return 1, 0
         if n >= 1024:
             return 3, 1
         if n >= 256:
             return 6, 2
         return 15, 3
+    if n >= 4096:
+        return 2, 1
     if n >= 1024:
         return 8, 2
     if n >= 256:
         return 20, 4
     return 50, 8
+
 
 
 def emit(op: str, n: int, ms: float) -> None:
@@ -68,7 +68,7 @@ def emit(op: str, n: int, ms: float) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sizes", default="64,256,1024")
+    ap.add_argument("--sizes", default="64,256,1024,4096")
     args = ap.parse_args()
     sizes = [int(s) for s in args.sizes.split(",") if s.strip()]
     print("face\top\tn\tms")
@@ -98,7 +98,9 @@ def main() -> None:
         emit("max", n, time_ms(it, wrm, lambda: int(a.max())))
         emit("transpose", n, time_ms(it, wrm, lambda: a.T.copy()))
         emit("dot", n, time_ms(it, wrm, lambda: int(v @ v)))
-        emit("matmul", n, time_ms(ith, wrmh, lambda: a @ b))
+        if n < 4096:
+            emit("matmul", n, time_ms(ith, wrmh, lambda: a @ b))
+        # n=4096 int64 matmul is multi-minute in NumPy; skip (Rust still measured)
         emit("unique", n, time_ms(it, wrm, lambda: np.unique(v)))
         emit("isin", n, time_ms(it, wrm, lambda: np.isin(a, v)))
 
