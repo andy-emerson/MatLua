@@ -111,3 +111,23 @@ assert(d:get(1) == 9)
     )
     .unwrap();
 }
+
+#[test]
+fn lstsq_eigh_pinv_face() {
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local X = ml.array({{1,0},{1,1},{1,2},{1,3}})
+local y = ml.array({1,3,5,7})
+local b = ml.lstsq(X, y)
+assert(b:rank() == 1 and #b == 2)
+local A = ml.array({{2,0.5},{0.5,1}})
+local w, v = ml.eigh(A)
+assert(w:rank() == 1 and v:rank() == 2)
+local P = ml.pinv(X)
+assert(P:shape()[1] == 2 and P:shape()[2] == 4)
+"#,
+    )
+    .unwrap();
+}

@@ -47,7 +47,7 @@ work on arrays (and array ↔ number). Matrix product is always explicit:
 | **Constructors** | `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`, half-open), `array` (nested tables → dense `f64`), `eye` |
 | **Array methods** | `shape`, `rank`, `get` / `set`, `sum` / `mean` / `min` / `max`, `copy`, `reshape` (may share buffer; write COWs), `transpose`, `fill`, `#a` |
 | **Elementwise** | `+`, `-`, `*`, `/`, unary `-` (array–array or array–number) |
-| **Linear algebra** | `matmul`, `matmul_at`, `normal_eq`, `solve`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd` |
+| **Linear algebra** | `matmul`, `matmul_at`, `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd` |
 | **Rust core** | `Array` (row-major n-D `f64`), views over host buffers, Arrow `Float64Array` interchange, same LA under `matlua::linalg` |
 
 Quality bar is **`f64`**. Storage is a dense buffer, not nested Lua tables
