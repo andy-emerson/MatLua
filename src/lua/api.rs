@@ -13,6 +13,7 @@ use super::ud::{
     array_from_table, check_array, indices_1_based, push_array, push_shape_table, shape_from_args,
     test_array, ARRAY_MT,
 };
+use super::ud_i64::{check_array_i64, test_array_i64, push_array_i64};
 
 macro_rules! lua_try {
     ($L:expr, $expr:expr) => {
@@ -24,6 +25,25 @@ macro_rules! lua_try {
             }
         }
     };
+}
+
+
+/// Materialize argument as owned `f64` [`Array`] (copy f64 userdata or promote i64).
+unsafe fn arg_as_f64(L: *mut lua_State, idx: c_int) -> Result<Array, String> {
+    let f = unsafe { test_array(L, idx) };
+    if !f.is_null() {
+        return Ok(unsafe { &*f }.array.clone());
+    }
+    let i = unsafe { test_array_i64(L, idx) };
+    if !i.is_null() {
+        return Ok(unsafe { &*i }.array.to_f64());
+    }
+    Err("expected Array (f64) or ArrayI64".into())
+}
+
+/// True if stack index is ArrayI64 userdata.
+unsafe fn is_i64(L: *mut lua_State, idx: c_int) -> bool {
+    !unsafe { test_array_i64(L, idx) }.is_null()
 }
 
 // ----- module functions -----
@@ -95,56 +115,109 @@ pub unsafe extern "C" fn l_eye(L: *mut lua_State) -> c_int {
 }
 
 pub unsafe extern "C" fn l_matmul(L: *mut lua_State) -> c_int {
-    let a = unsafe { &*check_array(L, 1) };
-    let b = unsafe { &*check_array(L, 2) };
-    let c = lua_try!(L, linalg::matmul(&a.array, &b.array));
+    // Both i64 → integer matmul (wrapping). Else promote to f64 matmul.
+    if unsafe { is_i64(L, 1) && is_i64(L, 2) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let b = unsafe { &*check_array_i64(L, 2) };
+        let c = lua_try!(L, linalg::i64_ops::matmul(&a.array, &b.array));
+        unsafe { push_array_i64(L, c) };
+        return 1;
+    }
+    let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
+    let b = lua_try!(L, unsafe { arg_as_f64(L, 2) });
+    let c = lua_try!(L, linalg::matmul(&a, &b));
     unsafe { push_array(L, c) };
     1
 }
 
 pub unsafe extern "C" fn l_matmul_at(L: *mut lua_State) -> c_int {
-    let a = unsafe { &*check_array(L, 1) };
-    let b = unsafe { &*check_array(L, 2) };
-    let c = lua_try!(L, linalg::matmul_at(&a.array, &b.array));
+    if unsafe { is_i64(L, 1) && is_i64(L, 2) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let b = unsafe { &*check_array_i64(L, 2) };
+        let c = lua_try!(L, linalg::i64_ops::matmul_at(&a.array, &b.array));
+        unsafe { push_array_i64(L, c) };
+        return 1;
+    }
+    let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
+    let b = lua_try!(L, unsafe { arg_as_f64(L, 2) });
+    let c = lua_try!(L, linalg::matmul_at(&a, &b));
     unsafe { push_array(L, c) };
     1
 }
 
 pub unsafe extern "C" fn l_matmul_bt(L: *mut lua_State) -> c_int {
-    let a = unsafe { &*check_array(L, 1) };
-    let b = unsafe { &*check_array(L, 2) };
-    let c = lua_try!(L, linalg::matmul_bt(&a.array, &b.array));
+    if unsafe { is_i64(L, 1) && is_i64(L, 2) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let b = unsafe { &*check_array_i64(L, 2) };
+        let c = lua_try!(L, linalg::i64_ops::matmul_bt(&a.array, &b.array));
+        unsafe { push_array_i64(L, c) };
+        return 1;
+    }
+    let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
+    let b = lua_try!(L, unsafe { arg_as_f64(L, 2) });
+    let c = lua_try!(L, linalg::matmul_bt(&a, &b));
     unsafe { push_array(L, c) };
     1
 }
 
 pub unsafe extern "C" fn l_normal_eq(L: *mut lua_State) -> c_int {
-    let x = unsafe { &*check_array(L, 1) };
-    let y = unsafe { &*check_array(L, 2) };
-    let b = lua_try!(L, linalg::normal_eq(&x.array, &y.array));
+    // Always f64 result (involves solve).
+    if unsafe { is_i64(L, 1) && is_i64(L, 2) } {
+        let x = unsafe { &*check_array_i64(L, 1) };
+        let y = unsafe { &*check_array_i64(L, 2) };
+        let b = lua_try!(L, linalg::from_i64::normal_eq(&x.array, &y.array));
+        unsafe { push_array(L, b) };
+        return 1;
+    }
+    let x = lua_try!(L, unsafe { arg_as_f64(L, 1) });
+    let y = lua_try!(L, unsafe { arg_as_f64(L, 2) });
+    let b = lua_try!(L, linalg::normal_eq(&x, &y));
     unsafe { push_array(L, b) };
     1
 }
 
 pub unsafe extern "C" fn l_solve(L: *mut lua_State) -> c_int {
-    let a = unsafe { &*check_array(L, 1) };
-    let b = unsafe { &*check_array(L, 2) };
-    let x = lua_try!(L, linalg::solve(&a.array, &b.array));
+    if unsafe { is_i64(L, 1) && is_i64(L, 2) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let b = unsafe { &*check_array_i64(L, 2) };
+        let x = lua_try!(L, linalg::from_i64::solve(&a.array, &b.array));
+        unsafe { push_array(L, x) };
+        return 1;
+    }
+    let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
+    let b = lua_try!(L, unsafe { arg_as_f64(L, 2) });
+    let x = lua_try!(L, linalg::solve(&a, &b));
     unsafe { push_array(L, x) };
     1
 }
 
 pub unsafe extern "C" fn l_lstsq(L: *mut lua_State) -> c_int {
-    let a = unsafe { &*check_array(L, 1) };
-    let b = unsafe { &*check_array(L, 2) };
-    let x = lua_try!(L, linalg::lstsq(&a.array, &b.array));
+    if unsafe { is_i64(L, 1) && is_i64(L, 2) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let b = unsafe { &*check_array_i64(L, 2) };
+        let x = lua_try!(L, linalg::from_i64::lstsq(&a.array, &b.array));
+        unsafe { push_array(L, x) };
+        return 1;
+    }
+    let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
+    let b = lua_try!(L, unsafe { arg_as_f64(L, 2) });
+    let x = lua_try!(L, linalg::lstsq(&a, &b));
     unsafe { push_array(L, x) };
     1
 }
 
 pub unsafe extern "C" fn l_eigh(L: *mut lua_State) -> c_int {
-    let a = unsafe { &*check_array(L, 1) };
-    let (w, v) = lua_try!(L, linalg::eigh(&a.array));
+    if unsafe { is_i64(L, 1) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let (w, v) = lua_try!(L, linalg::from_i64::eigh(&a.array));
+        unsafe {
+            push_array(L, w);
+            push_array(L, v);
+        }
+        return 2;
+    }
+    let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
+    let (w, v) = lua_try!(L, linalg::eigh(&a));
     unsafe {
         push_array(L, w);
         push_array(L, v);
@@ -153,13 +226,25 @@ pub unsafe extern "C" fn l_eigh(L: *mut lua_State) -> c_int {
 }
 
 pub unsafe extern "C" fn l_pinv(L: *mut lua_State) -> c_int {
-    let a = unsafe { &*check_array(L, 1) };
-    let p = lua_try!(L, linalg::pinv(&a.array));
+    if unsafe { is_i64(L, 1) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let p = lua_try!(L, linalg::from_i64::pinv(&a.array));
+        unsafe { push_array(L, p) };
+        return 1;
+    }
+    let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
+    let p = lua_try!(L, linalg::pinv(&a));
     unsafe { push_array(L, p) };
     1
 }
 
 pub unsafe extern "C" fn l_transpose(L: *mut lua_State) -> c_int {
+    if unsafe { is_i64(L, 1) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let t = lua_try!(L, a.array.transpose());
+        unsafe { push_array_i64(L, t) };
+        return 1;
+    }
     let a = unsafe { &*check_array(L, 1) };
     let t = lua_try!(L, linalg::transpose(&a.array));
     unsafe { push_array(L, t) };
@@ -167,14 +252,27 @@ pub unsafe extern "C" fn l_transpose(L: *mut lua_State) -> c_int {
 }
 
 pub unsafe extern "C" fn l_dot(L: *mut lua_State) -> c_int {
-    let a = unsafe { &*check_array(L, 1) };
-    let b = unsafe { &*check_array(L, 2) };
-    let d = lua_try!(L, linalg::dot(&a.array, &b.array));
+    if unsafe { is_i64(L, 1) && is_i64(L, 2) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let b = unsafe { &*check_array_i64(L, 2) };
+        let d = lua_try!(L, linalg::i64_ops::dot(&a.array, &b.array));
+        unsafe { lua_pushinteger(L, d) };
+        return 1;
+    }
+    let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
+    let b = lua_try!(L, unsafe { arg_as_f64(L, 2) });
+    let d = lua_try!(L, linalg::dot(&a, &b));
     unsafe { lua_pushnumber(L, d) };
     1
 }
 
 pub unsafe extern "C" fn l_norm(L: *mut lua_State) -> c_int {
+    if unsafe { is_i64(L, 1) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let n = lua_try!(L, linalg::i64_ops::norm(&a.array));
+        unsafe { lua_pushnumber(L, n) };
+        return 1;
+    }
     let a = unsafe { &*check_array(L, 1) };
     let n = lua_try!(L, linalg::norm(&a.array));
     unsafe { lua_pushnumber(L, n) };
@@ -182,6 +280,12 @@ pub unsafe extern "C" fn l_norm(L: *mut lua_State) -> c_int {
 }
 
 pub unsafe extern "C" fn l_cholesky(L: *mut lua_State) -> c_int {
+    if unsafe { is_i64(L, 1) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let l = lua_try!(L, linalg::from_i64::cholesky(&a.array));
+        unsafe { push_array(L, l) };
+        return 1;
+    }
     let a = unsafe { &*check_array(L, 1) };
     let l = lua_try!(L, linalg::cholesky(&a.array));
     unsafe { push_array(L, l) };
@@ -189,6 +293,15 @@ pub unsafe extern "C" fn l_cholesky(L: *mut lua_State) -> c_int {
 }
 
 pub unsafe extern "C" fn l_qr(L: *mut lua_State) -> c_int {
+    if unsafe { is_i64(L, 1) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let (q, r) = lua_try!(L, linalg::from_i64::qr(&a.array));
+        unsafe {
+            push_array(L, q);
+            push_array(L, r);
+        }
+        return 2;
+    }
     let a = unsafe { &*check_array(L, 1) };
     let (q, r) = lua_try!(L, linalg::qr(&a.array));
     unsafe {
@@ -199,6 +312,16 @@ pub unsafe extern "C" fn l_qr(L: *mut lua_State) -> c_int {
 }
 
 pub unsafe extern "C" fn l_svd(L: *mut lua_State) -> c_int {
+    if unsafe { is_i64(L, 1) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let (u, s, v) = lua_try!(L, linalg::from_i64::svd(&a.array));
+        unsafe {
+            push_array(L, u);
+            push_array(L, s);
+            push_array(L, v);
+        }
+        return 3;
+    }
     let a = unsafe { &*check_array(L, 1) };
     let (u, s, v) = lua_try!(L, linalg::svd(&a.array));
     unsafe {
@@ -1074,6 +1197,9 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
             lua_pushcfunction(L, Some(f));
             lua_setfield(L, -2, name.as_ptr());
         }
+        // M7 i64 surface
+        super::api_i64::install_metatable(L);
+        super::api_i64::register_module_funcs(L);
     }
     1
 }

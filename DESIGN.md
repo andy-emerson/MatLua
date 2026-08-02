@@ -250,10 +250,31 @@ internally. Measurement: `tests/bench/compare_compose.py`.
 Names match the `lua` feature on `main`. Tutorial samples live in
 [README.md](README.md); this section freezes the surface for implementers.
 
+### 3.17 `i64` arrays (M7)
+
+- **`ArrayI64`**: owned row-major `i64`, same shape/rank model as `f64` [`Array`].
+- **Introduction order:** `f64` first, then `i64` (not a permanent “LA is only f64” hierarchy).
+- **Integer LA path:** `matmul` / `matmul_at` / `matmul_bt` / `dot` / `transpose` / `eye` on `ArrayI64` via `linalg::i64_ops` (wrapping `i64` accumulators; not faer). Integer×integer→integer in \(\mathbb{Z}\); fixed-width may wrap.
+- **Real LA on integer inputs (NumPy-style):** `linalg::from_i64::{solve,lstsq,normal_eq,pinv,eigh,cholesky,qr,svd}` promote with `to_f64` and return **`f64` arrays**. Lua `ml.solve` / `eigh` / … accept `ArrayI64` the same way. Not exact rational solve; values \(>2^{53}\) lose integer exactness.
+- **Still not pure-`i64` codomain:** those ops never return `ArrayI64` (math is real-valued).
+- **Stats that are real-valued:** `mean` / `var` / `std` (+ axis) take `i64` and return `f64`.
+- **Arithmetic:** wrapping add/sub/mul/neg/abs; truncating `/`; division by zero → `0` (no panic).
+- **Mean** (scalar or axis) returns **`f64`** (or `f64` array).
+- **Casts:** `ArrayI64::to_f64` / `Array::to_i64` (truncate toward zero).
+- **Arrow:** `Int64Array` interchange (non-null).
+- **Lua face:** `*_i64` constructors above; methods include shared grammar + i64-unique (`unique`, `isin`, `bincount`, `searchsorted`, `sort`, bitwise, `rem`, `divmod`, `gcd`/`lcm`, …); `get`/`set` integers; `to_f64` / `dtype`.
+- **Also on i64 (Rust+Lua):** `where_cond`, `concatenate`/`stack`, `sign`/`clip`, `var`/`std` (as `f64`), `any`/`all` (+ axis), `slice`/`rows`/`row`/`col`, `broadcast_to`, compares (array and scalar).
+- **i64-unique (M7):** bitwise/rem/shift, `unique`/`isin`/`bincount`/`searchsorted`/`sort`, `divmod`/`gcd`/`lcm`, bit counts; **`ArrayViewI64` / `ArrayViewMutI64`** (Rust host buffers).
+- **Not M7 / later:** float-only ufuncs (`exp`/`log`/…), `cov`/`corrcoef`, nan*; **Lua** host-view userdata (M7.b/M8); performance (M7.c).
+
+
 ### 4.1 Module functions
 
-`zeros`, `ones`, `full`, `arange` (`start, stop[, step]`), `array`, `eye`, `where`,
-`matmul`, `matmul_at` (AᵀB; large same-buffer AᵀA may materialize Aᵀ once), `matmul_bt` (ABᵀ; large AAᵀ same rule), `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd`
+**`f64`:** `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`), `array`, `eye`, `where`,
+`matmul`, `matmul_at` (AᵀB; large same-buffer AᵀA may materialize Aᵀ once), `matmul_bt` (ABᵀ; large AAᵀ same rule), `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd`.
+
+**`i64` constructors / helpers:** `zeros_i64`, `ones_i64`, `full_i64`, `arange_i64`, `array_i64`, `eye_i64`, `diag_i64`, `outer_i64`, `where_i64`, `concatenate_i64`, `stack_i64`, `broadcast_to_i64`, plus `matmul_i64` / `dot_i64` / …  
+**Dual:** `matmul` / `solve` / `eigh` / … accept `ArrayI64` where applicable (integer matmul stays i64; solvers return `f64` arrays). See §3.17.
 
 ### 4.2 Array methods and metamethods
 
@@ -316,7 +337,7 @@ explicit boundaries (zero-copy views in, owned results out).
 | Path | Role |
 |------|------|
 | `matlua::array` | `Array`, `Shape`, views, elementwise ops |
-| `matlua::linalg` | matmul, solve, decompositions, norm, eye |
+| `matlua::linalg` | matmul, solve, decompositions, norm, eye; `i64_ops` integer LA; `from_i64` promote solvers |
 | `matlua::error` | `Error` / `Result` |
 | `matlua::lua` | register, userdata, optional test `Lua` helper (`lua` feature) |
 
@@ -337,18 +358,20 @@ explicit boundaries (zero-copy views in, owned results out).
 | **M5** | Tier-1 leave-late array ops | **Done** |
 | **M6** | Tier-2 quant sugar: `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis reductions (rank-2), `any`/`all` | **Done** |
 | **v0.1** tag | Explicit release cut | **Deferred** |
-| **M7** | **`i64` arrays** (first multi-dtype step): owned construct/index/elementwise needed for ordering keys and exact integer columns; LA remains `f64`-first | **Next** |
-| **M8** | **Lua host-buffer / view face** — scripts can use engine (or other host) memory without only owned copies (`from_host` / view userdata; lifetime contract) | Planned |
-| **M9** | **Small-window pool** — freelist / recycle policy that covers *n* ≪ 256 (TallyDB-style 64-row windows), not only bulk desk sizes | Planned |
-| **M10** | **Embed-safe Lua boundary** — no `lua_error` longjmp over live Rust drops; `catch_unwind` on every `extern "C"` entry | Planned |
-| **M11** | **CI + embed hygiene** — `.github` CI (tests, `MATLUA_LUA_APICHECK`); no `LUA_USE_DLOPEN` on embed/vendored profile; `take_uninit` Miri-clean (or init-only public paths) | Planned |
-| **M12** | **`arrow-lite` cutover** — runtime off `arrow-array`/`arrow-buffer`/`arrow-schema` once shared **`arrow-lite` v0.1** is released; refactor sooner rather than later after that gate | **Gated** on arrow-lite v0.1 |
+| **M7** | **`i64` surface (correctness):** shared array grammar + integer-path LA (wrapping) + **i64-unique** + views + gcd/lcm/divmod/bitcount + **`from_i64` solvers** (i64 in → f64 out). | **Done** |
+| **M7.b** | **Quant leave-late pack (NumPy-class desk):** random, median/quantile, richer indexing, LA diagnostics (`det`/`rank`/`cond`/general eig as applicable), `out=` ([#21](https://github.com/andy-emerson/MatLua/issues/21)), host zero-copy into scripts — whatever a quant expects beyond M0–M7 basics | **Planned** (after M7 correctness) |
+| **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once correctness bars for M7/M7.b hold | **Planned** (after M7.b or when Human gates perf) |
+| **M8** | **Lua host-buffer / view face** — may **fold into M7.b** host zero-copy; kept as explicit embed slice until then | Planned |
+| **M9** | **Small-window pool** — freelist for *n* ≪ 256 | Planned |
+| **M10** | **Embed-safe Lua boundary** — no longjmp over live Rust drops; `catch_unwind` on `extern "C"` | Planned |
+| **M11** | **CI + embed hygiene** — `.github`, APICHECK, no DLOPEN embed profile, Miri-clean `take_uninit` | Planned |
+| **M12** | **`arrow-lite` cutover** when shared **arrow-lite v0.1** ships | **Gated** |
 
-**Priority (Human, 2026-08-02):** **M7 (`i64`) first** among open work; then **M8–M11** (TallyDB fusion / embed bar from host review); **M12** as soon as **arrow-lite v0.1** exists (layout refactor is cheaper early). Further dtypes (`f32`, complex, …) wait until after M7–M12 unless a new need appears.
+**Priority:** **M7 Done** → **M7.b** (quant pack) → **M7.c** (optimize all); embed **M8–M11** and **M12** remain. Further dtypes (`f32`, complex, …) after this arc unless a new need appears.
 
-**Also tracked (not renumbered milestones):** in-place `out=` ([#21](https://github.com/andy-emerson/MatLua/issues/21)); TallyDB engine cutover (other repo); optional later dtypes beyond `i64`.
+**Also tracked:** TallyDB engine cutover (other repo).
 
-**TallyDB readiness framing:** M0–M6 solve bulk desk math and vocabulary. Fusion needs **M8–M9** (host views + small allocs) and embed bar **M10–M11**. Shared layout **M12** and keys **M7** complete the long joint stack; **M7 is urgent for integer columns even before full fusion polish.**
+**TallyDB readiness:** M7 keys + M7.b/M8 host views + M9–M11 embed bar; **M12** shared layout.
 
 ### 7.2 Performance program (P0–P6)
 
@@ -427,14 +450,16 @@ Human is always **author** of record; agent may be **co-author** when allowed fo
 
 ## 10. Status
 
-**Shipped surface** matches §3–§4: row-major `f64` arrays, views, elementwise,
-Arrow interchange, faer LA, Lua face with 1-based indexing, composed paths
-(`matmul_at`, `matmul_bt`, `normal_eq`), M4a–M6 surface, reshape buffer sharing (§3.13).
+**Shipped surface** matches §3–§4: row-major `f64` arrays, **`ArrayI64` (M7)**, views
+(`f64` and `i64`), elementwise, Arrow `Float64`/`Int64`, faer LA + `i64_ops` / `from_i64`,
+Lua face (1-based) including `*_i64` and dual-dtype `solve`/`matmul`, M4a–M6, reshape COW (§3.13).
 
 Package version is **`0.0.1`**. Call **v0.1** when the human tags a release;
-until then treat the tree as a **v0.1 candidate** per §7.1. **Next open milestone: M7 (`i64`)** (§7.1).
+until then treat the tree as a **v0.1 candidate** per §7.1. **M7 (`i64`) is Done.**
+**Next open product milestone: M7.b** (quant leave-late pack); then **M7.c** (optimize).
+Embed track **M8–M11** and **M12** (arrow-lite) remain per §7.1.
 
-Open work: §7.1 M7–M12, GitHub Issues (e.g. `out=` #21), and measured tables in
+Open work: §7.1 M7.b–M12, GitHub Issues (e.g. `out=` #21 in M7.b), and measured tables in
 [`tests/README.md`](tests/README.md) — not as a living log in this file.
 
 Update this document when rulings or the frozen public face change — not on

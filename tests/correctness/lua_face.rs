@@ -223,3 +223,168 @@ assert(mask:any() and not mask:all())
     )
     .unwrap();
 }
+
+#[test]
+fn m7_i64_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local a = ml.array_i64({{1,2,3},{4,5,6}})
+assert(a:dtype() == "i64")
+assert(a:rank() == 2)
+assert(a:sum() == 21)
+assert(a:get(1,1) == 1 and a:get(2,3) == 6)
+local b = ml.arange_i64(0, 5)
+assert(#b == 5 and b:get(1) == 0 and b:get(5) == 4)
+local c = a + ml.full_i64({2,3}, 1)
+assert(c:get(1,1) == 2)
+local f = a:to_f64()
+assert(type(f:sum()) == "number")
+local z = ml.zeros_i64(3)
+assert(z:sum() == 0)
+local s = a:sum(0)
+assert(s:get(1) == 5 and s:get(3) == 9)
+local idx = ml.array_i64({3,1,2}):argsort()
+assert(idx:get(1) == 2 and idx:get(2) == 3 and idx:get(3) == 1)
+local t = ml.array_i64({10,20,30}):take(idx)
+assert(t:get(1) == 20 and t:get(2) == 30 and t:get(3) == 10)
+"#,
+    )
+    .unwrap();
+}
+
+
+#[test]
+fn m7_i64_extended_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local a = ml.array_i64({1,2,3})
+local b = ml.array_i64({4,5,6})
+local c = ml.concatenate_i64(0, a, b)
+assert(#c == 6 and c:get(6) == 6)
+local s = ml.stack_i64(0, a, b)
+assert(s:rank() == 2 and s:get(2,3) == 6)
+local cond = ml.array_i64({1,0,1})
+local w = ml.where_i64(cond, a, b)
+assert(w:get(1) == 1 and w:get(2) == 5 and w:get(3) == 3)
+assert(a:sign():get(1) == 1)
+assert(ml.array_i64({-5,0,7}):clip(0, 5):get(1) == 0)
+assert(a:cumsum():get(3) == 6)
+assert(a:argmin() == 1 and a:argmax() == 3)
+assert(a:any() and not ml.zeros_i64(3):any())
+local m = ml.array_i64({{1,0},{0,1}})
+assert(not m:all()) -- has zeros
+assert(ml.ones_i64(2,2):all())
+assert(m:diagonal():get(1) == 1 and m:trace() == 2)
+local row = m:row(1)
+assert(#row == 2 and row:get(1) == 1)
+local col = m:col(2)
+assert(col:get(2) == 1)
+assert(a:var(0) == 2/3)
+local br = ml.array_i64({1,2}):broadcast_to(2, 2)
+assert(br:rank() == 2)
+assert(a:eq(a):all())
+assert(a:lt(b):all())
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn m7_i64_matmul_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local A = ml.array_i64({{1,2},{3,4}})
+local B = ml.array_i64({{5,6},{7,8}})
+local C = ml.matmul_i64(A, B)
+assert(C:get(1,1) == 19 and C:get(2,2) == 50)
+local v = ml.array_i64({1,1})
+local Av = ml.matmul_i64(A, v)
+assert(#Av == 2 and Av:get(1) == 3 and Av:get(2) == 7)
+assert(ml.dot_i64(ml.array_i64({1,2,3}), ml.array_i64({4,5,6})) == 32)
+local X = ml.array_i64({{1,0},{1,1},{1,2}})
+local y = ml.array_i64({1,2,3})
+local xty = ml.matmul_at_i64(X, y)
+assert(xty:get(1) == 6 and xty:get(2) == 8)
+assert(A:eq(1):get(1,1) == 1 and A:eq(1):get(1,2) == 0)
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn m7_i64_unique_bits_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local a = ml.array_i64({3,1,2,1,3})
+local u = a:unique()
+assert(#u == 3 and u:get(1) == 1)
+local vals, counts = a:unique_counts()
+assert(counts:sum() == 5)
+assert(a:isin(ml.array_i64({1,9})):sum() == 2)
+assert(ml.array_i64({0,1,1,2}):bincount():get(2) == 2)
+local s = ml.array_i64({1,3,5,7})
+assert(s:searchsorted(4) == 3)
+assert(a:sort():get(1) == 1)
+local x = ml.array_i64({12, 10})
+assert(x:rem(5):get(1) == 2)
+assert(x:bitand(ml.array_i64({10,12})):get(1) == 8)
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn m7_i64_finish_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local a = ml.array_i64({2, 3, 4})
+assert(a:power(2):get(1) == 4)
+local q, r = a:divmod(ml.array_i64({2, 2, 3}))
+assert(q:get(1) == 1 and r:get(3) == 1)
+assert(ml.array_i64({12, 8}):gcd(ml.array_i64({8, 12})):get(1) == 4)
+assert(ml.array_i64({4}):lcm(ml.array_i64({6})):get(1) == 12)
+assert(ml.array_i64({7}):count_ones():get(1) == 3)
+"#,
+    )
+    .unwrap();
+}
+
+
+#[test]
+fn m7_solve_accepts_i64_returns_f64() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local A = ml.array_i64({{2,0},{0,2}})
+local b = ml.array_i64({2,4})
+local x = ml.solve(A, b)
+-- f64 array: dtype via sum being number path; check values
+assert(math.abs(x:get(1) - 1) < 1e-9)
+assert(math.abs(x:get(2) - 2) < 1e-9)
+local w, v = ml.eigh(ml.array_i64({{2,0},{0,3}}))
+assert(w:rank() == 1 and v:rank() == 2)
+-- integer matmul still returns i64
+local C = ml.matmul(ml.array_i64({{1,2},{3,4}}), ml.array_i64({{1,0},{0,1}}))
+assert(C:dtype() == "i64")
+assert(C:get(2,1) == 3)
+"#,
+    )
+    .unwrap();
+}

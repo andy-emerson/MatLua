@@ -1,6 +1,6 @@
 //! MatLua — dense numeric arrays and linear algebra for Lua 5.4.
 //!
-//! Rust core: Arrow-shaped `f64` buffers and faer-backed dense LA. Optional
+//! Rust core: Arrow-shaped dense buffers (`f64` product bar, `i64` M7) and faer-backed dense LA. Optional
 //! Lua face (`lua` feature) registers into a host-owned PUC Lua 5.4 state.
 //!
 //! - Visitors / users: repository `README.md`
@@ -19,5 +19,5 @@ pub mod linalg;
 #[cfg_attr(docsrs, doc(cfg(feature = "lua")))]
 pub mod lua;
 
-pub use array::{Array, ArrayView, ArrayViewMut, Shape};
+pub use array::{Array, ArrayI64, ArrayView, ArrayViewMut, ArrayViewI64, ArrayViewMutI64, DType, Shape};
 pub use error::{Error, Result};

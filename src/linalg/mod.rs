@@ -1,4 +1,5 @@
 //! Dense linear algebra on rank-1/2 [`Array`] values (faer-backed).
+//! Integer inputs to real solvers: [`from_i64`] (promote to `f64`, NumPy-style).
 //!
 //! Public functions take and return MatLua [`Array`]s. Inputs are viewed as
 //! faer [`MatRef`](faer::MatRef) over contiguous row-major storage (zero-copy).
@@ -17,6 +18,8 @@
 //! Use [`dot`] for the inner product of two equal-length vectors.
 
 mod convert;
+pub mod i64_ops;
+pub mod from_i64;
 
 use faer::linalg::matmul::matmul as faer_matmul;
 use faer::linalg::solvers::{Solve, SolveLstsq};

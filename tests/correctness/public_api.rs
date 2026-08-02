@@ -139,3 +139,100 @@ fn m6_tier2_smoke() {
     assert_eq!(v.take(&idx).unwrap().as_slice(), &[1., 2., 3.]);
     assert_eq!(Array::diag(&v).unwrap().dims(), &[3, 3]);
 }
+
+#[test]
+fn m7_i64_surface_smoke() {
+    use matlua::{Array, ArrayI64, DType};
+    let a = ArrayI64::from_shape_slice(vec![2, 3], &[1, 2, 3, 4, 5, 6]).unwrap();
+    assert_eq!(a.dtype(), DType::I64);
+    assert_eq!(a.sum(), 21);
+    assert_eq!(a.sum_axis(0).unwrap().as_slice(), &[5, 7, 9]);
+    let b = ArrayI64::arange(0, 4).unwrap();
+    assert_eq!(b.as_slice(), &[0, 1, 2, 3]);
+    let c = a.add(&ArrayI64::full(vec![2, 3], 1).unwrap()).unwrap();
+    assert_eq!(c.as_slice()[0], 2);
+    let f = a.to_f64();
+    assert_eq!(f.dtype(), DType::F64);
+    assert_eq!(f.as_slice()[0], 1.0);
+    let back = f.to_i64();
+    assert_eq!(back.as_slice(), a.as_slice());
+    let idx = ArrayI64::from_shape_slice(vec![3], &[3, 1, 4]).unwrap().argsort(false).unwrap();
+    assert_eq!(idx.as_slice(), &[1, 0, 2]);
+    let ar = a.to_arrow();
+    let a2 = ArrayI64::from_arrow(&ar, vec![2, 3]).unwrap();
+    assert_eq!(a, a2);
+    // f64 LA path unchanged
+    let m = Array::eye(2).unwrap();
+    let _ = matlua::linalg::solve(&m, &Array::from_shape_slice(vec![2], &[1., 2.]).unwrap()).unwrap();
+}
+
+
+#[test]
+fn m7_i64_extended_surface() {
+    use matlua::ArrayI64;
+    let a = ArrayI64::from_shape_slice(vec![2], &[1, 2]).unwrap();
+    let b = ArrayI64::from_shape_slice(vec![2], &[3, 4]).unwrap();
+    let c = ArrayI64::concatenate(0, &[&a, &b]).unwrap();
+    assert_eq!(c.len(), 4);
+    let s = ArrayI64::stack(1, &[&a, &b]).unwrap();
+    assert_eq!(s.dims(), &[2, 2]);
+    let m = ArrayI64::from_shape_slice(vec![2, 2], &[1, 0, 0, 1]).unwrap();
+    assert!(!m.all()); assert!(ArrayI64::ones(vec![2, 2]).unwrap().all());
+    assert_eq!(m.any_axis(0).unwrap().as_slice(), &[1, 1]);
+    assert_eq!(m.clip(0, 0).unwrap().as_slice(), &[0, 0, 0, 0]);
+    assert!((a.std(0).unwrap() - 0.5).abs() < 1e-12);
+}
+
+#[test]
+fn m7_i64_matmul_and_dot() {
+    use matlua::array::ArrayI64;
+    use matlua::linalg::i64_ops;
+    let a = ArrayI64::from_shape_slice(vec![2, 2], &[1, 2, 3, 4]).unwrap();
+    let b = ArrayI64::from_shape_slice(vec![2, 2], &[5, 6, 7, 8]).unwrap();
+    let c = i64_ops::matmul(&a, &b).unwrap();
+    assert_eq!(c.as_slice(), &[19, 22, 43, 50]);
+    // wrapping product still integer type
+    let big = ArrayI64::full(vec![2, 2], i64::MAX / 2).unwrap();
+    let _ = i64_ops::matmul(&big, &big).unwrap();
+    let d = i64_ops::dot(
+        &ArrayI64::from_shape_slice(vec![3], &[1, 2, 3]).unwrap(),
+        &ArrayI64::from_shape_slice(vec![3], &[1, 1, 1]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(d, 6);
+    let m = ArrayI64::from_shape_slice(vec![2, 3], &[1, 2, 3, 4, 5, 6]).unwrap();
+    let va = m.var_axis(0, 0).unwrap();
+    assert_eq!(va.rank(), 1);
+    assert_eq!(va.len(), 3);
+}
+
+#[test]
+fn m7_i64_views_and_finish() {
+    use matlua::{ArrayI64, ArrayViewI64};
+    let buf = vec![1i64, 2, 3, 4];
+    let v = ArrayViewI64::try_from_dims(vec![2, 2], &buf).unwrap();
+    assert_eq!(v.get(&[1, 1]).unwrap(), 4);
+    let owned = v.to_owned_array();
+    assert_eq!(owned.as_slice(), &[1, 2, 3, 4]);
+    let a = ArrayI64::from_shape_slice(vec![2], &[6, 15]).unwrap();
+    let b = ArrayI64::from_shape_slice(vec![2], &[9, 25]).unwrap();
+    assert_eq!(a.gcd(&b).unwrap().as_slice(), &[3, 5]);
+    assert_eq!((&a + 1i64).as_slice(), &[7, 16]);
+}
+
+
+#[test]
+fn m7_from_i64_solve_and_eigh() {
+    use matlua::array::ArrayI64;
+    use matlua::linalg::from_i64;
+    let a = ArrayI64::from_shape_slice(vec![2, 2], &[2, 0, 0, 2]).unwrap();
+    let b = ArrayI64::from_shape_slice(vec![2], &[2, 4]).unwrap();
+    let x = from_i64::solve(&a, &b).unwrap();
+    assert!((x.as_slice()[0] - 1.0).abs() < 1e-12);
+    assert!((x.as_slice()[1] - 2.0).abs() < 1e-12);
+    let (w, v) = from_i64::eigh(&a).unwrap();
+    assert_eq!(w.dtype(), matlua::DType::F64);
+    assert_eq!(v.rank(), 2);
+    let p = from_i64::pinv(&ArrayI64::from_shape_slice(vec![2, 2], &[1, 0, 0, 1]).unwrap()).unwrap();
+    assert!((p.as_slice()[0] - 1.0).abs() < 1e-10);
+}

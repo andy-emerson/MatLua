@@ -28,8 +28,10 @@
 #![allow(non_snake_case)] // Lua C API uses `L` for lua_State*
 
 mod api;
+mod api_i64;
 mod ffi;
 mod ud;
+mod ud_i64;
 
 use std::ffi::CString;
 use std::os::raw::c_int;
