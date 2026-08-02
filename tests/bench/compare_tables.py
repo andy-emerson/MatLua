@@ -83,21 +83,34 @@ def build_f64(data: dict) -> tuple[str, str]:
 
 
 def build_i64(data: dict) -> tuple[str, str]:
-    keys = sorted({(op, n) for (face, op, n) in data if face in ("numpy", "i64")})
+    # faces: numpy, rust, lua (rust/lua from i64_surface; accept legacy face "i64" as rust)
+    faces_r = ("rust", "i64")
+    keys = sorted(
+        {
+            (op, n)
+            for (face, op, n) in data
+            if face in ("numpy", "rust", "lua", "i64")
+        }
+    )
     abs_rows = []
     rel_rows = []
     for op, n in keys:
         np_ms = data.get(("numpy", op, n))
-        m_ms = data.get(("i64", op, n))
-        abs_rows.append([op, str(n), fmt_ms(np_ms), fmt_ms(m_ms)])
-        r = (m_ms / np_ms) if np_ms and m_ms and np_ms > 0 else None
-        rel_rows.append([op, str(n), "1.00x", fmt_x(r)])
+        ru_ms = data.get(("rust", op, n))
+        if ru_ms is None:
+            ru_ms = data.get(("i64", op, n))  # legacy
+        lu_ms = data.get(("lua", op, n))
+        abs_rows.append([op, str(n), fmt_ms(np_ms), fmt_ms(ru_ms), fmt_ms(lu_ms)])
+        r_np = (ru_ms / np_ms) if np_ms and ru_ms and np_ms > 0 else None
+        l_np = (lu_ms / np_ms) if np_ms and lu_ms and np_ms > 0 else None
+        l_r = (lu_ms / ru_ms) if ru_ms and lu_ms and ru_ms > 0 else None
+        rel_rows.append([op, str(n), "1.00x", fmt_x(r_np), fmt_x(l_np), fmt_x(l_r)])
     abs_t = md_table(
-        ["op", "n", "NumPy int64 (ms)", "MatLua Rust i64 (ms)"],
+        ["op", "n", "NumPy int64 (ms)", "MatLua Rust i64 (ms)", "MatLua Lua i64 (ms)"],
         abs_rows,
     )
     rel_t = md_table(
-        ["op", "n", "NumPy", "MatLua i64 / NumPy"],
+        ["op", "n", "NumPy", "Rust/NumPy", "Lua/NumPy", "Lua/Rust"],
         rel_rows,
     )
     return abs_t, rel_t
@@ -129,14 +142,15 @@ Median wall time. Setup outside the clock. Smaller is better.
 
 ### Table C — i64 absolute wall time (ms)
 
-MatLua **wrapping i64** vs NumPy **int64** (same generation rule as `i64_surface`).
+Three faces: NumPy **int64** · MatLua Rust wrapping **i64** · MatLua **Lua** i64.
+Same generation as `i64_surface` / `numpy_i64_fair.py`.
 NumPy integer matmul is not OpenBLAS DGEMM; useful reference, not an MKL peer.
 
 {i_abs}
 
 ### Table D — i64 vs NumPy int64 (relative)
 
-**NumPy is always 1.00x**.
+**NumPy is always 1.00x**. Same columns as Table B (Rust/NumPy, Lua/NumPy, Lua/Rust).
 
 {i_rel}
 """

@@ -14,7 +14,7 @@ For each op and size \(n \in \{64, 256, 1024\}\):
 3. Report **median** wall time in milliseconds after warmup.
 
 **f64 faces:** NumPy (`float64` + OpenBLAS where applicable) · MatLua Rust · MatLua Lua.  
-**i64 faces:** NumPy `int64` · MatLua Rust wrapping `i64` (Lua i64 face exists; not in this harness yet).
+**i64 faces:** NumPy `int64` · MatLua Rust wrapping `i64` · MatLua Lua i64 (same three-way shape as f64).
 
 **Relative tables:** NumPy is always **1.00x**. Other columns are `time / NumPy_time`.
 
@@ -29,8 +29,8 @@ cargo test --release --features lua --test fair_all -- --run --sizes 64,256,1024
 python3 tests/bench/numpy_fair.py --sizes 64,256,1024 \
   | awk -F'\t' 'NF==4 && $1=="numpy"{print}' >> tests/bench/last_f64.tsv
 
-cargo test --release --test i64_surface -- --run --sizes 64,256,1024 \
-  | awk -F'\t' 'NF==4 && $1=="i64"{print}' > tests/bench/last_i64.tsv
+cargo test --release --features lua --test i64_surface -- --run --sizes 64,256,1024 \
+  | awk -F'\t' 'NF==4 && ($1=="rust"||$1=="lua"){print}' > tests/bench/last_i64.tsv
 python3 tests/bench/numpy_i64_fair.py --sizes 64,256,1024 \
   | awk -F'\t' 'NF==4 && $1=="numpy"{print}' >> tests/bench/last_i64.tsv
 
@@ -43,7 +43,7 @@ Or: `python3 tests/bench/compare_fair.py` still builds the old single-table path
 
 | Item | Status |
 |------|--------|
-| in-place `out=` full surface | [#21](https://github.com/andy-emerson/MatLua/issues/21) open |
+| in-place `out=` full surface | [#21](https://github.com/andy-emerson/MatLua/issues/21) **deferred past M7.c** (partial `*_out` remains) |
 | M7.c optimize (f64 + i64) | in progress — see DESIGN §7.1 / §7.1.2 |
 | Explicit i64 SIMD GEMM | researched: AVX2 lacks i64 mul; AVX-512DQ / unstable `std::simd` deferred |
 
@@ -57,7 +57,7 @@ Or: `python3 tests/bench/compare_fair.py` still builds the old single-table path
 ## Latest results
 
 Host: Linux x86_64, 2 CPUs, MatLua **release**, NumPy + OpenBLAS.  
-Run date: **2026-08-02** (M7.c wave 4 + four-table layout).  
+Run date: **2026-08-02** (M7.c; i64 three-face harness + four-table layout).  
 Re-run: commands above.
 
 <!-- PERF_TABLES_START -->
@@ -228,71 +228,72 @@ Median wall time. Setup outside the clock. Smaller is better.
 
 ### Table C — i64 absolute wall time (ms)
 
-MatLua **wrapping i64** vs NumPy **int64** (same generation rule as `i64_surface`).
+Three faces: NumPy **int64** · MatLua Rust wrapping **i64** · MatLua **Lua** i64.
+Same generation as `i64_surface` / `numpy_i64_fair.py`.
 NumPy integer matmul is not OpenBLAS DGEMM; useful reference, not an MKL peer.
 
-| op | n | NumPy int64 (ms) | MatLua Rust i64 (ms) |
-| --- | ---: | ---: | ---: |
-| dot | 64 | 0.001103 | 0.000053 |
-| dot | 256 | 0.001252 | 0.000142 |
-| dot | 1024 | 0.001516 | 0.000392 |
-| elem_add | 64 | 0.001785 | 0.002550 |
-| elem_add | 256 | 0.024721 | 0.039883 |
-| elem_add | 1024 | 1.0444 | 1.0200 |
-| elem_mul | 64 | 0.002369 | 0.002510 |
-| elem_mul | 256 | 0.028610 | 0.039440 |
-| elem_mul | 1024 | 0.987595 | 0.992077 |
-| isin | 64 | 0.021786 | 0.044336 |
-| isin | 256 | 0.111368 | 0.713782 |
-| isin | 1024 | 1.7800 | 11.495 |
-| matmul | 64 | 0.129852 | 0.109687 |
-| matmul | 256 | 14.893 | 3.2863 |
-| matmul | 1024 | 5196.266 | 206.415 |
-| min | 64 | 0.002080 | 0.000937 |
-| min | 256 | 0.009123 | 0.014417 |
-| min | 1024 | 0.330090 | 0.418728 |
-| sum | 64 | 0.002403 | 0.000336 |
-| sum | 256 | 0.014729 | 0.007652 |
-| sum | 1024 | 0.341873 | 0.347830 |
-| transpose | 64 | 0.002840 | 0.003208 |
-| transpose | 256 | 0.054769 | 0.053261 |
-| transpose | 1024 | 6.3738 | 4.6462 |
-| unique | 64 | 0.003984 | 0.000138 |
-| unique | 256 | 0.004707 | 0.000534 |
-| unique | 1024 | 0.009719 | 0.000927 |
+| op | n | NumPy int64 (ms) | MatLua Rust i64 (ms) | MatLua Lua i64 (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| dot | 64 | 0.001122 | 0.000061 | 0.000235 |
+| dot | 256 | 0.001235 | 0.000117 | 0.000325 |
+| dot | 1024 | 0.001534 | 0.000416 | 0.000610 |
+| elem_add | 64 | 0.001823 | 0.002511 | 0.003755 |
+| elem_add | 256 | 0.020812 | 0.040433 | 0.041484 |
+| elem_add | 1024 | 0.975016 | 0.893951 | 4.2512 |
+| elem_mul | 64 | 0.002391 | 0.002510 | 0.003476 |
+| elem_mul | 256 | 0.026349 | 0.038633 | 0.204752 |
+| elem_mul | 1024 | 0.964310 | 0.885182 | 4.2377 |
+| isin | 64 | 0.022108 | 0.043731 | 0.044738 |
+| isin | 256 | 0.112367 | 0.709417 | 0.915926 |
+| isin | 1024 | 1.8214 | 11.362 | 11.351 |
+| matmul | 64 | 0.131593 | 0.105648 | 0.108190 |
+| matmul | 256 | 14.780 | 3.2961 | 3.5065 |
+| matmul | 1024 | 5412.628 | 206.106 | 210.893 |
+| min | 64 | 0.002078 | 0.000938 | 0.001041 |
+| min | 256 | 0.009147 | 0.014448 | 0.014630 |
+| min | 1024 | 0.341009 | 0.312995 | 0.362577 |
+| sum | 64 | 0.002447 | 0.000367 | 0.000464 |
+| sum | 256 | 0.015450 | 0.007650 | 0.007883 |
+| sum | 1024 | 0.360038 | 0.257674 | 0.275866 |
+| transpose | 64 | 0.002810 | 0.003220 | 0.006554 |
+| transpose | 256 | 0.056071 | 0.053319 | 0.248982 |
+| transpose | 1024 | 6.3352 | 4.7789 | 7.9282 |
+| unique | 64 | 0.004164 | 0.000154 | 0.000331 |
+| unique | 256 | 0.004609 | 0.000609 | 0.001026 |
+| unique | 1024 | 0.009512 | 0.001300 | 0.002443 |
 
 ### Table D — i64 vs NumPy int64 (relative)
 
-**NumPy is always 1.00x**.
+**NumPy is always 1.00x**. Same columns as Table B (Rust/NumPy, Lua/NumPy, Lua/Rust).
 
-| op | n | NumPy | MatLua i64 / NumPy |
-| --- | ---: | ---: | ---: |
-| dot | 64 | 1.00x | 0.05x |
-| dot | 256 | 1.00x | 0.11x |
-| dot | 1024 | 1.00x | 0.26x |
-| elem_add | 64 | 1.00x | 1.43x |
-| elem_add | 256 | 1.00x | 1.61x |
-| elem_add | 1024 | 1.00x | 0.98x |
-| elem_mul | 64 | 1.00x | 1.06x |
-| elem_mul | 256 | 1.00x | 1.38x |
-| elem_mul | 1024 | 1.00x | 1.00x |
-| isin | 64 | 1.00x | 2.04x |
-| isin | 256 | 1.00x | 6.41x |
-| isin | 1024 | 1.00x | 6.46x |
-| matmul | 64 | 1.00x | 0.84x |
-| matmul | 256 | 1.00x | 0.22x |
-| matmul | 1024 | 1.00x | 0.04x |
-| min | 64 | 1.00x | 0.45x |
-| min | 256 | 1.00x | 1.58x |
-| min | 1024 | 1.00x | 1.27x |
-| sum | 64 | 1.00x | 0.14x |
-| sum | 256 | 1.00x | 0.52x |
-| sum | 1024 | 1.00x | 1.02x |
-| transpose | 64 | 1.00x | 1.13x |
-| transpose | 256 | 1.00x | 0.97x |
-| transpose | 1024 | 1.00x | 0.73x |
-| unique | 64 | 1.00x | 0.03x |
-| unique | 256 | 1.00x | 0.11x |
-| unique | 1024 | 1.00x | 0.10x |
+| op | n | NumPy | Rust/NumPy | Lua/NumPy | Lua/Rust |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| dot | 64 | 1.00x | 0.05x | 0.21x | 3.85x |
+| dot | 256 | 1.00x | 0.09x | 0.26x | 2.78x |
+| dot | 1024 | 1.00x | 0.27x | 0.40x | 1.47x |
+| elem_add | 64 | 1.00x | 1.38x | 2.06x | 1.50x |
+| elem_add | 256 | 1.00x | 1.94x | 1.99x | 1.03x |
+| elem_add | 1024 | 1.00x | 0.92x | 4.36x | 4.76x |
+| elem_mul | 64 | 1.00x | 1.05x | 1.45x | 1.38x |
+| elem_mul | 256 | 1.00x | 1.47x | 7.77x | 5.30x |
+| elem_mul | 1024 | 1.00x | 0.92x | 4.39x | 4.79x |
+| isin | 64 | 1.00x | 1.98x | 2.02x | 1.02x |
+| isin | 256 | 1.00x | 6.31x | 8.15x | 1.29x |
+| isin | 1024 | 1.00x | 6.24x | 6.23x | 1.00x |
+| matmul | 64 | 1.00x | 0.80x | 0.82x | 1.02x |
+| matmul | 256 | 1.00x | 0.22x | 0.24x | 1.06x |
+| matmul | 1024 | 1.00x | 0.04x | 0.04x | 1.02x |
+| min | 64 | 1.00x | 0.45x | 0.50x | 1.11x |
+| min | 256 | 1.00x | 1.58x | 1.60x | 1.01x |
+| min | 1024 | 1.00x | 0.92x | 1.06x | 1.16x |
+| sum | 64 | 1.00x | 0.15x | 0.19x | 1.26x |
+| sum | 256 | 1.00x | 0.50x | 0.51x | 1.03x |
+| sum | 1024 | 1.00x | 0.72x | 0.77x | 1.07x |
+| transpose | 64 | 1.00x | 1.15x | 2.33x | 2.04x |
+| transpose | 256 | 1.00x | 0.95x | 4.44x | 4.67x |
+| transpose | 1024 | 1.00x | 0.75x | 1.25x | 1.66x |
+| unique | 64 | 1.00x | 0.04x | 0.08x | 2.15x |
+| unique | 256 | 1.00x | 0.13x | 0.22x | 1.68x |
+| unique | 1024 | 1.00x | 0.14x | 0.26x | 1.88x |
 
 <!-- PERF_TABLES_END -->

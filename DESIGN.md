@@ -448,7 +448,7 @@ explicit boundaries (zero-copy views in, owned results out).
 
 **Priority:** **M7.c** (in progress on `feat-m7c-optimize`) → embed **M8–M11** → **M12**. Further dtypes (`f32`, complex, …) after this arc unless a new need appears.
 
-**Also tracked:** GitHub **#21** full `out=` surface (beyond M7.b partial); TallyDB engine cutover (other repo).
+**Also tracked:** GitHub **#21** full `out=` surface (beyond M7.b partial) — **deferred past M7.c** (partial `*_out` stays); TallyDB engine cutover (other repo).
 
 **TallyDB readiness bar:** M7 `i64` + M7.b host entry + **M8–M11** embed safety/pool/CI + **M12** C ABI / lite layout. Copies into owned arrays remain acceptable for current window sizes (letter §5).
 
