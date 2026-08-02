@@ -54,3 +54,8 @@ name = "compose_chain"
 path = "tests/bench/compose_chain.rs"
 harness = false
 required-features = ["lua"]
+
+[[test]]
+name = "path_length"
+path = "tests/bench/path_length.rs"
+harness = false

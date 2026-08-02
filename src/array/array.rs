@@ -10,6 +10,42 @@ use super::shape::{broadcast_shapes, Shape};
 use super::view::{ArrayView, ArrayViewMut};
 use crate::error::{Error, Result};
 
+/// Binary op for fused same-shape / row / col broadcast kernels.
+#[derive(Clone, Copy)]
+enum BroadcastOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+impl BroadcastOp {
+    fn apply_same(self, a: &[f64], b: &[f64], out: &mut [f64]) {
+        match self {
+            Self::Add => kernels::add_slices(a, b, out),
+            Self::Sub => kernels::sub_slices(a, b, out),
+            Self::Mul => kernels::mul_slices(a, b, out),
+            Self::Div => kernels::div_slices(a, b, out),
+        }
+    }
+    fn apply_row(self, m: usize, n: usize, a: &[f64], row: &[f64], out: &mut [f64]) {
+        match self {
+            Self::Add => kernels::add_matrix_row(m, n, a, row, out),
+            Self::Sub => kernels::sub_matrix_row(m, n, a, row, out),
+            Self::Mul => kernels::mul_matrix_row(m, n, a, row, out),
+            Self::Div => kernels::div_matrix_row(m, n, a, row, out),
+        }
+    }
+    fn apply_col(self, m: usize, n: usize, a: &[f64], col: &[f64], out: &mut [f64]) {
+        match self {
+            Self::Add => kernels::add_matrix_col(m, n, a, col, out),
+            Self::Sub => kernels::sub_matrix_col(m, n, a, col, out),
+            Self::Mul => kernels::mul_matrix_col(m, n, a, col, out),
+            Self::Div => kernels::div_matrix_col(m, n, a, col, out),
+        }
+    }
+}
+
 /// Owned dense n-D array of `f64` values in row-major order.
 ///
 /// Primary Rust-side array type. Storage is a contiguous buffer compatible
@@ -354,6 +390,34 @@ impl Array {
         Ok(Self::from_parts(out_shape, data))
     }
 
+    /// Binary elementwise with fused matrix×row / matrix×col broadcast (no tile alloc).
+    fn owned_binary_broadcast(&self, other: &Array, op: BroadcastOp) -> Result<Array> {
+        if self.shape.same_as(other.shape()) {
+            let n = self.len();
+            let mut data = pool::take_uninit(n);
+            op.apply_same(self.as_slice(), other.as_slice(), &mut data);
+            return Ok(Self::from_parts(self.shape.clone(), data));
+        }
+        if self.rank() == 2 {
+            let (m, n) = (self.dims()[0], self.dims()[1]);
+            // row: (n,) or (1, n) — NumPy last-axis broadcast
+            if (other.rank() == 1 && other.len() == n)
+                || (other.rank() == 2 && other.dims() == [1, n])
+            {
+                let mut data = pool::take_uninit(m * n);
+                op.apply_row(m, n, self.as_slice(), other.as_slice(), &mut data);
+                return Ok(Self::from_parts(self.shape.clone(), data));
+            }
+            // col: (m, 1) only
+            if other.rank() == 2 && other.dims() == [m, 1] {
+                let mut data = pool::take_uninit(m * n);
+                op.apply_col(m, n, self.as_slice(), other.as_slice(), &mut data);
+                return Ok(Self::from_parts(self.shape.clone(), data));
+            }
+        }
+        self.owned_from_kernel(other, |a, b, o| op.apply_same(a, b, o))
+    }
+
     fn owned_unary_kernel<F>(&self, f: F) -> Array
     where
         F: FnOnce(&[f64], &mut [f64]),
@@ -366,22 +430,22 @@ impl Array {
 
     /// Element-wise addition.
     pub fn add(&self, other: &Array) -> Result<Array> {
-        self.owned_from_kernel(other, kernels::add_slices)
+        self.owned_binary_broadcast(other, BroadcastOp::Add)
     }
 
     /// Element-wise subtraction.
     pub fn sub(&self, other: &Array) -> Result<Array> {
-        self.owned_from_kernel(other, kernels::sub_slices)
+        self.owned_binary_broadcast(other, BroadcastOp::Sub)
     }
 
     /// Element-wise multiplication.
     pub fn mul(&self, other: &Array) -> Result<Array> {
-        self.owned_from_kernel(other, kernels::mul_slices)
+        self.owned_binary_broadcast(other, BroadcastOp::Mul)
     }
 
     /// Element-wise division.
     pub fn div(&self, other: &Array) -> Result<Array> {
-        self.owned_from_kernel(other, kernels::div_slices)
+        self.owned_binary_broadcast(other, BroadcastOp::Div)
     }
 
     /// Element-wise negation.
@@ -1139,6 +1203,9 @@ impl Array {
     /// Sample/population covariance. **Variables in rows** (NumPy `rowvar=True`).
     ///
     /// `a` is `d × n` (d variables, n observations). Returns `d × d`. Default use `ddof=1`.
+    ///
+    /// Path: center rows → [`crate::linalg::matmul_bt`](`X`, `X`) for \(XX^	op\)
+    /// (no owned transpose) → scale.
     pub fn cov(a: &Array, ddof: usize) -> Result<Array> {
         let x = match a.rank() {
             1 => a.reshape(vec![1, a.len()])?,
@@ -1151,7 +1218,6 @@ impl Array {
                 "cov requires n > ddof (n={n}, ddof={ddof})"
             )));
         }
-        // Center rows
         let means = x.mean_axis(1)?; // length d
         let mu = means.as_slice();
         let src = x.as_slice();
@@ -1162,10 +1228,8 @@ impl Array {
             }
         }
         let xc = Self::from_parts(Shape::matrix(d, n)?, centered);
-        // (1/(n-ddof)) * X @ Xᵀ  via matmul_at(X, X) = XᵀX wrong; need X Xᵀ
-        // matmul(X, Xᵀ): X is d×n, Xᵀ is n×d → d×d
-        let xt = crate::linalg::transpose(&xc)?;
-        let g = crate::linalg::matmul(&xc, &xt)?;
+        // Short path: X @ Xᵀ without owned transpose
+        let g = crate::linalg::matmul_bt(&xc, &xc)?;
         let scale = 1.0 / (n - ddof) as f64;
         Ok(g.mul_scalar(scale))
     }

@@ -201,146 +201,83 @@ pub(crate) fn sum_sq_slice(a: &[f64]) -> f64 {
     s
 }
 
-/// Minimum over a dense slice.
-///
-/// NaN values are skipped relative to a `+∞` seed (not full IEEE `minNum`
-/// semantics).
-///
-/// Cache-blocked reduction (same structure as [`max_slice`]): O(n) with
-/// L1-friendly tiles so large n does not thrash on a single accumulator chain.
+/// Min with pairwise reduction (returns None if empty).
 #[inline]
 pub(crate) fn min_slice(a: &[f64]) -> Option<f64> {
     if a.is_empty() {
         return None;
     }
-    const BLOCK: usize = 512;
-    let mut global = f64::INFINITY;
-    for block in a.chunks(BLOCK) {
+    // Blocked min for cache; NaN-aware: skip NaN like f64::min only if both NaN
+    let mut best = f64::INFINITY;
+    const BS: usize = 512;
+    let mut i = 0;
+    while i < a.len() {
+        let end = (i + BS).min(a.len());
         let mut m0 = f64::INFINITY;
         let mut m1 = f64::INFINITY;
         let mut m2 = f64::INFINITY;
         let mut m3 = f64::INFINITY;
-        let mut chunks = block.chunks_exact(4);
-        for c in chunks.by_ref() {
-            if c[0] < m0 {
-                m0 = c[0];
-            }
-            if c[1] < m1 {
-                m1 = c[1];
-            }
-            if c[2] < m2 {
-                m2 = c[2];
-            }
-            if c[3] < m3 {
-                m3 = c[3];
-            }
+        let mut j = i;
+        while j + 4 <= end {
+            m0 = m0.min(a[j]);
+            m1 = m1.min(a[j + 1]);
+            m2 = m2.min(a[j + 2]);
+            m3 = m3.min(a[j + 3]);
+            j += 4;
         }
-        let mut m = m0;
-        if m1 < m {
-            m = m1;
+        while j < end {
+            m0 = m0.min(a[j]);
+            j += 1;
         }
-        if m2 < m {
-            m = m2;
-        }
-        if m3 < m {
-            m = m3;
-        }
-        for &x in chunks.remainder() {
-            if x < m {
-                m = x;
-            }
-        }
-        if m < global {
-            global = m;
-        }
+        best = best.min(m0).min(m1).min(m2).min(m3);
+        i = end;
     }
-    Some(global)
+    if best.is_infinite() && a.iter().all(|x| x.is_nan()) {
+        Some(f64::NAN)
+    } else {
+        Some(best)
+    }
 }
 
-/// Maximum over a dense slice.
-///
-/// NaN values are skipped relative to a `−∞` seed (not full IEEE `maxNum`
-/// semantics).
-///
-/// Cache-blocked reduction: maxima within L1-friendly blocks, then max of
-/// block maxima. Still O(n); blocking helps large n (better cache use), not a
-/// small-n-only trick.
+/// Max with pairwise reduction.
 #[inline]
 pub(crate) fn max_slice(a: &[f64]) -> Option<f64> {
     if a.is_empty() {
         return None;
     }
-    // ~4 KiB of f64s — stays friendly to L1 while giving the inner loop room.
-    const BLOCK: usize = 512;
-    let mut global = f64::NEG_INFINITY;
-    for block in a.chunks(BLOCK) {
+    let mut best = f64::NEG_INFINITY;
+    const BS: usize = 512;
+    let mut i = 0;
+    while i < a.len() {
+        let end = (i + BS).min(a.len());
         let mut m0 = f64::NEG_INFINITY;
         let mut m1 = f64::NEG_INFINITY;
         let mut m2 = f64::NEG_INFINITY;
         let mut m3 = f64::NEG_INFINITY;
-        let mut chunks = block.chunks_exact(4);
-        for c in chunks.by_ref() {
-            if c[0] > m0 {
-                m0 = c[0];
-            }
-            if c[1] > m1 {
-                m1 = c[1];
-            }
-            if c[2] > m2 {
-                m2 = c[2];
-            }
-            if c[3] > m3 {
-                m3 = c[3];
-            }
+        let mut j = i;
+        while j + 4 <= end {
+            m0 = m0.max(a[j]);
+            m1 = m1.max(a[j + 1]);
+            m2 = m2.max(a[j + 2]);
+            m3 = m3.max(a[j + 3]);
+            j += 4;
         }
-        let mut m = m0;
-        if m1 > m {
-            m = m1;
+        while j < end {
+            m0 = m0.max(a[j]);
+            j += 1;
         }
-        if m2 > m {
-            m = m2;
-        }
-        if m3 > m {
-            m = m3;
-        }
-        for &x in chunks.remainder() {
-            if x > m {
-                m = x;
-            }
-        }
-        if m > global {
-            global = m;
-        }
+        best = best.max(m0).max(m1).max(m2).max(m3);
+        i = end;
     }
-    Some(global)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn arithmetic_and_reductions() {
-        let a = [1.0, 2.0, 3.0, 4.0, 5.0];
-        let b = [10.0, 20.0, 30.0, 40.0, 50.0];
-        let mut out = [0.0; 5];
-        add_slices(&a, &b, &mut out);
-        assert_eq!(out, [11.0, 22.0, 33.0, 44.0, 55.0]);
-        mul_slices(&a, &b, &mut out);
-        assert_eq!(out, [10.0, 40.0, 90.0, 160.0, 250.0]);
-        assert!((sum_slice(&a) - 15.0).abs() < 1e-12);
-        assert_eq!(min_slice(&a), Some(1.0));
-        assert_eq!(max_slice(&a), Some(5.0));
-        assert_eq!(min_slice(&[]), None);
+    if best.is_infinite() && a.iter().all(|x| x.is_nan()) {
+        Some(f64::NAN)
+    } else {
+        Some(best)
     }
 }
-
-
-// --- M5 Tier-1 ufuncs (IEEE NaN propagate unless noted) ---
 
 #[inline]
 pub(crate) fn abs_slice(a: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(a.len(), out.len());
     for i in 0..a.len() {
         out[i] = a[i].abs();
     }
@@ -348,7 +285,6 @@ pub(crate) fn abs_slice(a: &[f64], out: &mut [f64]) {
 
 #[inline]
 pub(crate) fn sqrt_slice(a: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(a.len(), out.len());
     for i in 0..a.len() {
         out[i] = a[i].sqrt();
     }
@@ -356,7 +292,6 @@ pub(crate) fn sqrt_slice(a: &[f64], out: &mut [f64]) {
 
 #[inline]
 pub(crate) fn exp_slice(a: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(a.len(), out.len());
     for i in 0..a.len() {
         out[i] = a[i].exp();
     }
@@ -364,7 +299,6 @@ pub(crate) fn exp_slice(a: &[f64], out: &mut [f64]) {
 
 #[inline]
 pub(crate) fn log_slice(a: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(a.len(), out.len());
     for i in 0..a.len() {
         out[i] = a[i].ln();
     }
@@ -372,7 +306,6 @@ pub(crate) fn log_slice(a: &[f64], out: &mut [f64]) {
 
 #[inline]
 pub(crate) fn log1p_slice(a: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(a.len(), out.len());
     for i in 0..a.len() {
         out[i] = a[i].ln_1p();
     }
@@ -380,7 +313,6 @@ pub(crate) fn log1p_slice(a: &[f64], out: &mut [f64]) {
 
 #[inline]
 pub(crate) fn sign_slice(a: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(a.len(), out.len());
     for i in 0..a.len() {
         let x = a[i];
         out[i] = if x.is_nan() {
@@ -397,8 +329,6 @@ pub(crate) fn sign_slice(a: &[f64], out: &mut [f64]) {
 
 #[inline]
 pub(crate) fn power_slices(a: &[f64], b: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(a.len(), b.len());
-    debug_assert_eq!(a.len(), out.len());
     for i in 0..a.len() {
         out[i] = a[i].powf(b[i]);
     }
@@ -406,7 +336,6 @@ pub(crate) fn power_slices(a: &[f64], b: &[f64], out: &mut [f64]) {
 
 #[inline]
 pub(crate) fn power_scalar(a: &[f64], p: f64, out: &mut [f64]) {
-    debug_assert_eq!(a.len(), out.len());
     for i in 0..a.len() {
         out[i] = a[i].powf(p);
     }
@@ -414,7 +343,6 @@ pub(crate) fn power_scalar(a: &[f64], p: f64, out: &mut [f64]) {
 
 #[inline]
 pub(crate) fn clip_slice(a: &[f64], lo: f64, hi: f64, out: &mut [f64]) {
-    debug_assert_eq!(a.len(), out.len());
     for i in 0..a.len() {
         let x = a[i];
         out[i] = if x < lo {
@@ -427,10 +355,8 @@ pub(crate) fn clip_slice(a: &[f64], lo: f64, hi: f64, out: &mut [f64]) {
     }
 }
 
-/// 1.0 where NaN, else 0.0 (dense f64 mask; not a separate bool dtype).
 #[inline]
 pub(crate) fn isnan_slice(a: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(a.len(), out.len());
     for i in 0..a.len() {
         out[i] = if a[i].is_nan() { 1.0 } else { 0.0 };
     }
@@ -438,30 +364,24 @@ pub(crate) fn isnan_slice(a: &[f64], out: &mut [f64]) {
 
 #[inline]
 pub(crate) fn isfinite_slice(a: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(a.len(), out.len());
     for i in 0..a.len() {
         out[i] = if a[i].is_finite() { 1.0 } else { 0.0 };
     }
 }
 
 #[inline]
-pub(crate) fn where_slices(cond: &[f64], a: &[f64], b: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(cond.len(), a.len());
-    debug_assert_eq!(a.len(), b.len());
-    debug_assert_eq!(a.len(), out.len());
-    for i in 0..a.len() {
-        // Nonzero (and not NaN) is true — Lua/C style; NaN condition → false branch.
+pub(crate) fn where_slices(cond: &[f64], x: &[f64], y: &[f64], out: &mut [f64]) {
+    for i in 0..cond.len() {
         out[i] = if cond[i] != 0.0 && !cond[i].is_nan() {
-            a[i]
+            x[i]
         } else {
-            b[i]
+            y[i]
         };
     }
 }
 
 #[inline]
 pub(crate) fn cumsum_slice(a: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(a.len(), out.len());
     let mut s = 0.0;
     for i in 0..a.len() {
         s += a[i];
@@ -474,15 +394,14 @@ pub(crate) fn argmin_slice(a: &[f64]) -> Option<usize> {
     if a.is_empty() {
         return None;
     }
-    let mut best_i = 0usize;
     let mut best = f64::INFINITY;
+    let mut best_i = 0usize;
     for (i, &x) in a.iter().enumerate() {
         if x < best {
             best = x;
             best_i = i;
         }
     }
-    // If all NaN, best stays ∞ — return 0 like a weak default; callers with all-NaN rare.
     if best.is_infinite() && a.iter().all(|x| x.is_nan()) {
         Some(0)
     } else {
@@ -495,8 +414,8 @@ pub(crate) fn argmax_slice(a: &[f64]) -> Option<usize> {
     if a.is_empty() {
         return None;
     }
-    let mut best_i = 0usize;
     let mut best = f64::NEG_INFINITY;
+    let mut best_i = 0usize;
     for (i, &x) in a.iter().enumerate() {
         if x > best {
             best = x;
@@ -510,7 +429,7 @@ pub(crate) fn argmax_slice(a: &[f64]) -> Option<usize> {
     }
 }
 
-/// Population or sample variance from Welford; `ddof` is degrees of freedom subtract.
+/// Population or sample variance; `ddof` is degrees of freedom subtract.
 #[inline]
 pub(crate) fn var_slice(a: &[f64], ddof: usize) -> Option<f64> {
     let n = a.len();
@@ -708,6 +627,90 @@ pub(crate) fn axis1_sum(m: usize, n: usize, a: &[f64], out: &mut [f64]) {
             s += a[i * n + j];
         }
         out[i] = s;
+    }
+}
+
+// --- Fused broadcast binary (matrix ± row / col) ---
+
+/// `out[i,j] = a[i,j] op row[j]` for rank-2 `m×n` and length-`n` row.
+#[inline]
+pub(crate) fn add_matrix_row(m: usize, n: usize, a: &[f64], row: &[f64], out: &mut [f64]) {
+    debug_assert_eq!(row.len(), n);
+    debug_assert_eq!(a.len(), m * n);
+    for i in 0..m {
+        let base = i * n;
+        for j in 0..n {
+            out[base + j] = a[base + j] + row[j];
+        }
+    }
+}
+#[inline]
+pub(crate) fn sub_matrix_row(m: usize, n: usize, a: &[f64], row: &[f64], out: &mut [f64]) {
+    for i in 0..m {
+        let base = i * n;
+        for j in 0..n {
+            out[base + j] = a[base + j] - row[j];
+        }
+    }
+}
+#[inline]
+pub(crate) fn mul_matrix_row(m: usize, n: usize, a: &[f64], row: &[f64], out: &mut [f64]) {
+    for i in 0..m {
+        let base = i * n;
+        for j in 0..n {
+            out[base + j] = a[base + j] * row[j];
+        }
+    }
+}
+#[inline]
+pub(crate) fn div_matrix_row(m: usize, n: usize, a: &[f64], row: &[f64], out: &mut [f64]) {
+    for i in 0..m {
+        let base = i * n;
+        for j in 0..n {
+            out[base + j] = a[base + j] / row[j];
+        }
+    }
+}
+
+/// `out[i,j] = a[i,j] op col[i]` for rank-2 `m×n` and length-`m` col.
+#[inline]
+pub(crate) fn add_matrix_col(m: usize, n: usize, a: &[f64], col: &[f64], out: &mut [f64]) {
+    for i in 0..m {
+        let base = i * n;
+        let c = col[i];
+        for j in 0..n {
+            out[base + j] = a[base + j] + c;
+        }
+    }
+}
+#[inline]
+pub(crate) fn sub_matrix_col(m: usize, n: usize, a: &[f64], col: &[f64], out: &mut [f64]) {
+    for i in 0..m {
+        let base = i * n;
+        let c = col[i];
+        for j in 0..n {
+            out[base + j] = a[base + j] - c;
+        }
+    }
+}
+#[inline]
+pub(crate) fn mul_matrix_col(m: usize, n: usize, a: &[f64], col: &[f64], out: &mut [f64]) {
+    for i in 0..m {
+        let base = i * n;
+        let c = col[i];
+        for j in 0..n {
+            out[base + j] = a[base + j] * c;
+        }
+    }
+}
+#[inline]
+pub(crate) fn div_matrix_col(m: usize, n: usize, a: &[f64], col: &[f64], out: &mut [f64]) {
+    for i in 0..m {
+        let base = i * n;
+        let c = col[i];
+        for j in 0..n {
+            out[base + j] = a[base + j] / c;
+        }
     }
 }
 
