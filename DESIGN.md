@@ -139,7 +139,7 @@ Matrix×vector `matmul` returns **rank-1**. `solve` preserves the rank style of 
 
 1. **Owned arrays** — MatLua-managed results own their buffer.
 2. **Borrowed views (Rust)** — `ArrayView` / `ArrayViewMut` over contiguous host or parent memory; **caller guarantees lifetime**.
-3. **LA results** — always **owned** row-major arrays. **Inputs** are zero-copy faer `MatRef` when contiguous. **Outputs:** `matmul` / `matmul_at` / blocked `transpose` write dest buffers; `solve` factors then solves in place on a row-major RHS copy. **Factorizations** (`cholesky`, `qr`, `svd`) still pack out from faer views into owned buffers.
+3. **LA results** — always **owned** row-major arrays. **Inputs** are zero-copy faer `MatRef` when contiguous. **Outputs:** `matmul` / `matmul_at` / `matmul_bt` / blocked `transpose` write dest buffers; `solve` factors then solves in place on a row-major RHS copy. **Factorizations** (`cholesky`, `qr`, `svd`) still pack out from faer views into owned buffers.
 4. **Rule of thumb:** views share memory until the user **copies**; bulk math results are new arrays unless documented otherwise. `reshape` may share an owned buffer until a write (copy-on-write).
 
 Lua userdata today holds **owned** arrays. Host zero-copy *into* scripts remains a host/Rust-side concern until a view face is exposed to Lua.
@@ -222,7 +222,7 @@ still shared (`Arc::make_mut`). `Clone`, `to_owned_array`, and Lua `copy` are
 
 ### 3.14 Composed dense paths
 
-Prefer `matmul_at(A, B)` for `AᵀB` and `normal_eq(X, y)` for `solve(XᵀX, Xᵀy)`
+Prefer `matmul_at(A, B)` for `AᵀB`, `matmul_bt(A, B)` for `ABᵀ` (used by `cov`), and `normal_eq(X, y)` for `solve(XᵀX, Xᵀy)`
 over materializing `transpose` then `matmul`. Same numerics as the long
 composition. Large same-buffer `AᵀA` (`k ≥ 512`) may materialize `Aᵀ` once
 internally. Measurement: `tests/bench/compare_compose.py`.
@@ -252,7 +252,7 @@ Names match the `lua` feature on `main`. Tutorial samples live in
 ### 4.1 Module functions
 
 `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`), `array`, `eye`, `where`,
-`matmul`, `matmul_at` (AᵀB; large same-buffer AᵀA may materialize Aᵀ once), `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd`
+`matmul`, `matmul_at` (AᵀB; large same-buffer AᵀA may materialize Aᵀ once), `matmul_bt` (ABᵀ; large AAᵀ same rule), `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd`
 
 ### 4.2 Array methods and metamethods
 
