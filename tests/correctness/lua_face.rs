@@ -254,3 +254,43 @@ assert(t:get(1) == 20 and t:get(2) == 30 and t:get(3) == 10)
     )
     .unwrap();
 }
+
+
+#[test]
+fn m7_i64_extended_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local a = ml.array_i64({1,2,3})
+local b = ml.array_i64({4,5,6})
+local c = ml.concatenate_i64(0, a, b)
+assert(#c == 6 and c:get(6) == 6)
+local s = ml.stack_i64(0, a, b)
+assert(s:rank() == 2 and s:get(2,3) == 6)
+local cond = ml.array_i64({1,0,1})
+local w = ml.where_i64(cond, a, b)
+assert(w:get(1) == 1 and w:get(2) == 5 and w:get(3) == 3)
+assert(a:sign():get(1) == 1)
+assert(ml.array_i64({-5,0,7}):clip(0, 5):get(1) == 0)
+assert(a:cumsum():get(3) == 6)
+assert(a:argmin() == 1 and a:argmax() == 3)
+assert(a:any() and not ml.zeros_i64(3):any())
+local m = ml.array_i64({{1,0},{0,1}})
+assert(not m:all()) -- has zeros
+assert(ml.ones_i64(2,2):all())
+assert(m:diagonal():get(1) == 1 and m:trace() == 2)
+local row = m:row(1)
+assert(#row == 2 and row:get(1) == 1)
+local col = m:col(2)
+assert(col:get(2) == 1)
+assert(a:var(0) == 2/3)
+local br = ml.array_i64({1,2}):broadcast_to(2, 2)
+assert(br:rank() == 2)
+assert(a:eq(a):all())
+assert(a:lt(b):all())
+"#,
+    )
+    .unwrap();
+}

@@ -627,8 +627,11 @@ impl ArrayI64 {
         }
     }
 
-    /// Argsort indices as `i64` array (0-based).
+    /// Argsort indices as `i64` array (0-based). Rank-1 only.
     pub fn argsort(&self, descending: bool) -> Result<ArrayI64> {
+        if self.rank() != 1 {
+            return Err(Error::Shape("argsort requires rank-1".into()));
+        }
         let n = self.len();
         let mut idx = vec![0usize; n];
         kernels::argsort_indices(self.as_slice(), descending, &mut idx);
@@ -639,8 +642,11 @@ impl ArrayI64 {
         Ok(Self::from_parts(Shape::from_len(n), data))
     }
 
-    /// Take elements by 0-based integer indices (rank-1).
+    /// Take elements by 0-based integer indices (rank-1 source and indices).
     pub fn take(&self, indices: &ArrayI64) -> Result<ArrayI64> {
+        if self.rank() != 1 {
+            return Err(Error::Shape("take requires rank-1 source".into()));
+        }
         if indices.rank() != 1 {
             return Err(Error::Shape("take indices must be rank-1".into()));
         }
@@ -783,6 +789,215 @@ impl ArrayI64 {
         }
         Ok(Self::from_parts(Shape::matrix(m, n)?, data))
     }
+
+    /// Sign: −1, 0, +1.
+    pub fn sign(&self) -> ArrayI64 {
+        self.owned_unary(kernels::sign_slice)
+    }
+
+    /// Clip values to `[lo, hi]`.
+    pub fn clip(&self, lo: i64, hi: i64) -> Result<ArrayI64> {
+        if lo > hi {
+            return Err(Error::shape(format!("clip lo {lo} > hi {hi}")));
+        }
+        Ok(self.owned_unary(|a, o| kernels::clip_slice(a, lo, hi, o)))
+    }
+
+    /// `where(cond, x, y)` — nonzero `cond` selects `x`, else `y` (same shape).
+    pub fn where_cond(cond: &ArrayI64, x: &ArrayI64, y: &ArrayI64) -> Result<ArrayI64> {
+        cond.same_shape(x)?;
+        cond.same_shape(y)?;
+        let mut data = pool::take_uninit(cond.len());
+        kernels::where_slices(cond.as_slice(), x.as_slice(), y.as_slice(), &mut data);
+        Ok(Self::from_parts(cond.shape.clone(), data))
+    }
+
+    /// Sample/population variance as `f64` (`ddof` like NumPy).
+    pub fn var(&self, ddof: usize) -> Result<f64> {
+        let n = self.len();
+        if n <= ddof {
+            return Err(Error::shape(format!(
+                "var requires len > ddof (len={n}, ddof={ddof})"
+            )));
+        }
+        let mean = self.sum() as f64 / n as f64;
+        let mut acc = 0.0f64;
+        for &x in self.as_slice() {
+            let d = x as f64 - mean;
+            acc += d * d;
+        }
+        Ok(acc / (n - ddof) as f64)
+    }
+
+    /// Standard deviation as `f64`.
+    pub fn std(&self, ddof: usize) -> Result<f64> {
+        Ok(self.var(ddof)?.sqrt())
+    }
+
+    /// Concatenate along `axis` (rank 1–2).
+    pub fn concatenate(axis: usize, parts: &[&ArrayI64]) -> Result<ArrayI64> {
+        if parts.is_empty() {
+            return Err(Error::shape("concatenate needs at least one array"));
+        }
+        let rank = parts[0].rank();
+        if rank == 0 || rank > 2 {
+            return Err(Error::shape("concatenate supports rank 1 or 2"));
+        }
+        if axis >= rank {
+            return Err(Error::shape(format!("axis {axis} out of range for rank {rank}")));
+        }
+        for p in parts {
+            if p.rank() != rank {
+                return Err(Error::shape("concatenate: rank mismatch"));
+            }
+            for d in 0..rank {
+                if d != axis && p.dims()[d] != parts[0].dims()[d] {
+                    return Err(Error::shape("concatenate: shape mismatch on non-axis"));
+                }
+            }
+        }
+        let mut out_dims = parts[0].dims().to_vec();
+        out_dims[axis] = parts.iter().map(|p| p.dims()[axis]).sum();
+        let shape = Shape::new(out_dims)?;
+        let mut data = pool::take_uninit(shape.numel());
+        if rank == 1 {
+            let mut off = 0;
+            for p in parts {
+                let n = p.len();
+                data[off..off + n].copy_from_slice(p.as_slice());
+                off += n;
+            }
+        } else {
+            let cols_out = shape.dims()[1];
+            if axis == 0 {
+                let mut row = 0usize;
+                for p in parts {
+                    let pr = p.dims()[0];
+                    let pc = p.dims()[1];
+                    for i in 0..pr {
+                        let src = &p.as_slice()[i * pc..(i + 1) * pc];
+                        data[(row + i) * cols_out..(row + i) * cols_out + pc].copy_from_slice(src);
+                    }
+                    row += pr;
+                }
+            } else {
+                let rows = shape.dims()[0];
+                for i in 0..rows {
+                    let mut col = 0usize;
+                    for p in parts {
+                        let pc = p.dims()[1];
+                        let src = &p.as_slice()[i * pc..(i + 1) * pc];
+                        data[i * cols_out + col..i * cols_out + col + pc].copy_from_slice(src);
+                        col += pc;
+                    }
+                }
+            }
+        }
+        Ok(Self::from_parts(shape, data))
+    }
+
+    /// Stack rank-1 arrays along a new axis (0 or 1).
+    pub fn stack(axis: usize, parts: &[&ArrayI64]) -> Result<ArrayI64> {
+        if parts.is_empty() {
+            return Err(Error::shape("stack needs at least one array"));
+        }
+        if !parts.iter().all(|p| p.rank() == 1) {
+            return Err(Error::shape("stack currently supports rank-1 inputs only"));
+        }
+        let n = parts[0].len();
+        if parts.iter().any(|p| p.len() != n) {
+            return Err(Error::shape("stack: length mismatch"));
+        }
+        let k = parts.len();
+        match axis {
+            0 => {
+                let mut data = pool::take_uninit(k * n);
+                for (i, p) in parts.iter().enumerate() {
+                    data[i * n..(i + 1) * n].copy_from_slice(p.as_slice());
+                }
+                Ok(Self::from_parts(Shape::matrix(k, n)?, data))
+            }
+            1 => {
+                let mut data = pool::take_uninit(n * k);
+                for i in 0..n {
+                    for (j, p) in parts.iter().enumerate() {
+                        data[i * k + j] = p.as_slice()[i];
+                    }
+                }
+                Ok(Self::from_parts(Shape::matrix(n, k)?, data))
+            }
+            _ => Err(Error::shape("stack axis must be 0 or 1")),
+        }
+    }
+
+    /// `any` along axis for rank-2 → 0/1 rank-1 mask.
+    pub fn any_axis(&self, axis: usize) -> Result<ArrayI64> {
+        let (m, n) = self.rank2_dims()?;
+        match axis {
+            0 => {
+                let mut out = pool::take_uninit(n);
+                kernels::axis0_any(m, n, self.as_slice(), &mut out);
+                Ok(Self::from_parts(Shape::from_len(n), out))
+            }
+            1 => {
+                let mut out = pool::take_uninit(m);
+                kernels::axis1_any(m, n, self.as_slice(), &mut out);
+                Ok(Self::from_parts(Shape::from_len(m), out))
+            }
+            _ => Err(Error::Shape(format!("axis {axis} out of range for rank-2"))),
+        }
+    }
+
+    /// `all` along axis for rank-2 → 0/1 rank-1 mask.
+    pub fn all_axis(&self, axis: usize) -> Result<ArrayI64> {
+        let (m, n) = self.rank2_dims()?;
+        match axis {
+            0 => {
+                let mut out = pool::take_uninit(n);
+                kernels::axis0_all(m, n, self.as_slice(), &mut out);
+                Ok(Self::from_parts(Shape::from_len(n), out))
+            }
+            1 => {
+                let mut out = pool::take_uninit(m);
+                kernels::axis1_all(m, n, self.as_slice(), &mut out);
+                Ok(Self::from_parts(Shape::from_len(m), out))
+            }
+            _ => Err(Error::Shape(format!("axis {axis} out of range for rank-2"))),
+        }
+    }
+
+    /// Consume and reshape without copying the value buffer.
+    pub fn into_reshape(mut self, shape: impl Into<Vec<usize>>) -> Result<Self> {
+        let shape = Shape::new(shape)?;
+        if shape.numel() != self.len() {
+            return Err(Error::Shape(format!(
+                "cannot reshape array of {} elements into {}",
+                self.len(),
+                shape
+            )));
+        }
+        let data = std::mem::replace(&mut self.data, Arc::new(Vec::new()));
+        Ok(Self { shape, data })
+    }
+
+    /// Reshape in place without copying if the element count matches.
+    pub fn reshape_inplace(&mut self, shape: impl Into<Vec<usize>>) -> Result<()> {
+        let shape = Shape::new(shape)?;
+        if shape.numel() != self.len() {
+            return Err(Error::Shape(format!(
+                "cannot reshape array of {} elements into {}",
+                self.len(),
+                shape
+            )));
+        }
+        self.shape = shape;
+        Ok(())
+    }
+
+    /// Deep copy alias matching `Array::to_owned_array`.
+    pub fn to_owned_array(&self) -> ArrayI64 {
+        self.clone()
+    }
 }
 
 impl PartialEq for ArrayI64 {
@@ -830,6 +1045,21 @@ mod tests {
         let row = ArrayI64::from_shape_slice(vec![3], &[10, 20, 30]).unwrap();
         let r = m.add(&row).unwrap();
         assert_eq!(r.as_slice(), &[11, 21, 31, 12, 22, 32]);
+    }
+
+    #[test]
+    fn concat_stack_where_sign() {
+        let a = ArrayI64::from_shape_slice(vec![2], &[1, 2]).unwrap();
+        let b = ArrayI64::from_shape_slice(vec![2], &[3, 4]).unwrap();
+        let c = ArrayI64::concatenate(0, &[&a, &b]).unwrap();
+        assert_eq!(c.as_slice(), &[1, 2, 3, 4]);
+        let s = ArrayI64::stack(0, &[&a, &b]).unwrap();
+        assert_eq!(s.dims(), &[2, 2]);
+        let cond = ArrayI64::from_shape_slice(vec![2], &[1, 0]).unwrap();
+        let w = ArrayI64::where_cond(&cond, &a, &b).unwrap();
+        assert_eq!(w.as_slice(), &[1, 4]);
+        assert_eq!(ArrayI64::from_shape_slice(vec![3], &[-2, 0, 5]).unwrap().sign().as_slice(), &[-1, 0, 1]);
+        assert_eq!(a.var(0).unwrap(), 0.25);
     }
 
     #[test]

@@ -333,3 +333,70 @@ pub(crate) fn argsort_indices(a: &[i64], descending: bool, idx: &mut [usize]) {
         idx.sort_by(|&i, &j| a[i].cmp(&a[j]));
     }
 }
+
+#[inline]
+pub(crate) fn where_slices(cond: &[i64], x: &[i64], y: &[i64], out: &mut [i64]) {
+    for i in 0..cond.len() {
+        out[i] = if cond[i] != 0 { x[i] } else { y[i] };
+    }
+}
+#[inline]
+pub(crate) fn sign_slice(a: &[i64], out: &mut [i64]) {
+    for i in 0..a.len() {
+        out[i] = a[i].signum();
+    }
+}
+#[inline]
+pub(crate) fn clip_slice(a: &[i64], lo: i64, hi: i64, out: &mut [i64]) {
+    for i in 0..a.len() {
+        out[i] = a[i].clamp(lo, hi);
+    }
+}
+#[inline]
+pub(crate) fn axis0_any(m: usize, n: usize, a: &[i64], out: &mut [i64]) {
+    out.fill(0);
+    for i in 0..m {
+        for j in 0..n {
+            if a[i * n + j] != 0 {
+                out[j] = 1;
+            }
+        }
+    }
+}
+#[inline]
+pub(crate) fn axis1_any(m: usize, n: usize, a: &[i64], out: &mut [i64]) {
+    for i in 0..m {
+        let mut v = 0i64;
+        for j in 0..n {
+            if a[i * n + j] != 0 {
+                v = 1;
+                break;
+            }
+        }
+        out[i] = v;
+    }
+}
+#[inline]
+pub(crate) fn axis0_all(m: usize, n: usize, a: &[i64], out: &mut [i64]) {
+    out.fill(1);
+    for i in 0..m {
+        for j in 0..n {
+            if a[i * n + j] == 0 {
+                out[j] = 0;
+            }
+        }
+    }
+}
+#[inline]
+pub(crate) fn axis1_all(m: usize, n: usize, a: &[i64], out: &mut [i64]) {
+    for i in 0..m {
+        let mut v = 1i64;
+        for j in 0..n {
+            if a[i * n + j] == 0 {
+                v = 0;
+                break;
+            }
+        }
+        out[i] = v;
+    }
+}

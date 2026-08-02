@@ -165,3 +165,20 @@ fn m7_i64_surface_smoke() {
     let m = Array::eye(2).unwrap();
     let _ = matlua::linalg::solve(&m, &Array::from_shape_slice(vec![2], &[1., 2.]).unwrap()).unwrap();
 }
+
+
+#[test]
+fn m7_i64_extended_surface() {
+    use matlua::ArrayI64;
+    let a = ArrayI64::from_shape_slice(vec![2], &[1, 2]).unwrap();
+    let b = ArrayI64::from_shape_slice(vec![2], &[3, 4]).unwrap();
+    let c = ArrayI64::concatenate(0, &[&a, &b]).unwrap();
+    assert_eq!(c.len(), 4);
+    let s = ArrayI64::stack(1, &[&a, &b]).unwrap();
+    assert_eq!(s.dims(), &[2, 2]);
+    let m = ArrayI64::from_shape_slice(vec![2, 2], &[1, 0, 0, 1]).unwrap();
+    assert!(!m.all()); assert!(ArrayI64::ones(vec![2, 2]).unwrap().all());
+    assert_eq!(m.any_axis(0).unwrap().as_slice(), &[1, 1]);
+    assert_eq!(m.clip(0, 0).unwrap().as_slice(), &[0, 0, 0, 0]);
+    assert!((a.std(0).unwrap() - 0.5).abs() < 1e-12);
+}
