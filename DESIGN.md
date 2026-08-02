@@ -132,8 +132,9 @@ Matrix×vector `matmul` returns **rank-1**. `solve` preserves the rank style of 
 
 ### 3.3 Dtypes
 
-- **v0.1 quality bar: `f64`.**
-- Extensible later (`f32`, integers, complex) by deliberate addition, not day-one parity.
+- **v0.1 quality bar: `f64`.** Dense LA and the performance contract stay `f64`-first.
+- **Next deliberate addition: `i64`** (milestone **M7**) for ordering keys and exact integer columns; not full dtype parity.
+- Further types (`f32`, complex, …) by deliberate addition after M7–M12 unless a new need appears.
 
 ### 3.4 Ownership, views, and copies
 
@@ -334,10 +335,20 @@ explicit boundaries (zero-copy views in, owned results out).
 | **v0.1** | M1–M3 good enough that a host embeds MatLua and scripts do ordinary dense work without leaving for NumPy | **Candidate** (not version-tagged; crate still `0.0.1`) |
 | **M4a** | Job-A LA pack: `lstsq`, `eigh`, `pinv` | **Done** |
 | **M5** | Tier-1 leave-late array ops | **Done** |
-| **M6** | Tier-2 quant sugar: `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis reductions (rank-2), `any`/`all` | **Done** (this branch) |
+| **M6** | Tier-2 quant sugar: `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis reductions (rank-2), `any`/`all` | **Done** |
 | **v0.1** tag | Explicit release cut | **Deferred** |
+| **M7** | **`i64` arrays** (first multi-dtype step): owned construct/index/elementwise needed for ordering keys and exact integer columns; LA remains `f64`-first | **Next** |
+| **M8** | **Lua host-buffer / view face** — scripts can use engine (or other host) memory without only owned copies (`from_host` / view userdata; lifetime contract) | Planned |
+| **M9** | **Small-window pool** — freelist / recycle policy that covers *n* ≪ 256 (TallyDB-style 64-row windows), not only bulk desk sizes | Planned |
+| **M10** | **Embed-safe Lua boundary** — no `lua_error` longjmp over live Rust drops; `catch_unwind` on every `extern "C"` entry | Planned |
+| **M11** | **CI + embed hygiene** — `.github` CI (tests, `MATLUA_LUA_APICHECK`); no `LUA_USE_DLOPEN` on embed/vendored profile; `take_uninit` Miri-clean (or init-only public paths) | Planned |
+| **M12** | **`arrow-lite` cutover** — runtime off `arrow-array`/`arrow-buffer`/`arrow-schema` once shared **`arrow-lite` v0.1** is released; refactor sooner rather than later after that gate | **Gated** on arrow-lite v0.1 |
 
-Follow-ups: host `out=`, leaner Arrow, longjmp-safe Lua errors, TallyDB cutover (other repo).
+**Priority (Human, 2026-08-02):** **M7 (`i64`) first** among open work; then **M8–M11** (TallyDB fusion / embed bar from host review); **M12** as soon as **arrow-lite v0.1** exists (layout refactor is cheaper early). Further dtypes (`f32`, complex, …) wait until after M7–M12 unless a new need appears.
+
+**Also tracked (not renumbered milestones):** in-place `out=` ([#21](https://github.com/andy-emerson/MatLua/issues/21)); TallyDB engine cutover (other repo); optional later dtypes beyond `i64`.
+
+**TallyDB readiness framing:** M0–M6 solve bulk desk math and vocabulary. Fusion needs **M8–M9** (host views + small allocs) and embed bar **M10–M11**. Shared layout **M12** and keys **M7** complete the long joint stack; **M7 is urgent for integer columns even before full fusion polish.**
 
 ### 7.2 Performance program (P0–P6)
 
