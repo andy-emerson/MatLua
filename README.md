@@ -52,10 +52,11 @@ work on arrays (and array ↔ number). Matrix product is always explicit:
 | **Array methods** | `shape`, `rank`, `get` / `set`, `sum` / `mean` / `min` / `max`, `var` / `std`, `argmin` / `argmax`, ufuncs (`abs`/`sqrt`/`exp`/`log`/`log1p`/`sign`/`power`/`clip`/`isnan`/`isfinite`/`cumsum`), `copy`, `reshape` (may share; write COWs), `transpose`, `fill`, `#a` |
 | **Elementwise** | `+`, `-`, `*`, `/`, unary `-` (array–array or array–number) |
 | **Linear algebra** | `matmul`, `matmul_at`, `matmul_bt`, `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd` |
-| **Rust core** | `Array` (row-major n-D `f64`), views over host buffers, Arrow `Float64Array` interchange, same LA under `matlua::linalg` |
+| **Rust core** | `Array` (`f64`), `ArrayI64` (`i64`, M7), views over host `f64` buffers, Arrow `Float64`/`Int64` interchange, LA under `matlua::linalg` (`f64`) |
 
-Quality bar is **`f64`**. Storage is a dense buffer, not nested Lua tables
-(tables are constructor sugar only).
+Quality bar for dense LA is **`f64`**. **`i64` arrays** (M7) cover keys and exact
+integers (`zeros_i64` / `array_i64` / … on the Lua face). Storage is a dense buffer,
+not nested Lua tables (tables are constructor sugar only).
 
 ### Crate features
 
@@ -110,7 +111,7 @@ Closed decisions and milestones: [DESIGN.md](DESIGN.md).
 **M0–M6 are on `main`** (see [DESIGN.md](DESIGN.md) §7.1). The tree is a **v0.1
 candidate**: a host can embed MatLua and scripts can do ordinary dense array and
 linear-algebra work end-to-end. Crate version remains **`0.0.1`** until a formal
-`0.1.0` cut. **Next: M7 (`i64` arrays).**
+`0.1.0` cut. **M7 (`i64`) in progress** (correctness surface landing).
 
 **Performance:** fair three-way microbench (NumPy · MatLua Rust · MatLua Lua) lives
 under [`tests/`](tests/README.md). Run `python3 tests/bench/compare_fair.py`.

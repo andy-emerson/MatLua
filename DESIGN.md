@@ -250,6 +250,18 @@ internally. Measurement: `tests/bench/compare_compose.py`.
 Names match the `lua` feature on `main`. Tutorial samples live in
 [README.md](README.md); this section freezes the surface for implementers.
 
+### 3.17 `i64` arrays (M7)
+
+- **`ArrayI64`**: owned row-major `i64`, same shape/rank model as `f64` [`Array`].
+- **Product bar for LA remains `f64`.** Integer arrays do not enter `matmul`/`solve`/factorizations.
+- **Arithmetic:** wrapping add/sub/mul/neg/abs; truncating `/`; division by zero → `0` (no panic).
+- **Mean** (scalar or axis) returns **`f64`** (or `f64` array).
+- **Casts:** `ArrayI64::to_f64` / `Array::to_i64` (truncate toward zero).
+- **Arrow:** `Int64Array` interchange (non-null).
+- **Lua face:** `zeros_i64` / `ones_i64` / `full_i64` / `arange_i64` / `array_i64` / `eye_i64` / `diag_i64` / `outer_i64`; userdata methods mirror a subset of the `f64` face (`get`/`set` use integers; `to_f64`).
+- **Not yet on i64 (follow-ups inside M7 or later):** full ufunc set, `cov`/`corrcoef`, nan*, host views, every axis helper, performance tuning.
+
+
 ### 4.1 Module functions
 
 `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`), `array`, `eye`, `where`,
@@ -337,7 +349,7 @@ explicit boundaries (zero-copy views in, owned results out).
 | **M5** | Tier-1 leave-late array ops | **Done** |
 | **M6** | Tier-2 quant sugar: `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis reductions (rank-2), `any`/`all` | **Done** |
 | **v0.1** tag | Explicit release cut | **Deferred** |
-| **M7** | **`i64` arrays** (first multi-dtype step): owned construct/index/elementwise needed for ordering keys and exact integer columns; LA remains `f64`-first | **Next** |
+| **M7** | **`i64` arrays** (first multi-dtype step): owned construct/index/elementwise needed for ordering keys and exact integer columns; LA remains `f64`-first | **In progress** (correctness) |
 | **M8** | **Lua host-buffer / view face** — scripts can use engine (or other host) memory without only owned copies (`from_host` / view userdata; lifetime contract) | Planned |
 | **M9** | **Small-window pool** — freelist / recycle policy that covers *n* ≪ 256 (TallyDB-style 64-row windows), not only bulk desk sizes | Planned |
 | **M10** | **Embed-safe Lua boundary** — no `lua_error` longjmp over live Rust drops; `catch_unwind` on every `extern "C"` entry | Planned |
