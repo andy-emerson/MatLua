@@ -44,7 +44,9 @@ work on arrays (and array ↔ number). Matrix product is always explicit:
 
 | Area | Surface |
 |------|---------|
-| **Masks** | `where(cond, x, y)` (nonzero cond selects `x`); `isnan` / `isfinite` as 0/1 arrays |
+| **Masks / compare** | `where`; `eq`/`ne`/`lt`/`le`/`gt`/`ge` (0/1); `isnan` / `isfinite` |
+| **Broadcast / views** | elementwise broadcast; `broadcast_to`; `slice`/`rows`/`row`/`col` (1-based half-open on face) |
+| **NaN reductions** | `nansum`, `nanmean`, `nanmin`, `nanmax`, `nanvar`, `nanstd` |
 | **Constructors** | `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`, half-open), `array` (nested tables → dense `f64`), `eye` |
 | **Array methods** | `shape`, `rank`, `get` / `set`, `sum` / `mean` / `min` / `max`, `var` / `std`, `argmin` / `argmax`, ufuncs (`abs`/`sqrt`/`exp`/`log`/`log1p`/`sign`/`power`/`clip`/`isnan`/`isfinite`/`cumsum`), `copy`, `reshape` (may share; write COWs), `transpose`, `fill`, `#a` |
 | **Elementwise** | `+`, `-`, `*`, `/`, unary `-` (array–array or array–number) |

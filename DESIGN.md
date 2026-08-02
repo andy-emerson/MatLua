@@ -227,6 +227,13 @@ over materializing `transpose` then `matmul`. Same numerics as the long
 composition. Large same-buffer `AᵀA` (`k ≥ 512`) may materialize `Aᵀ` once
 internally. Measurement: `tests/bench/compare_compose.py`.
 
+### 3.15 Broadcast, compares, views, NaN policy (M5)
+
+- **Broadcast:** NumPy right-align rules for elementwise ops and `broadcast_to`. Practical focus rank ≤ 2; higher ranks supported by the same algorithm.
+- **Compares:** `eq`/`ne`/`lt`/`le`/`gt`/`ge` return **0/1** dense `f64` masks (no separate bool dtype). IEEE: NaN comparisons are false.
+- **Ufuncs:** IEEE **propagate** NaN. Skipping NaN uses explicit `nan*` reductions.
+- **Views:** rank-1 `slice`, rank-2 `rows`/`row` are zero-copy when contiguous; `col` **copies** (row-major). Lua face uses **1-based half-open** ranges for `slice`/`rows` (stop exclusive).
+
 ---
 
 ## 4. Lua face (frozen names)
@@ -241,10 +248,11 @@ Names match the `lua` feature on `main`. Tutorial samples live in
 
 ### 4.2 Array methods and metamethods
 
-Methods: `shape`, `rank`, `get`, `set`, `sum`, `mean`, `min`, `max`, `copy`,
-`reshape`, `transpose`, `fill`, `abs`, `sqrt`, `exp`, `log`, `log1p`, `sign`,
-`power`, `clip`, `isnan`, `isfinite`, `cumsum`, `argmin`, `argmax`, `var`, `std`  
-Module also: `where`  
+Methods: `shape`, `rank`, `get`, `set`, `sum`, `mean`, `min`, `max`, `nansum`,
+`nanmean`, `nanmin`, `nanmax`, `nanvar`, `nanstd`, `copy`, `reshape`, `transpose`,
+`fill`, ufuncs, compares (`eq`/`ne`/`lt`/`le`/`gt`/`ge`), `slice`/`rows`/`row`/`col`,
+`cumsum`, `argmin`, `argmax`, `var`, `std`  
+Module also: `where`, `concatenate`, `stack`, `broadcast_to`  
 Metamethods: `__add`, `__sub`, `__mul`, `__div`, `__unm`, `__len`, `__tostring`, `__gc`
 
 ### 4.3 NumPy contrast (capability, not syntax parity)
