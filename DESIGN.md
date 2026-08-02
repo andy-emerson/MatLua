@@ -259,7 +259,8 @@ Names match the `lua` feature on `main`. Tutorial samples live in
 - **Casts:** `ArrayI64::to_f64` / `Array::to_i64` (truncate toward zero).
 - **Arrow:** `Int64Array` interchange (non-null).
 - **Lua face:** `zeros_i64` / `ones_i64` / `full_i64` / `arange_i64` / `array_i64` / `eye_i64` / `diag_i64` / `outer_i64`; userdata methods mirror a subset of the `f64` face (`get`/`set` use integers; `to_f64`).
-- **Not yet on i64 (follow-ups inside M7 or later):** full ufunc set, `cov`/`corrcoef`, nan*, host views, every axis helper, performance tuning.
+- **Also on i64:** `where_cond`, `concatenate`/`stack`, `sign`/`clip`, `var`/`std` (as `f64`), `any`/`all` (+ axis), views `slice`/`rows`/`row`/`col`, `broadcast_to`, full compare set on face.
+- **Not yet on i64:** float-only ufuncs (`exp`/`log`/…), `cov`/`corrcoef`, nan*, host buffer views, performance tuning.
 
 
 ### 4.1 Module functions

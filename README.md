@@ -55,8 +55,9 @@ work on arrays (and array ↔ number). Matrix product is always explicit:
 | **Rust core** | `Array` (`f64`), `ArrayI64` (`i64`, M7), views over host `f64` buffers, Arrow `Float64`/`Int64` interchange, LA under `matlua::linalg` (`f64`) |
 
 Quality bar for dense LA is **`f64`**. **`i64` arrays** (M7) cover keys and exact
-integers (`zeros_i64` / `array_i64` / … on the Lua face). Storage is a dense buffer,
-not nested Lua tables (tables are constructor sugar only).
+integers on the Lua face (`zeros_i64`, `array_i64`, `where_i64`, `concatenate_i64`,
+`stack_i64`, …). Storage is a dense buffer, not nested Lua tables (tables are
+constructor sugar only).
 
 ### Crate features
 
