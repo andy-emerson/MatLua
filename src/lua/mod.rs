@@ -14,6 +14,8 @@
 //! unsafe {
 //!     matlua::lua::register(L);
 //!     matlua::lua::enable_generational_gc(L); // recommended for large arrays
+//!     // zero-copy column into Lua (host keeps buffer alive):
+//!     // matlua::lua::push_view_f64(L, shape, ptr, len)?;
 //! }
 //! // scripts: local ml = require "matlua"
 //! ```
@@ -32,6 +34,7 @@ mod api_i64;
 mod ffi;
 mod ud;
 mod ud_i64;
+mod host;
 
 use std::ffi::CString;
 use std::os::raw::c_int;
@@ -43,6 +46,9 @@ use api::luaopen_matlua;
 use ffi::*;
 
 pub use ffi::lua_State;
+
+pub use host::{push_array_copy_f64, push_array_copy_i64, push_view_f64, push_view_i64, HostViewF64, HostViewI64, VIEW_F64_MT, VIEW_I64_MT};
+
 
 /// Register MatLua as package `matlua` on an existing Lua 5.4 state.
 ///
@@ -249,5 +255,42 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.to_string().contains("index") || err.to_string().contains("lua runtime"));
+    }
+}
+
+
+#[cfg(test)]
+mod host_view_tests {
+    use super::*;
+    use std::ffi::CString;
+
+    #[test]
+    fn host_view_and_copy_roundtrip() {
+        let lua = Lua::new().unwrap();
+        let host_f = [1.0_f64, 2.0, 3.0, 4.0];
+        let host_i = [10_i64, 20, 30];
+        unsafe {
+            let L = lua.as_ptr();
+            push_view_f64(L, vec![2, 2], host_f.as_ptr(), host_f.len()).unwrap();
+            let n = CString::new("HV").unwrap();
+            ffi::lua_setglobal(L, n.as_ptr());
+            push_view_i64(L, vec![3], host_i.as_ptr(), host_i.len()).unwrap();
+            let n = CString::new("HI").unwrap();
+            ffi::lua_setglobal(L, n.as_ptr());
+            push_array_copy_f64(L, vec![2], &host_f[..2]).unwrap();
+            let n = CString::new("COPY").unwrap();
+            ffi::lua_setglobal(L, n.as_ptr());
+        }
+        lua.do_string(
+            r#"
+assert(HV:dtype() == "f64")
+assert(HV:get(1,1) == 1 and HV:get(2,2) == 4)
+local a = HV:to_array()
+assert(a:get(1,2) == 2)
+assert(HI:dtype() == "i64" and HI:get(2) == 20)
+assert(COPY:get(1) == 1 and COPY:get(2) == 2)
+"#,
+        )
+        .unwrap();
     }
 }

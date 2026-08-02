@@ -46,6 +46,7 @@ work on arrays (and array ↔ number). Matrix product is always explicit:
 |------|---------|
 | **Masks / compare** | `where`; `eq`/`ne`/`lt`/`le`/`gt`/`ge` (0/1); `isnan` / `isfinite` |
 | **Indexing** | `nonzero`, `compress`, `put`, `put_mask`, `take` (i64 or f64 indices) |
+| **Host embed (Rust)** | `lua::push_view_f64` / `push_view_i64` (zero-copy read-only), `push_array_copy_*` |
 | **Broadcast / views** | elementwise broadcast; `broadcast_to`; `slice`/`rows`/`row`/`col` (1-based half-open on face) |
 | **NaN reductions** | `nansum`, `nanmean`, `nanmin`, `nanmax`, `nanvar`, `nanstd` |
 | **Tier-2** | `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis on `sum`/`mean`/…, `any`/`all` |
@@ -116,7 +117,7 @@ Closed decisions and milestones: [DESIGN.md](DESIGN.md).
 **M0–M6 are on `main`** (see [DESIGN.md](DESIGN.md) §7.1). The tree is a **v0.1
 candidate**: a host can embed MatLua and scripts can do ordinary dense array and
 linear-algebra work end-to-end. Crate version remains **`0.0.1`** until a formal
-`0.1.0` cut. **M7 Done.** **M7.b in progress** (LA diagnostics on `f64`, with i64→f64 promote).
+`0.1.0` cut. **M7 Done. M7.b Done** (quant pack + host view entry). Next **M7.c** optimize or embed/TallyDB milestones.
 
 **Performance:** fair three-way microbench (NumPy · MatLua Rust · MatLua Lua) lives
 under [`tests/`](tests/README.md). Run `python3 tests/bench/compare_fair.py`.
