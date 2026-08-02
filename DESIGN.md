@@ -521,7 +521,12 @@ M7.b delivered **host entry** (`push_view_f64`/`i64`, `push_array_copy_*`) as re
 - Implemented: **pack A/B panels** (`mc×kc`, `kc×nc`) + **4×4 wrapping micro-kernel** + Rayon over row panels; small products keep simple ikj.
 - Measured (release, 2-core): i64 matmul n=256 **~5.2 ms → ~3.3 ms**.
 
-**Still open:** more micro-kernel width / pack reuse; Strassen trial at n≥512; f64 min/solve; fair table refresh.
+**Explicit SIMD research (i64 GEMM):**
+- **AVX2** has `paddq` (i64 add) but **no** full 64-bit integer multiply; 64-bit mul needs scalar or multi-instruction emulation, or **AVX-512DQ** `vpmullq`.
+- **`std::simd` / portable_simd** still unstable on stable Rust toolchains we target.
+- **Decision for now:** stay on packed GEBP + 4×4 scalar micro-kernel + Rayon; optional AVX-512 path later if CI has it. Elementwise i64 benefits more from autovec on add than hand SIMD.
+
+**Still open:** AVX-512DQ mul path (gated); Strassen trial at n≥512; f64 min/solve residuals.
 
 #### What remains explicitly *not* TallyDB-owned
 
