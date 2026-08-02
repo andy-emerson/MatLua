@@ -510,7 +510,13 @@ M7.b delivered **host entry** (`push_view_f64`/`i64`, `push_array_copy_*`) as re
 
 **Measured note:** NumPy `transpose` may be view-only; MatLua always materializes row-major — compare like-for-like on dense ownership.
 
-**Next waves:** remaining Rust/NumPy (solve/qr noise, min residual ~1.5–2×); Lua face tax; more `out=`; avoid scale-hostile fixed parallel chunk counts.
+**Wave 3 (landed):** dual-dtype opt + **i64 measurement**
+- **i64 kernels:** shared 4-wide zip/map/assign for arith, compares, scalar, matrix×row; ILP `sum`; `axis1_sum` reuses `sum_slice`.
+- **i64 `isin`:** `HashSet` membership; **`searchsorted_array`:** one monotonicity check.
+- **i64 matmul:** blocked GEMM + **Rayon** row-parallel for ≥~64³ work (≈2× on 2-core host at n=256).
+- **Harness:** `tests/bench/i64_surface.rs` (`cargo test --release --test i64_surface -- --run --sizes 64,256,1024`).
+
+**Still open:** f64 min residual / solve vs NumPy; i64 matmul still slower than faer-f64 (no wrapping integer BLAS); fuller fair table refresh; more `out=`.
 
 #### What remains explicitly *not* TallyDB-owned
 

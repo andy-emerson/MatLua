@@ -21,6 +21,7 @@ arrow-array = { version = "59.1.0", default-features = false }
 arrow-buffer = { version = "59.1.0", default-features = false }
 arrow-schema = { version = "59.1.0", default-features = false }
 faer = "0.24.4"
+rayon = "1.10"
 thiserror = "2.0.19"
 
 [build-dependencies]
@@ -58,4 +59,9 @@ required-features = ["lua"]
 [[test]]
 name = "path_length"
 path = "tests/bench/path_length.rs"
+harness = false
+
+[[test]]
+name = "i64_surface"
+path = "tests/bench/i64_surface.rs"
 harness = false

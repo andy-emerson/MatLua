@@ -30,6 +30,84 @@ fn matmul_result(data: Vec<i64>, rows: usize, cols: usize, prefer_vec: bool) -> 
     }
 }
 
+
+/// Blocked wrapping GEMM into zeroed `data` (am×bn row-major).
+/// Large products parallelize over output rows (Rayon).
+fn gemm_blocked(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &mut [i64]) {
+    const BS: usize = 48;
+    let flops = am.saturating_mul(an).saturating_mul(bn);
+    // Parallel threshold ~ 64³ work units
+    if flops >= 64 * 64 * 64 && am >= 8 {
+        use rayon::prelude::*;
+        data.par_chunks_mut(bn).enumerate().for_each(|(i, c_row)| {
+            let mut k0 = 0;
+            while k0 < an {
+                let k1 = (k0 + BS).min(an);
+                for k in k0..k1 {
+                    let aik = aa[i * an + k];
+                    if aik == 0 {
+                        continue;
+                    }
+                    let b_row = &bb[k * bn..(k + 1) * bn];
+                    let mut j = 0;
+                    while j + 4 <= bn {
+                        c_row[j] = c_row[j].wrapping_add(aik.wrapping_mul(b_row[j]));
+                        c_row[j + 1] = c_row[j + 1].wrapping_add(aik.wrapping_mul(b_row[j + 1]));
+                        c_row[j + 2] = c_row[j + 2].wrapping_add(aik.wrapping_mul(b_row[j + 2]));
+                        c_row[j + 3] = c_row[j + 3].wrapping_add(aik.wrapping_mul(b_row[j + 3]));
+                        j += 4;
+                    }
+                    while j < bn {
+                        c_row[j] = c_row[j].wrapping_add(aik.wrapping_mul(b_row[j]));
+                        j += 1;
+                    }
+                }
+                k0 = k1;
+            }
+        });
+        return;
+    }
+    let mut i0 = 0;
+    while i0 < am {
+        let i1 = (i0 + BS).min(am);
+        let mut j0 = 0;
+        while j0 < bn {
+            let j1 = (j0 + BS).min(bn);
+            let mut k0 = 0;
+            while k0 < an {
+                let k1 = (k0 + BS).min(an);
+                for i in i0..i1 {
+                    let c_row = &mut data[i * bn + j0..i * bn + j1];
+                    for k in k0..k1 {
+                        let aik = aa[i * an + k];
+                        if aik == 0 {
+                            continue;
+                        }
+                        let b_row = &bb[k * bn + j0..k * bn + j1];
+                        let mut j = 0;
+                        let w = j1 - j0;
+                        while j + 4 <= w {
+                            c_row[j] = c_row[j].wrapping_add(aik.wrapping_mul(b_row[j]));
+                            c_row[j + 1] = c_row[j + 1].wrapping_add(aik.wrapping_mul(b_row[j + 1]));
+                            c_row[j + 2] = c_row[j + 2].wrapping_add(aik.wrapping_mul(b_row[j + 2]));
+                            c_row[j + 3] = c_row[j + 3].wrapping_add(aik.wrapping_mul(b_row[j + 3]));
+                            j += 4;
+                        }
+                        while j < w {
+                            c_row[j] = c_row[j].wrapping_add(aik.wrapping_mul(b_row[j]));
+                            j += 1;
+                        }
+                    }
+                }
+                k0 = k1;
+            }
+            j0 = j1;
+        }
+        i0 = i1;
+    }
+}
+
+
 /// Matrix product `a @ b` with wrapping `i64` accumulation.
 ///
 /// Rank-1 operands are columns. Result is rank-1 when an operand was rank-1 and
@@ -71,29 +149,7 @@ pub fn matmul(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
             data[i] = s;
         }
     } else {
-        // i-k-j: for each a[i,k], saxpy into row i of C from row k of B
-        for i in 0..am {
-            let c_row = &mut data[i * bn..(i + 1) * bn];
-            for k in 0..an {
-                let aik = aa[i * an + k];
-                if aik == 0 {
-                    continue;
-                }
-                let b_row = &bb[k * bn..(k + 1) * bn];
-                let mut j = 0;
-                while j + 4 <= bn {
-                    c_row[j] = c_row[j].wrapping_add(aik.wrapping_mul(b_row[j]));
-                    c_row[j + 1] = c_row[j + 1].wrapping_add(aik.wrapping_mul(b_row[j + 1]));
-                    c_row[j + 2] = c_row[j + 2].wrapping_add(aik.wrapping_mul(b_row[j + 2]));
-                    c_row[j + 3] = c_row[j + 3].wrapping_add(aik.wrapping_mul(b_row[j + 3]));
-                    j += 4;
-                }
-                while j < bn {
-                    c_row[j] = c_row[j].wrapping_add(aik.wrapping_mul(b_row[j]));
-                    j += 1;
-                }
-            }
-        }
+        gemm_blocked(am, an, bn, aa, bb, &mut data);
     }
     matmul_result(data, am, bn, prefer_vec)
 }
@@ -128,19 +184,7 @@ pub fn matmul_out(a: &ArrayI64, b: &ArrayI64, out: &mut ArrayI64) -> Result<()> 
             data[i] = s;
         }
     } else {
-        for i in 0..am {
-            let c_row = &mut data[i * bn..(i + 1) * bn];
-            for k in 0..an {
-                let aik = aa[i * an + k];
-                if aik == 0 {
-                    continue;
-                }
-                let b_row = &bb[k * bn..(k + 1) * bn];
-                for j in 0..bn {
-                    c_row[j] = c_row[j].wrapping_add(aik.wrapping_mul(b_row[j]));
-                }
-            }
-        }
+        gemm_blocked(am, an, bn, aa, bb, data);
     }
     Ok(())
 }

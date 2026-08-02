@@ -1,126 +1,140 @@
-//! Contiguous `i64` kernels (correctness-first; not yet tuned).
-#![allow(dead_code)] // scalar helpers kept for parity with f64 kernels; wire as needed
+//! Contiguous `i64` kernels (M7.c: unrolled bulk paths; wrapping arithmetic).
+#![allow(dead_code)]
+
+#[inline]
+fn zip4(a: &[i64], b: &[i64], out: &mut [i64], f: impl Fn(i64, i64) -> i64) {
+    let n = a.len();
+    debug_assert_eq!(b.len(), n);
+    debug_assert_eq!(out.len(), n);
+    let mut i = 0;
+    while i + 4 <= n {
+        out[i] = f(a[i], b[i]);
+        out[i + 1] = f(a[i + 1], b[i + 1]);
+        out[i + 2] = f(a[i + 2], b[i + 2]);
+        out[i + 3] = f(a[i + 3], b[i + 3]);
+        i += 4;
+    }
+    while i < n {
+        out[i] = f(a[i], b[i]);
+        i += 1;
+    }
+}
+
+#[inline]
+fn map4(a: &[i64], out: &mut [i64], f: impl Fn(i64) -> i64) {
+    let n = a.len();
+    debug_assert_eq!(out.len(), n);
+    let mut i = 0;
+    while i + 4 <= n {
+        out[i] = f(a[i]);
+        out[i + 1] = f(a[i + 1]);
+        out[i + 2] = f(a[i + 2]);
+        out[i + 3] = f(a[i + 3]);
+        i += 4;
+    }
+    while i < n {
+        out[i] = f(a[i]);
+        i += 1;
+    }
+}
+
+#[inline]
+fn assign4(a: &mut [i64], b: &[i64], f: impl Fn(i64, i64) -> i64) {
+    let n = a.len();
+    debug_assert_eq!(b.len(), n);
+    let mut i = 0;
+    while i + 4 <= n {
+        a[i] = f(a[i], b[i]);
+        a[i + 1] = f(a[i + 1], b[i + 1]);
+        a[i + 2] = f(a[i + 2], b[i + 2]);
+        a[i + 3] = f(a[i + 3], b[i + 3]);
+        i += 4;
+    }
+    while i < n {
+        a[i] = f(a[i], b[i]);
+        i += 1;
+    }
+}
 
 #[inline]
 pub(crate) fn add_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
-    let n = a.len();
-    let mut i = 0;
-    while i + 4 <= n {
-        out[i] = a[i].wrapping_add(b[i]);
-        out[i + 1] = a[i + 1].wrapping_add(b[i + 1]);
-        out[i + 2] = a[i + 2].wrapping_add(b[i + 2]);
-        out[i + 3] = a[i + 3].wrapping_add(b[i + 3]);
-        i += 4;
-    }
-    while i < n {
-        out[i] = a[i].wrapping_add(b[i]);
-        i += 1;
-    }
+    zip4(a, b, out, i64::wrapping_add);
 }
 #[inline]
 pub(crate) fn sub_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
-    for i in 0..a.len() {
-        out[i] = a[i].wrapping_sub(b[i]);
-    }
+    zip4(a, b, out, i64::wrapping_sub);
 }
 #[inline]
 pub(crate) fn mul_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
-    let n = a.len();
-    let mut i = 0;
-    while i + 4 <= n {
-        out[i] = a[i].wrapping_mul(b[i]);
-        out[i + 1] = a[i + 1].wrapping_mul(b[i + 1]);
-        out[i + 2] = a[i + 2].wrapping_mul(b[i + 2]);
-        out[i + 3] = a[i + 3].wrapping_mul(b[i + 3]);
-        i += 4;
-    }
-    while i < n {
-        out[i] = a[i].wrapping_mul(b[i]);
-        i += 1;
-    }
+    zip4(a, b, out, i64::wrapping_mul);
 }
-/// Truncating division (Rust `/`); division by zero yields 0 (document; avoid panic).
+/// Truncating division; division by zero → 0 (no panic).
 #[inline]
 pub(crate) fn div_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
-    for i in 0..a.len() {
-        out[i] = if b[i] == 0 { 0 } else { a[i] / b[i] };
-    }
+    zip4(a, b, out, |x, y| if y == 0 { 0 } else { x / y });
 }
 #[inline]
 pub(crate) fn add_assign_slices(a: &mut [i64], b: &[i64]) {
-    for i in 0..a.len() {
-        a[i] = a[i].wrapping_add(b[i]);
-    }
+    assign4(a, b, i64::wrapping_add);
 }
 #[inline]
 pub(crate) fn sub_assign_slices(a: &mut [i64], b: &[i64]) {
-    for i in 0..a.len() {
-        a[i] = a[i].wrapping_sub(b[i]);
-    }
+    assign4(a, b, i64::wrapping_sub);
 }
 #[inline]
 pub(crate) fn mul_assign_slices(a: &mut [i64], b: &[i64]) {
-    for i in 0..a.len() {
-        a[i] = a[i].wrapping_mul(b[i]);
-    }
+    assign4(a, b, i64::wrapping_mul);
 }
 #[inline]
 pub(crate) fn div_assign_slices(a: &mut [i64], b: &[i64]) {
-    for i in 0..a.len() {
-        a[i] = if b[i] == 0 { 0 } else { a[i] / b[i] };
-    }
+    assign4(a, b, |x, y| if y == 0 { 0 } else { x / y });
 }
 #[inline]
 pub(crate) fn neg_slice(a: &[i64], out: &mut [i64]) {
-    for i in 0..a.len() {
-        out[i] = a[i].wrapping_neg();
-    }
+    map4(a, out, i64::wrapping_neg);
 }
 #[inline]
 pub(crate) fn add_scalar(a: &[i64], s: i64, out: &mut [i64]) {
-    for i in 0..a.len() {
-        out[i] = a[i].wrapping_add(s);
-    }
+    map4(a, out, |x| x.wrapping_add(s));
 }
 #[inline]
 pub(crate) fn sub_scalar(a: &[i64], s: i64, out: &mut [i64]) {
-    for i in 0..a.len() {
-        out[i] = a[i].wrapping_sub(s);
-    }
+    map4(a, out, |x| x.wrapping_sub(s));
 }
 #[inline]
 pub(crate) fn mul_scalar(a: &[i64], s: i64, out: &mut [i64]) {
-    for i in 0..a.len() {
-        out[i] = a[i].wrapping_mul(s);
-    }
+    map4(a, out, |x| x.wrapping_mul(s));
 }
 #[inline]
 pub(crate) fn div_scalar(a: &[i64], s: i64, out: &mut [i64]) {
-    for i in 0..a.len() {
-        out[i] = if s == 0 { 0 } else { a[i] / s };
+    if s == 0 {
+        out.fill(0);
+        return;
     }
+    map4(a, out, |x| x / s);
 }
 #[inline]
 pub(crate) fn abs_slice(a: &[i64], out: &mut [i64]) {
-    for i in 0..a.len() {
-        out[i] = a[i].wrapping_abs();
-    }
+    map4(a, out, i64::wrapping_abs);
 }
+
+/// Four independent accumulators for ILP.
 #[inline]
 pub(crate) fn sum_slice(a: &[i64]) -> i64 {
-    let mut s: i64 = 0;
-    let mut i = 0;
-    let n = a.len();
-    while i + 4 <= n {
-        s = s.wrapping_add(a[i]);
-        s = s.wrapping_add(a[i + 1]);
-        s = s.wrapping_add(a[i + 2]);
-        s = s.wrapping_add(a[i + 3]);
-        i += 4;
+    let mut s0: i64 = 0;
+    let mut s1: i64 = 0;
+    let mut s2: i64 = 0;
+    let mut s3: i64 = 0;
+    let mut chunks = a.chunks_exact(4);
+    for c in chunks.by_ref() {
+        s0 = s0.wrapping_add(c[0]);
+        s1 = s1.wrapping_add(c[1]);
+        s2 = s2.wrapping_add(c[2]);
+        s3 = s3.wrapping_add(c[3]);
     }
-    while i < n {
-        s = s.wrapping_add(a[i]);
-        i += 1;
+    let mut s = s0.wrapping_add(s1).wrapping_add(s2).wrapping_add(s3);
+    for &x in chunks.remainder() {
+        s = s.wrapping_add(x);
     }
     s
 }
@@ -168,45 +182,31 @@ pub(crate) fn max_slice(a: &[i64]) -> Option<i64> {
 }
 #[inline]
 pub(crate) fn eq_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
-    for i in 0..a.len() {
-        out[i] = if a[i] == b[i] { 1 } else { 0 };
-    }
+    zip4(a, b, out, |x, y| if x == y { 1 } else { 0 });
 }
 #[inline]
 pub(crate) fn ne_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
-    for i in 0..a.len() {
-        out[i] = if a[i] != b[i] { 1 } else { 0 };
-    }
+    zip4(a, b, out, |x, y| if x != y { 1 } else { 0 });
 }
 #[inline]
 pub(crate) fn lt_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
-    for i in 0..a.len() {
-        out[i] = if a[i] < b[i] { 1 } else { 0 };
-    }
+    zip4(a, b, out, |x, y| if x < y { 1 } else { 0 });
 }
 #[inline]
 pub(crate) fn le_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
-    for i in 0..a.len() {
-        out[i] = if a[i] <= b[i] { 1 } else { 0 };
-    }
+    zip4(a, b, out, |x, y| if x <= y { 1 } else { 0 });
 }
 #[inline]
 pub(crate) fn gt_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
-    for i in 0..a.len() {
-        out[i] = if a[i] > b[i] { 1 } else { 0 };
-    }
+    zip4(a, b, out, |x, y| if x > y { 1 } else { 0 });
 }
 #[inline]
 pub(crate) fn ge_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
-    for i in 0..a.len() {
-        out[i] = if a[i] >= b[i] { 1 } else { 0 };
-    }
+    zip4(a, b, out, |x, y| if x >= y { 1 } else { 0 });
 }
 #[inline]
 pub(crate) fn eq_scalar(a: &[i64], s: i64, out: &mut [i64]) {
-    for i in 0..a.len() {
-        out[i] = if a[i] == s { 1 } else { 0 };
-    }
+    map4(a, out, |x| if x == s { 1 } else { 0 });
 }
 #[inline]
 pub(crate) fn cumsum_slice(a: &[i64], out: &mut [i64]) {
@@ -266,11 +266,7 @@ pub(crate) fn axis0_sum(m: usize, n: usize, a: &[i64], out: &mut [i64]) {
 #[inline]
 pub(crate) fn axis1_sum(m: usize, n: usize, a: &[i64], out: &mut [i64]) {
     for i in 0..m {
-        let mut s: i64 = 0;
-        for j in 0..n {
-            s = s.wrapping_add(a[i * n + j]);
-        }
-        out[i] = s;
+        out[i] = sum_slice(&a[i * n..(i + 1) * n]);
     }
 }
 #[inline]
@@ -314,37 +310,33 @@ pub(crate) fn axis1_max(m: usize, n: usize, a: &[i64], out: &mut [i64]) {
 #[inline]
 pub(crate) fn add_matrix_row(m: usize, n: usize, a: &[i64], row: &[i64], out: &mut [i64]) {
     for i in 0..m {
-        let base = i * n;
-        for j in 0..n {
-            out[base + j] = a[base + j].wrapping_add(row[j]);
-        }
+        let ai = &a[i * n..(i + 1) * n];
+        let oi = &mut out[i * n..(i + 1) * n];
+        zip4(ai, row, oi, i64::wrapping_add);
     }
 }
 #[inline]
 pub(crate) fn sub_matrix_row(m: usize, n: usize, a: &[i64], row: &[i64], out: &mut [i64]) {
     for i in 0..m {
-        let base = i * n;
-        for j in 0..n {
-            out[base + j] = a[base + j].wrapping_sub(row[j]);
-        }
+        let ai = &a[i * n..(i + 1) * n];
+        let oi = &mut out[i * n..(i + 1) * n];
+        zip4(ai, row, oi, i64::wrapping_sub);
     }
 }
 #[inline]
 pub(crate) fn mul_matrix_row(m: usize, n: usize, a: &[i64], row: &[i64], out: &mut [i64]) {
     for i in 0..m {
-        let base = i * n;
-        for j in 0..n {
-            out[base + j] = a[base + j].wrapping_mul(row[j]);
-        }
+        let ai = &a[i * n..(i + 1) * n];
+        let oi = &mut out[i * n..(i + 1) * n];
+        zip4(ai, row, oi, i64::wrapping_mul);
     }
 }
 #[inline]
 pub(crate) fn div_matrix_row(m: usize, n: usize, a: &[i64], row: &[i64], out: &mut [i64]) {
     for i in 0..m {
-        let base = i * n;
-        for j in 0..n {
-            out[base + j] = if row[j] == 0 { 0 } else { a[base + j] / row[j] };
-        }
+        let ai = &a[i * n..(i + 1) * n];
+        let oi = &mut out[i * n..(i + 1) * n];
+        zip4(ai, row, oi, |x, y| if y == 0 { 0 } else { x / y });
     }
 }
 #[inline]

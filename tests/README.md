@@ -26,6 +26,9 @@ python3 tests/bench/compare_fair.py
 # or pieces:
 cargo test --release --features lua --test fair_all -- --run --sizes 64,256,1024
 python3 tests/bench/numpy_fair.py --sizes 64,256,1024
+
+# i64 surface (no NumPy twin yet — wall times only)
+cargo test --release --test i64_surface -- --run --sizes 64,256,1024
 ```
 
 Per-function performance work is tracked as GitHub Issues (close when the Human

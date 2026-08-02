@@ -1484,11 +1484,13 @@ impl ArrayI64 {
         if test_elements.rank() != 1 {
             return Err(Error::Shape("isin test_elements must be rank-1".into()));
         }
-        let set: std::collections::BTreeSet<i64> =
+        // HashSet for average O(1) membership; BTree is slower for large test sets.
+        let set: std::collections::HashSet<i64> =
             test_elements.as_slice().iter().copied().collect();
         let mut data = pool::take_uninit(self.len());
-        for (i, &x) in self.as_slice().iter().enumerate() {
-            data[i] = if set.contains(&x) { 1 } else { 0 };
+        let src = self.as_slice();
+        for i in 0..src.len() {
+            data[i] = if set.contains(&src[i]) { 1 } else { 0 };
         }
         Ok(Self::from_parts(self.shape.clone(), data))
     }
@@ -1547,9 +1549,24 @@ impl ArrayI64 {
         if values.rank() != 1 {
             return Err(Error::Shape("searchsorted values must be rank-1".into()));
         }
+        if self.rank() != 1 {
+            return Err(Error::Shape("searchsorted requires rank-1".into()));
+        }
+        let a = self.as_slice();
+        // Validate monotonicity once (not per query).
+        for w in a.windows(2) {
+            if w[0] > w[1] {
+                return Err(Error::Shape("searchsorted requires non-decreasing array".into()));
+            }
+        }
         let mut data = pool::take_uninit(values.len());
         for (i, &v) in values.as_slice().iter().enumerate() {
-            data[i] = self.searchsorted(v, side_right)? as i64;
+            let r = if side_right {
+                a.partition_point(|&x| x <= v)
+            } else {
+                a.partition_point(|&x| x < v)
+            };
+            data[i] = r as i64;
         }
         Ok(Self::from_parts(Shape::from_len(values.len()), data))
     }
