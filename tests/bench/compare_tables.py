@@ -156,42 +156,27 @@ def main() -> None:
     i_abs, i_rel = build_i64(i64)
     p_abs, p_rel = build_promote(promo)
 
-    body = f"""### Table A — f64 absolute wall time (ms)
-
-Median wall time. Setup outside the clock. Smaller is better.
+    body = f"""### Table A — f64 absolute (ms)
 
 {f_abs}
 
-### Table B — f64 vs NumPy (relative)
-
-**NumPy is always 1.00x** (baseline). Values are wall_time / NumPy wall_time.
+### Table B — f64 relative (NumPy = 1.00x)
 
 {f_rel}
 
-### Table C — i64 absolute wall time (ms)
-
-Three faces: NumPy **int64** · MatLua Rust wrapping **i64** · MatLua **Lua** i64.
-Same generation as `i64_surface` / `numpy_i64_fair.py`.
-NumPy integer matmul is not OpenBLAS DGEMM; useful reference, not an MKL peer.
+### Table C — i64 absolute (ms)
 
 {i_abs}
 
-### Table D — i64 vs NumPy int64 (relative)
-
-**NumPy is always 1.00x**. Same columns as Table B (Rust/NumPy, Lua/NumPy, Lua/Rust).
+### Table D — i64 relative (NumPy = 1.00x)
 
 {i_rel}
 
-### Table E — i64→f64 promote-out absolute wall time (ms)
-
-Integer inputs, floating / LA outputs (mean, std, median, quantile, norm, solve, cholesky, qr).
-NumPy uses int64 stats where natural, else float64 after cast for LA.
+### Table E — i64→f64 promote-out absolute (ms)
 
 {p_abs}
 
-### Table F — i64→f64 promote-out vs NumPy (relative)
-
-**NumPy is always 1.00x**.
+### Table F — i64→f64 promote-out relative (NumPy = 1.00x)
 
 {p_rel}
 """
