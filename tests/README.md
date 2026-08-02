@@ -28,15 +28,14 @@ cargo test --release --features lua --test fair_all -- --run --sizes 64,256,1024
 python3 tests/bench/numpy_fair.py --sizes 64,256,1024
 ```
 
-Open performance work is tracked as GitHub Issues (one function per issue). Close the issue and update DESIGN when the Human is satisfied with that function’s performance.
+Per-function performance work is tracked as GitHub Issues (close when the Human
+is satisfied). Older kernel issues (#12–#15) are **closed**. Open API follow-up:
 
-| Function | Issue |
-|----------|-------|
-| `reshape` | [#12](https://github.com/andy-emerson/MatLua/issues/12) |
-| `min` | [#13](https://github.com/andy-emerson/MatLua/issues/13) |
-| `max` | [#14](https://github.com/andy-emerson/MatLua/issues/14) |
-| `norm` | [#15](https://github.com/andy-emerson/MatLua/issues/15) |
-| in-place `out=` (API) | [#21](https://github.com/andy-emerson/MatLua/issues/21) |
+| Function | Issue | Status |
+|----------|-------|--------|
+| in-place `out=` (API) | [#21](https://github.com/andy-emerson/MatLua/issues/21) | open |
+
+Product milestones M7–M12 (i64, fusion, embed, arrow-lite): [DESIGN.md](../DESIGN.md) §7.1.
 
 ## Latest fair results (snapshot)
 

@@ -6,3 +6,6 @@ Cargo.lock
 *.swo
 .idea/
 .vscode/
+
+# Local bench dumps (regenerate with compare_fair / path_length)
+tests/bench/last_*.tsv
