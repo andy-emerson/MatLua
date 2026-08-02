@@ -98,6 +98,54 @@ pub fn matmul(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
     matmul_result(data, am, bn, prefer_vec)
 }
 
+/// GEMM into preallocated rank-2 `out` with shape `(am, bn)`. Wrapping `i64`.
+/// Does not collapse to rank-1 even when `b` is a column vector (`bn == 1`).
+pub fn matmul_out(a: &ArrayI64, b: &ArrayI64, out: &mut ArrayI64) -> Result<()> {
+    let (am, an) = as_matrix_dims(a)?;
+    let (bm, bn) = as_matrix_dims(b)?;
+    if an != bm {
+        return Err(Error::shape(format!(
+            "matmul shape mismatch: ({am}, {an}) vs ({bm}, {bn})"
+        )));
+    }
+    if out.rank() != 2 || out.dims() != [am, bn] {
+        return Err(Error::shape(format!(
+            "matmul_out expects out shape ({am}, {bn}), got {:?}",
+            out.dims()
+        )));
+    }
+    let aa = a.as_slice();
+    let bb = b.as_slice();
+    let data = out.as_mut_slice();
+    data.fill(0);
+    if b.rank() == 1 {
+        for i in 0..am {
+            let mut s: i64 = 0;
+            let row = &aa[i * an..(i + 1) * an];
+            for k in 0..an {
+                s = s.wrapping_add(row[k].wrapping_mul(bb[k]));
+            }
+            data[i] = s;
+        }
+    } else {
+        for i in 0..am {
+            let c_row = &mut data[i * bn..(i + 1) * bn];
+            for k in 0..an {
+                let aik = aa[i * an + k];
+                if aik == 0 {
+                    continue;
+                }
+                let b_row = &bb[k * bn..(k + 1) * bn];
+                for j in 0..bn {
+                    c_row[j] = c_row[j].wrapping_add(aik.wrapping_mul(b_row[j]));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+
 /// `aᵀ @ b` with wrapping `i64`.
 pub fn matmul_at(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
     let (am, an) = as_matrix_dims(a)?;

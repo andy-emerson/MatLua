@@ -333,3 +333,31 @@ fn m7b_out_buffers() {
     linalg::matmul_out(&a2, &b2, &mut c).unwrap();
     assert_eq!(c.as_slice(), &[19., 22., 43., 50.]);
 }
+
+#[test]
+fn m7b_i64_quant_parity() {
+    use matlua::array::ArrayI64;
+    use matlua::linalg::i64_ops;
+    // quantiles / axis → f64
+    let a = ArrayI64::from_shape_slice(vec![2, 3], &[1, 2, 3, 4, 5, 6]).unwrap();
+    let qs = a.quantiles(&[0.0, 0.5, 1.0]).unwrap();
+    assert_eq!(qs.as_slice(), &[1.0, 3.5, 6.0]);
+    let med_rows = a.median_axis(1).unwrap();
+    assert_eq!(med_rows.as_slice(), &[2.0, 5.0]);
+    let q_cols = a.quantile_axis(0, 0.5).unwrap();
+    assert_eq!(q_cols.len(), 3);
+    // out=
+    let x = ArrayI64::from_shape_slice(vec![3], &[1, -2, 3]).unwrap();
+    let y = ArrayI64::from_shape_slice(vec![3], &[4, 5, 6]).unwrap();
+    let mut o = ArrayI64::zeros(vec![3]).unwrap();
+    x.sub_out(&y, &mut o).unwrap();
+    assert_eq!(o.as_slice(), &[-3, -7, -3]);
+    x.abs_out(&mut o).unwrap();
+    assert_eq!(o.as_slice(), &[1, 2, 3]);
+    // matmul_out
+    let m = ArrayI64::from_shape_slice(vec![2, 2], &[1, 2, 3, 4]).unwrap();
+    let n = ArrayI64::from_shape_slice(vec![2, 2], &[5, 6, 7, 8]).unwrap();
+    let mut c = ArrayI64::zeros(vec![2, 2]).unwrap();
+    i64_ops::matmul_out(&m, &n, &mut c).unwrap();
+    assert_eq!(c.as_slice(), &[19, 22, 43, 50]);
+}

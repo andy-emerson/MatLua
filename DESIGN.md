@@ -313,6 +313,23 @@ Embedders (TallyDB) push engine columns without a second interpreter:
 
 Views are not yet accepted by `linalg` (owned `&Array` only) — TallyDB letter §5 notes copies are fine for current windows; view-aware LA is a later optimization.
 
+### 3.25 M7.b i64 quant-pack parity
+
+Quant pack applies to **both** dtypes. Deliberate promote-only paths are named; silent holes are bugs.
+
+| Capability | `f64` | `i64` | Notes |
+|------------|-------|-------|--------|
+| `median` / `quantile` / **`quantiles`** | yes | yes → **f64** | even median averages |
+| **`median_axis` / `quantile_axis`** | yes | yes → **f64** | rank-2 |
+| Random ints / `choice` | floats + `integers`/`choice` | `integers` / `choice_i64` | |
+| Indexing put/compress/nonzero/take | yes | yes | |
+| Elementwise `*_out` | add/sub/mul/div/neg/abs | same | Lua face mirrors |
+| **`matmul_out`** | yes | yes (wrapping) | dual Lua `ml.matmul_out` |
+| LA diagnostics / solvers | native f64 | **`from_i64` → f64** | agreed promote-out |
+| Host `push_view_*` / copy | f64 + i64 | f64 + i64 | |
+
+**M7.b residual (closed on `feat-m7c-optimize`):** axis order-stats, fuller i64 `out=` on Lua, i64 `matmul_out`.
+
 ### 3.24 TallyDB requirements letter (alignment)
 
 External letter *“TallyDB → MatLua: what we need”* (not a MatLua file). **Authoritative milestone mapping: §7.1.1.** Summary:
@@ -421,7 +438,7 @@ explicit boundaries (zero-copy views in, owned results out).
 | **M6** | Tier-2 quant sugar: `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis reductions (rank-2), `any`/`all` | **Done** |
 | **v0.1** tag | Explicit release cut | **Deferred** |
 | **M7** | **`i64` surface (correctness):** shared array grammar + integer-path LA (wrapping) + **i64-unique** + views + gcd/lcm/divmod/bitcount + **`from_i64` solvers** (i64 in → f64 out). | **Done** |
-| **M7.b** | **Quant leave-late pack:** LA diagnostics, median/quantile, random, indexing, partial `out=` (#21), host view entry (`push_view_*` / `push_array_copy_*`). | **Done** |
+| **M7.b** | **Quant leave-late pack** (f64 + **i64 parity**, §3.25): diagnostics, order stats, random, indexing, partial `out=` (#21), host views. | **Done** (i64 residual closed on M7.c branch) |
 | **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once M7/M7.b correctness holds | **In progress** |
 | **M8** | **Host integration depth** (TallyDB letter §5–§6 + view face): see **§7.1.1** | **Planned** |
 | **M9** | **Small-window pool** — freelist for *n* ≪ 256 (TallyDB hot path; letter pressure) | **Planned** |

@@ -527,6 +527,12 @@ impl ArrayI64 {
         kernels::neg_slice(self.as_slice(), out.as_mut_slice());
         Ok(())
     }
+    /// `out = abs(self)`.
+    pub fn abs_out(&self, out: &mut ArrayI64) -> Result<()> {
+        self.same_shape(out)?;
+        kernels::abs_slice(self.as_slice(), out.as_mut_slice());
+        Ok(())
+    }
 
     /// `neg` (see `f64` [`Array`] counterpart).
     pub fn neg(&self) -> ArrayI64 {
@@ -1017,6 +1023,95 @@ impl ArrayI64 {
         v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         Ok(super::kernels::quantile_sorted(&v, q).unwrap())
     }
+
+    /// Several quantiles as rank-1 `f64` (same semantics as [`Array::quantiles`](super::Array::quantiles)).
+    pub fn quantiles(&self, qs: &[f64]) -> Result<Array> {
+        for &q in qs {
+            if !(0.0..=1.0).contains(&q) || !q.is_finite() {
+                return Err(Error::Shape(format!("quantile q must be in [0, 1], got {q}")));
+            }
+        }
+        if self.is_empty() {
+            return Err(Error::Shape("quantiles of empty array".into()));
+        }
+        let mut v: Vec<f64> = self.as_slice().iter().map(|&x| x as f64).collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut data = super::pool::take_uninit(qs.len());
+        for (i, &q) in qs.iter().enumerate() {
+            data[i] = super::kernels::quantile_sorted(&v, q).unwrap();
+        }
+        Ok(Array::from_parts(Shape::from_len(qs.len()), data))
+    }
+
+    /// Median along axis for rank-2 → rank-1 `f64`.
+    pub fn median_axis(&self, axis: usize) -> Result<Array> {
+        let (m, n) = self.rank2_dims()?;
+        let src = self.as_slice();
+        match axis {
+            0 => {
+                let mut data = super::pool::take_uninit(n);
+                let mut col = vec![0.0f64; m];
+                for j in 0..n {
+                    for i in 0..m {
+                        col[i] = src[i * n + j] as f64;
+                    }
+                    data[j] = super::kernels::median_slice(&col).ok_or_else(|| {
+                        Error::Shape("median_axis of empty".into())
+                    })?;
+                }
+                Ok(Array::from_parts(Shape::from_len(n), data))
+            }
+            1 => {
+                let mut data = super::pool::take_uninit(m);
+                for i in 0..m {
+                    let mut row: Vec<f64> = src[i * n..(i + 1) * n].iter().map(|&x| x as f64).collect();
+                    data[i] = super::kernels::median_slice(&row).ok_or_else(|| {
+                        Error::Shape("median_axis of empty".into())
+                    })?;
+                }
+                Ok(Array::from_parts(Shape::from_len(m), data))
+            }
+            _ => Err(Error::Shape(format!("axis {axis} out of range for rank-2"))),
+        }
+    }
+
+    /// Quantile along axis for rank-2 → rank-1 `f64`.
+    pub fn quantile_axis(&self, axis: usize, q: f64) -> Result<Array> {
+        if !(0.0..=1.0).contains(&q) || !q.is_finite() {
+            return Err(Error::Shape(format!("quantile q must be in [0, 1], got {q}")));
+        }
+        let (m, n) = self.rank2_dims()?;
+        let src = self.as_slice();
+        match axis {
+            0 => {
+                let mut data = super::pool::take_uninit(n);
+                let mut col = vec![0.0f64; m];
+                for j in 0..n {
+                    for i in 0..m {
+                        col[i] = src[i * n + j] as f64;
+                    }
+                    col.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    data[j] = super::kernels::quantile_sorted(&col, q).ok_or_else(|| {
+                        Error::Shape("quantile_axis of empty".into())
+                    })?;
+                }
+                Ok(Array::from_parts(Shape::from_len(n), data))
+            }
+            1 => {
+                let mut data = super::pool::take_uninit(m);
+                for i in 0..m {
+                    let mut row: Vec<f64> = src[i * n..(i + 1) * n].iter().map(|&x| x as f64).collect();
+                    row.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    data[i] = super::kernels::quantile_sorted(&row, q).ok_or_else(|| {
+                        Error::Shape("quantile_axis of empty".into())
+                    })?;
+                }
+                Ok(Array::from_parts(Shape::from_len(m), data))
+            }
+            _ => Err(Error::Shape(format!("axis {axis} out of range for rank-2"))),
+        }
+    }
+
 
 
     /// Concatenate along `axis` (rank 1–2).
