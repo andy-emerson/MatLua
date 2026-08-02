@@ -7,6 +7,7 @@
 //! ```
 
 use std::env;
+use std::hint::black_box;
 use std::time::Instant;
 
 use matlua::array::ArrayI64;
@@ -134,69 +135,69 @@ fn bench_rust(sizes: &[usize]) {
         let (ith, wrmh) = budget(n, true);
 
         emit("rust", "zeros", n, time_ms(it, wrm, || {
-            let _ = ArrayI64::zeros(vec![n, n]).unwrap();
+            black_box(ArrayI64::zeros(vec![n, n]).unwrap());
         }));
         emit("rust", "ones", n, time_ms(it, wrm, || {
-            let _ = ArrayI64::ones(vec![n, n]).unwrap();
+            black_box(ArrayI64::ones(vec![n, n]).unwrap());
         }));
         emit("rust", "full", n, time_ms(it, wrm, || {
-            let _ = ArrayI64::full(vec![n, n], 7).unwrap();
+            black_box(ArrayI64::full(vec![n, n], 7).unwrap());
         }));
         emit("rust", "eye", n, time_ms(it, wrm, || {
-            let _ = ArrayI64::eye(n).unwrap();
+            black_box(ArrayI64::eye(n).unwrap());
         }));
         emit("rust", "arange", n, time_ms(it, wrm, || {
-            let _ = ArrayI64::arange(0, n as i64).unwrap();
+            black_box(ArrayI64::arange(0, n as i64).unwrap());
         }));
         emit("rust", "copy", n, time_ms(it, wrm, || {
-            let _ = a.copy();
+            black_box(a.copy());
         }));
         if n % 2 == 0 {
             emit("rust", "reshape", n, time_ms(it, wrm, || {
-                let _ = a.reshape(vec![n / 2, n * 2]).unwrap();
+                black_box(a.reshape(vec![n / 2, n * 2]).unwrap());
             }));
         }
         {
             let mut t = a.copy();
             emit("rust", "fill", n, time_ms(it, wrm, || {
-                t.fill(3);
+                black_box(t.fill(3));
             }));
         }
         emit("rust", "elem_add", n, time_ms(it, wrm, || {
-            let _ = a.add(&b).unwrap();
+            black_box(a.add(&b).unwrap());
         }));
         emit("rust", "elem_sub", n, time_ms(it, wrm, || {
-            let _ = a.sub(&b).unwrap();
+            black_box(a.sub(&b).unwrap());
         }));
         emit("rust", "elem_mul", n, time_ms(it, wrm, || {
-            let _ = a.mul(&b).unwrap();
+            black_box(a.mul(&b).unwrap());
         }));
         emit("rust", "elem_div", n, time_ms(it, wrm, || {
-            let _ = a.div(&b).unwrap();
+            black_box(a.div(&b).unwrap());
         }));
         emit("rust", "sum", n, time_ms(it, wrm, || {
-            let _ = a.sum();
+            black_box(a.sum());
         }));
         emit("rust", "min", n, time_ms(it, wrm, || {
-            let _ = a.min().unwrap();
+            black_box(a.min().unwrap());
         }));
         emit("rust", "max", n, time_ms(it, wrm, || {
-            let _ = a.max().unwrap();
+            black_box(a.max().unwrap());
         }));
         emit("rust", "transpose", n, time_ms(it, wrm, || {
-            let _ = a.transpose().unwrap();
+            black_box(a.transpose().unwrap());
         }));
         emit("rust", "dot", n, time_ms(it, wrm, || {
-            let _ = i64_ops::dot(&v, &v).unwrap();
+            black_box(i64_ops::dot(&v, &v).unwrap());
         }));
         emit("rust", "matmul", n, time_ms(ith, wrmh, || {
-            let _ = i64_ops::matmul(&a, &b).unwrap();
+            black_box(i64_ops::matmul(&a, &b).unwrap());
         }));
         emit("rust", "unique", n, time_ms(it, wrm, || {
-            let _ = v.unique().unwrap();
+            black_box(v.unique().unwrap());
         }));
         emit("rust", "isin", n, time_ms(it, wrm, || {
-            let _ = a.isin(&v).unwrap();
+            black_box(a.isin(&v).unwrap());
         }));
     }
 }

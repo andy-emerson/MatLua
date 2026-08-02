@@ -533,7 +533,12 @@ M7.b delivered **host entry** (`push_view_f64`/`i64`, `push_array_copy_*`) as re
 - **Harness:** expanded pure-i64 surface (ctors, sub/div/max, …); **Tables E–F** for i64→f64 promote-out.
 - **#21** still deferred.
 
-**Still open:** AVX-512DQ mul (gated); Strassen n≥512; f64 min/solve residuals; more Lua face if ratios reappear.
+**Wave 6 (landed):** norm/reshape honesty + ILP norm
+- **norm:** 4-way ILP; benches `black_box` results (false L/R from DCE). True Lua/Rust ≈ **1.0–1.2×**.
+- **reshape:** still view+userdata (sub‑µs); Lua `reshape_inplace` for zero extra array; high L/R = fixed floor.
+- **Still optional research:** AVX-512DQ `vpmullq` (not portable here); Strassen for huge square only after base GEMM solid.
+
+**Still open:** f64 min/solve residuals; AVX-512/Strassen only if we target large-n servers with the ISA.
 
 #### What remains explicitly *not* TallyDB-owned
 

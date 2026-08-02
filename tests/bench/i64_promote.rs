@@ -3,6 +3,7 @@
 //! Ops: mean, std, median, quantile, norm, solve, cholesky, qr (from_i64 / faer).
 
 use std::env;
+use std::hint::black_box;
 use std::time::Instant;
 
 use matlua::array::ArrayI64;
@@ -130,28 +131,28 @@ fn bench_rust(sizes: &[usize]) {
         let (ith, wrmh) = budget(n, true);
 
         emit("rust", "mean", n, time_ms(it, wrm, || {
-            let _ = a.mean().unwrap();
+            black_box(a.mean().unwrap());
         }));
         emit("rust", "std", n, time_ms(it, wrm, || {
-            let _ = a.std(0).unwrap();
+            black_box(a.std(0).unwrap());
         }));
         emit("rust", "median", n, time_ms(it, wrm, || {
-            let _ = a.median().unwrap();
+            black_box(a.median().unwrap());
         }));
         emit("rust", "quantile", n, time_ms(it, wrm, || {
-            let _ = a.quantile(0.75).unwrap();
+            black_box(a.quantile(0.75).unwrap());
         }));
         emit("rust", "norm", n, time_ms(it, wrm, || {
-            let _ = i64_ops::norm(&a).unwrap();
+            black_box(i64_ops::norm(&a).unwrap());
         }));
         emit("rust", "solve", n, time_ms(ith, wrmh, || {
-            let _ = linalg::from_i64::solve(&s, &v).unwrap();
+            black_box(linalg::from_i64::solve(&s, &v).unwrap());
         }));
         emit("rust", "cholesky", n, time_ms(ith, wrmh, || {
-            let _ = linalg::from_i64::cholesky(&s).unwrap();
+            black_box(linalg::from_i64::cholesky(&s).unwrap());
         }));
         emit("rust", "qr", n, time_ms(ith, wrmh, || {
-            let _ = linalg::from_i64::qr(&a).unwrap();
+            black_box(linalg::from_i64::qr(&a).unwrap());
         }));
     }
 }

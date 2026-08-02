@@ -227,6 +227,14 @@ pub unsafe extern "C" fn a_i64_copy(L: *mut lua_State) -> c_int {
     unsafe { push_array_i64(L, a.array.copy()) };
     1
 }
+
+pub unsafe extern "C" fn a_i64_reshape_inplace(L: *mut lua_State) -> c_int {
+    let a = unsafe { &mut *check_array_i64(L, 1) };
+    let shape = lua_try!(L, unsafe { shape_from_args(L, 2) });
+    lua_try!(L, a.array.reshape_inplace(shape));
+    unsafe { lua_pushvalue(L, 1) }; // return self for chaining
+    1
+}
 pub unsafe extern "C" fn a_i64_reshape(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array_i64(L, 1) };
     let shape = lua_try!(L, unsafe { shape_from_args(L, 2) });
@@ -943,7 +951,7 @@ pub unsafe fn install_metatable(L: *mut lua_State) {
         luaL_newmetatable(L, ARRAY_I64_MT.as_ptr());
         lua_pushvalue(L, -1);
         lua_setfield(L, -2, c"__index".as_ptr());
-        let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 81] = [
+        let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 82] = [
             (c"__gc", a_i64_gc),
             (c"__len", a_i64_len),
             (c"__tostring", a_i64_tostring),
@@ -963,6 +971,7 @@ pub unsafe fn install_metatable(L: *mut lua_State) {
             (c"max", a_i64_max),
             (c"copy", a_i64_copy),
             (c"reshape", a_i64_reshape),
+            (c"reshape_inplace", a_i64_reshape_inplace),
             (c"fill", a_i64_fill),
             (c"abs", a_i64_abs),
             (c"sign", a_i64_sign),

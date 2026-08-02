@@ -469,9 +469,22 @@ pub fn dot(a: &ArrayI64, b: &ArrayI64) -> Result<i64> {
 }
 
 /// Euclidean (Frobenius) norm as `f64` (sqrt of sum of squares; squares wrap then cast).
+/// Four-way ILP accumulation (same idea as `sum_sq` on f64).
 pub fn norm(a: &ArrayI64) -> Result<f64> {
-    let mut ss: i64 = 0;
-    for &x in a.as_slice() {
+    let s = a.as_slice();
+    let mut s0: i64 = 0;
+    let mut s1: i64 = 0;
+    let mut s2: i64 = 0;
+    let mut s3: i64 = 0;
+    let mut chunks = s.chunks_exact(4);
+    for c in chunks.by_ref() {
+        s0 = s0.wrapping_add(c[0].wrapping_mul(c[0]));
+        s1 = s1.wrapping_add(c[1].wrapping_mul(c[1]));
+        s2 = s2.wrapping_add(c[2].wrapping_mul(c[2]));
+        s3 = s3.wrapping_add(c[3].wrapping_mul(c[3]));
+    }
+    let mut ss = s0.wrapping_add(s1).wrapping_add(s2).wrapping_add(s3);
+    for &x in chunks.remainder() {
         ss = ss.wrapping_add(x.wrapping_mul(x));
     }
     Ok((ss as f64).sqrt())
