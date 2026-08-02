@@ -6,7 +6,7 @@ use arrow_array::{Array as ArrowArray, Float64Array};
 
 use super::kernels;
 use super::pool;
-use super::shape::Shape;
+use super::shape::{broadcast_shapes, Shape};
 use super::view::{ArrayView, ArrayViewMut};
 use crate::error::{Error, Result};
 
@@ -338,11 +338,20 @@ impl Array {
     where
         F: FnOnce(&[f64], &[f64], &mut [f64]),
     {
-        self.same_shape(other)?;
-        let n = self.len();
+        if self.shape.same_as(other.shape()) {
+            let n = self.len();
+            let mut data = pool::take_uninit(n);
+            f(self.as_slice(), other.as_slice(), &mut data);
+            return Ok(Self::from_parts(self.shape.clone(), data));
+        }
+        let out_dims = broadcast_shapes(self.dims(), other.dims())?;
+        let out_shape = Shape::new(out_dims)?;
+        let left = self.broadcast_to(out_shape.dims())?;
+        let right = other.broadcast_to(out_shape.dims())?;
+        let n = left.len();
         let mut data = pool::take_uninit(n);
-        f(self.as_slice(), other.as_slice(), &mut data);
-        Ok(Self::from_parts(self.shape.clone(), data))
+        f(left.as_slice(), right.as_slice(), &mut data);
+        Ok(Self::from_parts(out_shape, data))
     }
 
     fn owned_unary_kernel<F>(&self, f: F) -> Array
@@ -635,6 +644,209 @@ impl Array {
         }
     }
 
+    /// Broadcast this array to `dims` (NumPy right-align rules).
+    ///
+    /// Same shape returns a shared clone. Expanding size-1 axes allocates and tiles.
+    pub fn broadcast_to(&self, dims: impl Into<Vec<usize>>) -> Result<Array> {
+        let target = Shape::new(dims)?;
+        if self.shape.same_as(&target) {
+            return Ok(self.clone());
+        }
+        let tr = target.rank();
+        let sr = self.rank();
+        if sr > tr {
+            return Err(Error::Shape(format!(
+                "cannot broadcast rank {sr} down to rank {tr}"
+            )));
+        }
+        // Pad source dims on the left with 1s to rank `tr`
+        let mut sdims = vec![1usize; tr];
+        for i in 0..sr {
+            sdims[tr - sr + i] = self.dims()[i];
+        }
+        let tdims = target.dims();
+        for ax in 0..tr {
+            if sdims[ax] != tdims[ax] && sdims[ax] != 1 {
+                return Err(Error::Shape(format!(
+                    "cannot broadcast {} to {}",
+                    self.shape, target
+                )));
+            }
+        }
+
+        let n = target.numel();
+        let mut data = pool::take_uninit(n);
+        let src = self.as_slice();
+        let mut idx = vec![0usize; tr];
+        for flat in 0..n {
+            let mut soff = 0usize;
+            let mut stride = 1usize;
+            for ax in (0..tr).rev() {
+                let sc = if sdims[ax] == 1 { 0 } else { idx[ax] };
+                soff += sc * stride;
+                stride *= sdims[ax];
+            }
+            data[flat] = src[soff];
+            for ax in (0..tr).rev() {
+                idx[ax] += 1;
+                if idx[ax] < tdims[ax] {
+                    break;
+                }
+                idx[ax] = 0;
+            }
+        }
+        Ok(Self::from_parts(target, data))
+    }
+
+    /// Element-wise `==` as 0/1 mask (broadcasts).
+    pub fn eq_elem(&self, other: &Array) -> Result<Array> {
+        self.owned_from_kernel(other, kernels::eq_slices)
+    }
+    /// Element-wise `!=` as 0/1 mask.
+    pub fn ne_elem(&self, other: &Array) -> Result<Array> {
+        self.owned_from_kernel(other, kernels::ne_slices)
+    }
+    /// Element-wise `<` as 0/1 mask.
+    pub fn lt(&self, other: &Array) -> Result<Array> {
+        self.owned_from_kernel(other, kernels::lt_slices)
+    }
+    /// Element-wise `<=` as 0/1 mask.
+    pub fn le(&self, other: &Array) -> Result<Array> {
+        self.owned_from_kernel(other, kernels::le_slices)
+    }
+    /// Element-wise `>` as 0/1 mask.
+    pub fn gt(&self, other: &Array) -> Result<Array> {
+        self.owned_from_kernel(other, kernels::gt_slices)
+    }
+    /// Element-wise `>=` as 0/1 mask.
+    pub fn ge(&self, other: &Array) -> Result<Array> {
+        self.owned_from_kernel(other, kernels::ge_slices)
+    }
+
+    /// Compare every element to a scalar; 0/1 mask.
+    pub fn eq_scalar_elem(&self, s: f64) -> Array {
+        self.owned_unary_kernel(|a, o| kernels::eq_scalar(a, s, o))
+    }
+    /// `!=` scalar mask.
+    pub fn ne_scalar_elem(&self, s: f64) -> Array {
+        self.owned_unary_kernel(|a, o| kernels::ne_scalar(a, s, o))
+    }
+    /// `<` scalar mask.
+    pub fn lt_scalar(&self, s: f64) -> Array {
+        self.owned_unary_kernel(|a, o| kernels::lt_scalar(a, s, o))
+    }
+    /// `<=` scalar mask.
+    pub fn le_scalar(&self, s: f64) -> Array {
+        self.owned_unary_kernel(|a, o| kernels::le_scalar(a, s, o))
+    }
+    /// `>` scalar mask.
+    pub fn gt_scalar(&self, s: f64) -> Array {
+        self.owned_unary_kernel(|a, o| kernels::gt_scalar(a, s, o))
+    }
+    /// `>=` scalar mask.
+    pub fn ge_scalar(&self, s: f64) -> Array {
+        self.owned_unary_kernel(|a, o| kernels::ge_scalar(a, s, o))
+    }
+
+    /// Sum ignoring NaN.
+    pub fn nansum(&self) -> f64 {
+        kernels::nansum_slice(self.as_slice())
+    }
+    /// Mean ignoring NaN (error if all NaN / empty count).
+    pub fn nanmean(&self) -> Result<f64> {
+        kernels::nanmean_slice(self.as_slice())
+            .ok_or_else(|| Error::Shape("nanmean of empty/all-NaN array".into()))
+    }
+    /// Min ignoring NaN.
+    pub fn nanmin(&self) -> Result<f64> {
+        kernels::nanmin_slice(self.as_slice())
+            .ok_or_else(|| Error::Shape("nanmin of empty/all-NaN array".into()))
+    }
+    /// Max ignoring NaN.
+    pub fn nanmax(&self) -> Result<f64> {
+        kernels::nanmax_slice(self.as_slice())
+            .ok_or_else(|| Error::Shape("nanmax of empty/all-NaN array".into()))
+    }
+    /// Variance ignoring NaN; `ddof` as in NumPy.
+    pub fn nanvar(&self, ddof: usize) -> Result<f64> {
+        kernels::nanvar_slice(self.as_slice(), ddof).ok_or_else(|| {
+            Error::Shape(format!("nanvar requires enough non-NaN points (ddof={ddof})"))
+        })
+    }
+    /// Std-dev ignoring NaN.
+    pub fn nanstd(&self, ddof: usize) -> Result<f64> {
+        Ok(self.nanvar(ddof)?.sqrt())
+    }
+
+    /// Rank-1 half-open slice `[start, end)` (0-based) as a view.
+    pub fn slice(&self, start: usize, end: usize) -> Result<ArrayView<'_>> {
+        if self.rank() != 1 {
+            return Err(Error::Shape(
+                "slice requires rank-1; use rows/row for matrices".into(),
+            ));
+        }
+        if start > end || end > self.len() {
+            return Err(Error::Index(format!(
+                "slice [{start}, {end}) out of range for len {}",
+                self.len()
+            )));
+        }
+        Ok(ArrayView::from_shape_slice(
+            Shape::from_len(end - start),
+            &self.as_slice()[start..end],
+        ))
+    }
+
+    /// Contiguous row range `[start, end)` as a rank-2 view (0-based).
+    pub fn rows(&self, start: usize, end: usize) -> Result<ArrayView<'_>> {
+        if self.rank() != 2 {
+            return Err(Error::Shape("rows requires rank-2".into()));
+        }
+        let (m, n) = (self.dims()[0], self.dims()[1]);
+        if start > end || end > m {
+            return Err(Error::Index(format!(
+                "rows [{start}, {end}) out of range for {m} rows"
+            )));
+        }
+        let off = start * n;
+        let len = (end - start) * n;
+        Ok(ArrayView::from_shape_slice(
+            Shape::matrix(end - start, n)?,
+            &self.as_slice()[off..off + len],
+        ))
+    }
+
+    /// Single row `i` as rank-1 view (0-based).
+    pub fn row(&self, i: usize) -> Result<ArrayView<'_>> {
+        if self.rank() != 2 {
+            return Err(Error::Shape("row requires rank-2".into()));
+        }
+        let (m, n) = (self.dims()[0], self.dims()[1]);
+        if i >= m {
+            return Err(Error::Index(format!("row {i} out of range for {m} rows")));
+        }
+        Ok(ArrayView::from_shape_slice(
+            Shape::from_len(n),
+            &self.as_slice()[i * n..(i + 1) * n],
+        ))
+    }
+
+    /// Column `j` as **owned** rank-1 (copy; columns are not contiguous in row-major).
+    pub fn col(&self, j: usize) -> Result<Array> {
+        if self.rank() != 2 {
+            return Err(Error::Shape("col requires rank-2".into()));
+        }
+        let (m, n) = (self.dims()[0], self.dims()[1]);
+        if j >= n {
+            return Err(Error::Index(format!("col {j} out of range for {n} cols")));
+        }
+        let mut data = pool::take_uninit(m);
+        let src = self.as_slice();
+        for i in 0..m {
+            data[i] = src[i * n + j];
+        }
+        Ok(Self::from_parts(Shape::from_len(m), data))
+    }
 }
 
 impl PartialEq for Array {
@@ -663,6 +875,34 @@ impl Drop for Array {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn broadcast_and_compare() {
+        let m = Array::from_shape_slice(vec![2, 3], &[1., 2., 3., 4., 5., 6.]).unwrap();
+        let row = Array::from_shape_slice(vec![3], &[10., 20., 30.]).unwrap();
+        let s = m.add(&row).unwrap();
+        assert_eq!(s.as_slice(), &[11., 22., 33., 14., 25., 36.]);
+        let mask = m.lt_scalar(4.0);
+        assert_eq!(mask.as_slice(), &[1., 1., 1., 0., 0., 0.]);
+        let col = Array::from_shape_slice(vec![2, 1], &[1., 2.]).unwrap();
+        let s2 = m.mul(&col).unwrap();
+        assert_eq!(s2.as_slice(), &[1., 2., 3., 8., 10., 12.]);
+    }
+
+    #[test]
+    fn nan_reductions_and_slices() {
+        let a = Array::from_shape_slice(vec![4], &[1., f64::NAN, 3., 5.]).unwrap();
+        assert!((a.nansum() - 9.0).abs() < 1e-12);
+        assert!((a.nanmean().unwrap() - 3.0).abs() < 1e-12);
+        assert_eq!(a.nanmin().unwrap(), 1.0);
+        assert_eq!(a.nanmax().unwrap(), 5.0);
+        let v = a.slice(1, 3).unwrap();
+        assert_eq!(v.as_slice()[1], 3.0);
+        let m = Array::from_shape_slice(vec![3, 2], &[1., 2., 3., 4., 5., 6.]).unwrap();
+        assert_eq!(m.row(1).unwrap().as_slice(), &[3., 4.]);
+        assert_eq!(m.col(0).unwrap().as_slice(), &[1., 3., 5.]);
+        assert_eq!(m.rows(0, 2).unwrap().dims(), &[2, 2]);
+    }
+
     #[test]
     fn ufuncs_and_var() {
         let a = Array::from_shape_slice(vec![3], &[-1., 4., 9.]).unwrap();

@@ -196,3 +196,50 @@ mod tests {
         assert_eq!(Shape::from_len(7).numel(), 7);
     }
 }
+
+
+/// NumPy-style broadcast of two dimension lists (right-aligned).
+///
+/// Each axis must match or one side is `1`. Ranks may differ (missing axes act as 1).
+pub fn broadcast_shapes(a: &[usize], b: &[usize]) -> Result<Vec<usize>> {
+    let rank = a.len().max(b.len());
+    let mut out = Vec::with_capacity(rank);
+    for i in 0..rank {
+        let da = if i + a.len() < rank {
+            1
+        } else {
+            a[i + a.len() - rank]
+        };
+        let db = if i + b.len() < rank {
+            1
+        } else {
+            b[i + b.len() - rank]
+        };
+        if da == db {
+            out.push(da);
+        } else if da == 1 {
+            out.push(db);
+        } else if db == 1 {
+            out.push(da);
+        } else {
+            return Err(Error::Shape(format!(
+                "cannot broadcast shapes {a:?} and {b:?} (axis conflict {da} vs {db})"
+            )));
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod broadcast_tests {
+    use super::*;
+
+    #[test]
+    fn broadcast_matrix_and_row() {
+        let s = broadcast_shapes(&[3, 4], &[4]).unwrap();
+        assert_eq!(s, vec![3, 4]);
+        let s = broadcast_shapes(&[3, 4], &[3, 1]).unwrap();
+        assert_eq!(s, vec![3, 4]);
+        assert!(broadcast_shapes(&[3, 4], &[2, 4]).is_err());
+    }
+}

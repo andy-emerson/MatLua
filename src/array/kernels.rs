@@ -525,3 +525,160 @@ pub(crate) fn var_slice(a: &[f64], ddof: usize) -> Option<f64> {
     }
     Some(ss / (n - ddof) as f64)
 }
+
+
+// --- Compares → 0/1 masks (IEEE: NaN compares false) ---
+
+#[inline]
+pub(crate) fn eq_slices(a: &[f64], b: &[f64], out: &mut [f64]) {
+    for i in 0..a.len() {
+        out[i] = if a[i] == b[i] { 1.0 } else { 0.0 };
+    }
+}
+#[inline]
+pub(crate) fn ne_slices(a: &[f64], b: &[f64], out: &mut [f64]) {
+    for i in 0..a.len() {
+        out[i] = if a[i] != b[i] { 1.0 } else { 0.0 };
+    }
+}
+#[inline]
+pub(crate) fn lt_slices(a: &[f64], b: &[f64], out: &mut [f64]) {
+    for i in 0..a.len() {
+        out[i] = if a[i] < b[i] { 1.0 } else { 0.0 };
+    }
+}
+#[inline]
+pub(crate) fn le_slices(a: &[f64], b: &[f64], out: &mut [f64]) {
+    for i in 0..a.len() {
+        out[i] = if a[i] <= b[i] { 1.0 } else { 0.0 };
+    }
+}
+#[inline]
+pub(crate) fn gt_slices(a: &[f64], b: &[f64], out: &mut [f64]) {
+    for i in 0..a.len() {
+        out[i] = if a[i] > b[i] { 1.0 } else { 0.0 };
+    }
+}
+#[inline]
+pub(crate) fn ge_slices(a: &[f64], b: &[f64], out: &mut [f64]) {
+    for i in 0..a.len() {
+        out[i] = if a[i] >= b[i] { 1.0 } else { 0.0 };
+    }
+}
+
+#[inline]
+pub(crate) fn eq_scalar(a: &[f64], s: f64, out: &mut [f64]) {
+    for i in 0..a.len() {
+        out[i] = if a[i] == s { 1.0 } else { 0.0 };
+    }
+}
+#[inline]
+pub(crate) fn ne_scalar(a: &[f64], s: f64, out: &mut [f64]) {
+    for i in 0..a.len() {
+        out[i] = if a[i] != s { 1.0 } else { 0.0 };
+    }
+}
+#[inline]
+pub(crate) fn lt_scalar(a: &[f64], s: f64, out: &mut [f64]) {
+    for i in 0..a.len() {
+        out[i] = if a[i] < s { 1.0 } else { 0.0 };
+    }
+}
+#[inline]
+pub(crate) fn le_scalar(a: &[f64], s: f64, out: &mut [f64]) {
+    for i in 0..a.len() {
+        out[i] = if a[i] <= s { 1.0 } else { 0.0 };
+    }
+}
+#[inline]
+pub(crate) fn gt_scalar(a: &[f64], s: f64, out: &mut [f64]) {
+    for i in 0..a.len() {
+        out[i] = if a[i] > s { 1.0 } else { 0.0 };
+    }
+}
+#[inline]
+pub(crate) fn ge_scalar(a: &[f64], s: f64, out: &mut [f64]) {
+    for i in 0..a.len() {
+        out[i] = if a[i] >= s { 1.0 } else { 0.0 };
+    }
+}
+
+// --- NaN-skipping reductions ---
+
+#[inline]
+pub(crate) fn nansum_slice(a: &[f64]) -> f64 {
+    let mut s = 0.0;
+    for &x in a {
+        if !x.is_nan() {
+            s += x;
+        }
+    }
+    s
+}
+
+#[inline]
+pub(crate) fn nanmean_slice(a: &[f64]) -> Option<f64> {
+    let mut s = 0.0;
+    let mut n = 0usize;
+    for &x in a {
+        if !x.is_nan() {
+            s += x;
+            n += 1;
+        }
+    }
+    if n == 0 {
+        None
+    } else {
+        Some(s / n as f64)
+    }
+}
+
+#[inline]
+pub(crate) fn nanmin_slice(a: &[f64]) -> Option<f64> {
+    let mut m = f64::INFINITY;
+    let mut any = false;
+    for &x in a {
+        if !x.is_nan() && x < m {
+            m = x;
+            any = true;
+        }
+    }
+    if any { Some(m) } else { None }
+}
+
+#[inline]
+pub(crate) fn nanmax_slice(a: &[f64]) -> Option<f64> {
+    let mut m = f64::NEG_INFINITY;
+    let mut any = false;
+    for &x in a {
+        if !x.is_nan() && x > m {
+            m = x;
+            any = true;
+        }
+    }
+    if any { Some(m) } else { None }
+}
+
+#[inline]
+pub(crate) fn nanvar_slice(a: &[f64], ddof: usize) -> Option<f64> {
+    let mut s = 0.0;
+    let mut n = 0usize;
+    for &x in a {
+        if !x.is_nan() {
+            s += x;
+            n += 1;
+        }
+    }
+    if n == 0 || n <= ddof {
+        return None;
+    }
+    let mean = s / n as f64;
+    let mut ss = 0.0;
+    for &x in a {
+        if !x.is_nan() {
+            let d = x - mean;
+            ss += d * d;
+        }
+    }
+    Some(ss / (n - ddof) as f64)
+}
