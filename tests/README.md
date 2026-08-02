@@ -160,7 +160,7 @@ cargo test --release --test path_length -- --run
 | Option | Decision | Evidence (short/long, lower better) |
 |--------|----------|-------------------------------------|
 | `cov` gram \(XX^	op\) via [`matmul_bt`] (no owned transpose) | **Switched** | `8×256` gram **0.46×**; `32×1024` / `64×1024` **~1.00×** (adaptive materialize at large *k*) |
-| Fused `mean_axis` / `var_axis` | **Not switched** | Rust wall ~**1.00×** long path; no clear win → keep `sum_axis` then scale / two-pass mean |
+| Fused `mean_axis` / `var_axis` | **Switched** (secondary) | Rust wall ~**1.00×**; kept for **fewer intermediate `Array`s**, clearer single-buffer path, better base for `out=` (#21) |
 | Fused broadcast matrix×row / matrix×col for `add`/`sub`/`mul`/`div` | **Switched** | `elem_add` row/col **0.07–0.17×** vs materialize-then-add at 256 and 1024 |
 | `corrcoef` | **Inherits `cov`** | No separate DE; benefits from short gram only |
 
@@ -171,8 +171,8 @@ cargo test --release --test path_length -- --run
 | gram_xxT | 8×256 | 0.0026 | 0.0012 | 0.46× |
 | gram_xxT | 32×1024 | 0.0659 | 0.0660 | 1.00× |
 | gram_xxT | 64×1024 | 0.2697 | 0.2713 | 1.01× |
-| mean_axis1 | 256×256 | 0.0379 | 0.0376 | 0.99× (not switched) |
-| var_axis1 | 256×256 | 0.0834 | 0.0847 | 1.02× (not switched) |
+| mean_axis1 | 256×256 | 0.0379 | 0.0376 | 0.99× (switched for allocs) |
+| var_axis1 | 256×256 | 0.0834 | 0.0847 | 1.02× (switched for allocs) |
 | elem_add_row | 256×256 | 0.1949 | 0.0169 | **0.09×** |
 | elem_add_col | 256×256 | 0.2133 | 0.0154 | **0.07×** |
 | elem_add_row | 1024×1024 | 3.698 | 0.612 | **0.17×** |
