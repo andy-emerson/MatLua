@@ -682,3 +682,174 @@ pub(crate) fn nanvar_slice(a: &[f64], ddof: usize) -> Option<f64> {
     }
     Some(ss / (n - ddof) as f64)
 }
+
+
+// --- M6 axis reductions (rank-2, row-major) ---
+
+#[inline]
+pub(crate) fn axis0_sum(m: usize, n: usize, a: &[f64], out: &mut [f64]) {
+    // sum over rows → length n
+    debug_assert_eq!(out.len(), n);
+    out.fill(0.0);
+    for i in 0..m {
+        let row = &a[i * n..(i + 1) * n];
+        for j in 0..n {
+            out[j] += row[j];
+        }
+    }
+}
+
+#[inline]
+pub(crate) fn axis1_sum(m: usize, n: usize, a: &[f64], out: &mut [f64]) {
+    debug_assert_eq!(out.len(), m);
+    for i in 0..m {
+        let mut s = 0.0;
+        for j in 0..n {
+            s += a[i * n + j];
+        }
+        out[i] = s;
+    }
+}
+
+#[inline]
+pub(crate) fn axis0_min(m: usize, n: usize, a: &[f64], out: &mut [f64]) {
+    out.fill(f64::INFINITY);
+    for i in 0..m {
+        for j in 0..n {
+            let x = a[i * n + j];
+            if x < out[j] {
+                out[j] = x;
+            }
+        }
+    }
+}
+
+#[inline]
+pub(crate) fn axis1_min(m: usize, n: usize, a: &[f64], out: &mut [f64]) {
+    for i in 0..m {
+        let mut mnv = f64::INFINITY;
+        for j in 0..n {
+            let x = a[i * n + j];
+            if x < mnv {
+                mnv = x;
+            }
+        }
+        out[i] = mnv;
+    }
+}
+
+#[inline]
+pub(crate) fn axis0_max(m: usize, n: usize, a: &[f64], out: &mut [f64]) {
+    out.fill(f64::NEG_INFINITY);
+    for i in 0..m {
+        for j in 0..n {
+            let x = a[i * n + j];
+            if x > out[j] {
+                out[j] = x;
+            }
+        }
+    }
+}
+
+#[inline]
+pub(crate) fn axis1_max(m: usize, n: usize, a: &[f64], out: &mut [f64]) {
+    for i in 0..m {
+        let mut mx = f64::NEG_INFINITY;
+        for j in 0..n {
+            let x = a[i * n + j];
+            if x > mx {
+                mx = x;
+            }
+        }
+        out[i] = mx;
+    }
+}
+
+#[inline]
+pub(crate) fn truthy(x: f64) -> bool {
+    x != 0.0 && !x.is_nan()
+}
+
+#[inline]
+pub(crate) fn any_slice(a: &[f64]) -> bool {
+    a.iter().any(|&x| truthy(x))
+}
+
+#[inline]
+pub(crate) fn all_slice(a: &[f64]) -> bool {
+    !a.is_empty() && a.iter().all(|&x| truthy(x))
+}
+
+#[inline]
+pub(crate) fn axis0_any(m: usize, n: usize, a: &[f64], out: &mut [f64]) {
+    out.fill(0.0);
+    for i in 0..m {
+        for j in 0..n {
+            if truthy(a[i * n + j]) {
+                out[j] = 1.0;
+            }
+        }
+    }
+}
+
+#[inline]
+pub(crate) fn axis1_any(m: usize, n: usize, a: &[f64], out: &mut [f64]) {
+    for i in 0..m {
+        let mut v = 0.0;
+        for j in 0..n {
+            if truthy(a[i * n + j]) {
+                v = 1.0;
+                break;
+            }
+        }
+        out[i] = v;
+    }
+}
+
+#[inline]
+pub(crate) fn axis0_all(m: usize, n: usize, a: &[f64], out: &mut [f64]) {
+    out.fill(1.0);
+    if m == 0 {
+        out.fill(0.0);
+        return;
+    }
+    for i in 0..m {
+        for j in 0..n {
+            if !truthy(a[i * n + j]) {
+                out[j] = 0.0;
+            }
+        }
+    }
+}
+
+#[inline]
+pub(crate) fn axis1_all(m: usize, n: usize, a: &[f64], out: &mut [f64]) {
+    for i in 0..m {
+        let mut v = 1.0;
+        if n == 0 {
+            v = 0.0;
+        } else {
+            for j in 0..n {
+                if !truthy(a[i * n + j]) {
+                    v = 0.0;
+                    break;
+                }
+            }
+        }
+        out[i] = v;
+    }
+}
+
+/// Argsort indices (0-based) into `idx` of length n.
+pub(crate) fn argsort_indices(a: &[f64], descending: bool, idx: &mut [usize]) {
+    let n = a.len();
+    debug_assert_eq!(idx.len(), n);
+    for i in 0..n {
+        idx[i] = i;
+    }
+    if descending {
+        idx.sort_by(|&i, &j| a[j].partial_cmp(&a[i]).unwrap_or(std::cmp::Ordering::Equal));
+    } else {
+        idx.sort_by(|&i, &j| a[i].partial_cmp(&a[j]).unwrap_or(std::cmp::Ordering::Equal));
+    }
+}
