@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 
 /// Cache-blocked out-of-place transpose: `dst` is `cols × rows` row-major.
 fn blocked_transpose_i64(src: &[i64], rows: usize, cols: usize, dst: &mut [i64]) {
-    const BS: usize = 32;
+    const BS: usize = 16;
     for i0 in (0..rows).step_by(BS) {
         for j0 in (0..cols).step_by(BS) {
             let i1 = (i0 + BS).min(rows);

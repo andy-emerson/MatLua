@@ -126,11 +126,45 @@ pub(crate) fn sum_slice(a: &[i64]) -> i64 {
 }
 #[inline]
 pub(crate) fn min_slice(a: &[i64]) -> Option<i64> {
-    a.iter().copied().min()
+    if a.is_empty() {
+        return None;
+    }
+    let mut m0 = a[0];
+    let mut m1 = a[0];
+    let mut m2 = a[0];
+    let mut m3 = a[0];
+    let mut chunks = a[1..].chunks_exact(4);
+    for c in chunks.by_ref() {
+        m0 = m0.min(c[0]);
+        m1 = m1.min(c[1]);
+        m2 = m2.min(c[2]);
+        m3 = m3.min(c[3]);
+    }
+    for &x in chunks.remainder() {
+        m0 = m0.min(x);
+    }
+    Some(m0.min(m1).min(m2).min(m3))
 }
 #[inline]
 pub(crate) fn max_slice(a: &[i64]) -> Option<i64> {
-    a.iter().copied().max()
+    if a.is_empty() {
+        return None;
+    }
+    let mut m0 = a[0];
+    let mut m1 = a[0];
+    let mut m2 = a[0];
+    let mut m3 = a[0];
+    let mut chunks = a[1..].chunks_exact(4);
+    for c in chunks.by_ref() {
+        m0 = m0.max(c[0]);
+        m1 = m1.max(c[1]);
+        m2 = m2.max(c[2]);
+        m3 = m3.max(c[3]);
+    }
+    for &x in chunks.remainder() {
+        m0 = m0.max(x);
+    }
+    Some(m0.max(m1).max(m2).max(m3))
 }
 #[inline]
 pub(crate) fn eq_slices(a: &[i64], b: &[i64], out: &mut [i64]) {

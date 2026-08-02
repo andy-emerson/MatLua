@@ -96,23 +96,33 @@ pub fn transpose(a: &Array) -> Result<Array> {
 fn blocked_transpose(src: &[f64], rows: usize, cols: usize, dst: &mut [f64]) {
     debug_assert_eq!(src.len(), rows.saturating_mul(cols));
     debug_assert_eq!(dst.len(), rows.saturating_mul(cols));
+    // Tile so inner writes stream along destination rows (unit stride on dst).
     const BS: usize = 32;
-    let mut i0 = 0;
-    while i0 < rows {
-        let i1 = (i0 + BS).min(rows);
-        let mut j0 = 0;
-        while j0 < cols {
-            let j1 = (j0 + BS).min(cols);
-            for i in i0..i1 {
-                let src_row = i * cols;
-                for j in j0..j1 {
-                    // dst is cols×rows: index (j, i) → j * rows + i
-                    dst[j * rows + i] = src[src_row + j];
+    let mut j0 = 0;
+    while j0 < cols {
+        let j1 = (j0 + BS).min(cols);
+        let mut i0 = 0;
+        while i0 < rows {
+            let i1 = (i0 + BS).min(rows);
+            for j in j0..j1 {
+                let dst_row = j * rows;
+                let mut i = i0;
+                while i + 4 <= i1 {
+                    // src[i, j] = src[i*cols + j]
+                    dst[dst_row + i] = src[i * cols + j];
+                    dst[dst_row + i + 1] = src[(i + 1) * cols + j];
+                    dst[dst_row + i + 2] = src[(i + 2) * cols + j];
+                    dst[dst_row + i + 3] = src[(i + 3) * cols + j];
+                    i += 4;
+                }
+                while i < i1 {
+                    dst[dst_row + i] = src[i * cols + j];
+                    i += 1;
                 }
             }
-            j0 = j1;
+            i0 = i1;
         }
-        i0 = i1;
+        j0 = j1;
     }
 }
 

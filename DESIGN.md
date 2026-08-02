@@ -480,13 +480,20 @@ M7.b delivered **host entry** (`push_view_f64`/`i64`, `push_array_copy_*`) as re
 
 **Goal:** whole-surface performance (f64 + i64) without breaking correctness contracts.
 
-**Wave 1 (landed on this branch):**
+**Wave 1 (landed):**
 - `i64` matmul / `matmul_at` / `matmul_bt` / `dot`: `i–k–j` / unrolled accumulation (wrapping preserved).
 - `i64` elementwise add/mul/sum: 4-wide unroll.
-- `ArrayI64::transpose`: blocked out-of-place (same idea as f64).
+- `ArrayI64::transpose`: blocked out-of-place.
 - `median`: order-statistic path (`select_nth`) instead of full sort for scalar median.
 
-**Next waves (planned):** re-run fair table (`compare_fair.py`); attack remaining Rust/NumPy ≫ 1 and Lua/Rust ≫ 2; extend `out=` paths where they remove allocs; avoid scale-hostile fixed chunking (prefer algorithms that scale past n=1024).
+**Wave 2 (landed):** fair hotspot pass at n=256 (release):
+- **`min`/`max`:** drop blocked 512 + second NaN scan; seed-from-first + 4-way `f64::min`/`max` (≈0.067→≈0.024 ms at n=256).
+- **`transpose`:** destination-row streaming tiles (unit-stride writes); ≈0.19→≈0.05 ms at n=256 (≈NumPy band for materializing transpose).
+- **`i64` min/max:** same 4-way pattern.
+
+**Measured note:** NumPy `transpose` may be view-only; MatLua always materializes row-major — compare like-for-like on dense ownership.
+
+**Next waves:** remaining Rust/NumPy (solve/qr noise, min residual ~1.5–2×); Lua face tax; more `out=`; avoid scale-hostile fixed parallel chunk counts.
 
 #### What remains explicitly *not* TallyDB-owned
 
