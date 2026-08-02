@@ -1,0 +1,15 @@
+# Strassen vs GEBP (forced one-level Strassen), release, 2 CPUs, 2026-08-02
+# n  gebp_ms  strassen_ms  ratio_s/g  winner
+n	gebp_ms	strassen_ms	ratio	winner
+256	3.308	4.856	1.468	gebp
+384	11.004	14.382	1.307	gebp
+512	25.907	31.341	1.210	gebp
+640	50.374	54.799	1.088	gebp
+768	86.994	100.335	1.153	gebp
+896	138.792	158.703	1.143	gebp
+1024	210.178	235.247	1.119	gebp
+1280	407.331	449.365	1.103	gebp
+1536	727.190	770.096	1.059	gebp
+1792	1138.008	1218.494	1.071	gebp
+2048	1736.999	1793.490	1.033	gebp
+# recommend: STRASSEN_LEAF=4096 (no win in range; ratio→1 as n grows)

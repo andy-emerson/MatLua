@@ -313,11 +313,12 @@ fn gemm_blocked_ex(
 // tests/bench/strassen_crossover.rs); portable default below.
 
 /// Below this order, square products use GEBP only (no Strassen recursion).
-/// Tuned via `strassen_crossover` (GEBP vs Strassen). On 2-core hosts GEBP wins
-/// through at least n=1024; leaf set high so default tables stay on GEBP.
-/// Lower (e.g. 512–768) on many-core machines after re-running the harness.
-/// Path remains: square `n ≥ STRASSEN_LEAF` → Strassen → sequential GEBP leaves.
-pub const STRASSEN_LEAF: usize = 1536;
+/// Tuned via `strassen_crossover` (forced one-level Strassen vs GEBP).
+/// On this 2-core host S/G fell ~1.47→1.03 from n=256→2048 but **never** <0.97;
+/// leaf **4096** keeps GEBP for all practical sizes; re-run harness on many-core
+/// / larger n and lower leaf when S first wins. Path: square n≥leaf → Strassen
+/// (parallel M1–M7) → sequential GEBP leaves.
+pub const STRASSEN_LEAF: usize = 4096;
 
 #[inline]
 fn add_mat(n: usize, a: &[i64], b: &[i64], out: &mut [i64]) {
@@ -391,6 +392,14 @@ fn gemm_square_ex(n: usize, a: &[i64], b: &[i64], c: &mut [i64], outer: bool) {
 /// Seven independent products run via Rayon when the half is still large.
 fn gemm_strassen_even(n: usize, a: &[i64], b: &[i64], c: &mut [i64]) {
     if n < STRASSEN_LEAF || n % 2 == 1 {
+        gemm_blocked_seq(n, n, n, a, b, c);
+        return;
+    }
+    gemm_strassen_even_always(n, a, b, c);
+}
+
+fn gemm_strassen_even_always(n: usize, a: &[i64], b: &[i64], c: &mut [i64]) {
+    if n % 2 == 1 {
         gemm_blocked_seq(n, n, n, a, b, c);
         return;
     }
@@ -515,6 +524,41 @@ fn gemm_dispatch(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: 
     } else {
         gemm_blocked(am, an, bn, aa, bb, data);
     }
+}
+
+/// Force one-level Strassen (square only) — crossover measurement.
+#[doc(hidden)]
+pub fn matmul_strassen_force(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
+    let (am, an) = as_matrix_dims(a)?;
+    let (bm, bn) = as_matrix_dims(b)?;
+    if an != bm || am != an || an != bn {
+        return Err(Error::shape(
+            "matmul_strassen_force requires square a,b of equal order",
+        ));
+    }
+    let n = am;
+    let mut data = pool_i64::take_zeroed(n * n);
+    if n % 2 == 1 {
+        let np = n + 1;
+        let mut ap = vec![0i64; np * np];
+        let mut bp = vec![0i64; np * np];
+        let mut cp = vec![0i64; np * np];
+        let aa = a.as_slice();
+        let bb = b.as_slice();
+        for i in 0..n {
+            ap[i * np..i * np + n].copy_from_slice(&aa[i * n..i * n + n]);
+            bp[i * np..i * np + n].copy_from_slice(&bb[i * n..i * n + n]);
+        }
+        gemm_strassen_even_always(np, &ap, &bp, &mut cp);
+        for i in 0..n {
+            data[i * n..i * n + n].copy_from_slice(&cp[i * np..i * np + n]);
+        }
+    } else if n >= 2 {
+        gemm_strassen_even_always(n, a.as_slice(), b.as_slice(), &mut data);
+    } else {
+        gemm_blocked(n, n, n, a.as_slice(), b.as_slice(), &mut data);
+    }
+    matmul_result(data, n, n, false)
 }
 
 /// Force GEBP (no Strassen) — for crossover measurement only.
@@ -748,82 +792,6 @@ pub fn eye(n: usize) -> Result<ArrayI64> {
 }
 
 
-/// Always one Strassen step (even n≥2); sequential GEBP leaves. Test/helper.
-fn gemm_strassen_even_force(n: usize, a: &[i64], b: &[i64], c: &mut [i64]) {
-    assert!(n >= 2 && n % 2 == 0);
-    let m = n / 2;
-    let sz = m * m;
-    let mut a11 = vec![0i64; sz];
-    let mut a12 = vec![0i64; sz];
-    let mut a21 = vec![0i64; sz];
-    let mut a22 = vec![0i64; sz];
-    let mut b11 = vec![0i64; sz];
-    let mut b12 = vec![0i64; sz];
-    let mut b21 = vec![0i64; sz];
-    let mut b22 = vec![0i64; sz];
-    extract_quad(m, n, a, 0, 0, &mut a11);
-    extract_quad(m, n, a, 0, m, &mut a12);
-    extract_quad(m, n, a, m, 0, &mut a21);
-    extract_quad(m, n, a, m, m, &mut a22);
-    extract_quad(m, n, b, 0, 0, &mut b11);
-    extract_quad(m, n, b, 0, m, &mut b12);
-    extract_quad(m, n, b, m, 0, &mut b21);
-    extract_quad(m, n, b, m, m, &mut b22);
-    let mut l1 = vec![0i64; sz];
-    let mut r1 = vec![0i64; sz];
-    let mut l2 = vec![0i64; sz];
-    let mut r3 = vec![0i64; sz];
-    let mut r4 = vec![0i64; sz];
-    let mut l5 = vec![0i64; sz];
-    let mut l6 = vec![0i64; sz];
-    let mut r6 = vec![0i64; sz];
-    let mut l7 = vec![0i64; sz];
-    let mut r7 = vec![0i64; sz];
-    add_mat(m, &a11, &a22, &mut l1);
-    add_mat(m, &b11, &b22, &mut r1);
-    add_mat(m, &a21, &a22, &mut l2);
-    sub_mat(m, &b12, &b22, &mut r3);
-    sub_mat(m, &b21, &b11, &mut r4);
-    add_mat(m, &a11, &a12, &mut l5);
-    sub_mat(m, &a21, &a11, &mut l6);
-    add_mat(m, &b11, &b12, &mut r6);
-    sub_mat(m, &a12, &a22, &mut l7);
-    add_mat(m, &b21, &b22, &mut r7);
-    let mut m1 = vec![0i64; sz];
-    let mut m2 = vec![0i64; sz];
-    let mut m3 = vec![0i64; sz];
-    let mut m4 = vec![0i64; sz];
-    let mut m5 = vec![0i64; sz];
-    let mut m6 = vec![0i64; sz];
-    let mut m7 = vec![0i64; sz];
-    for (prod, left, right) in [
-        (&mut m1, l1.as_slice(), r1.as_slice()),
-        (&mut m2, l2.as_slice(), b11.as_slice()),
-        (&mut m3, a11.as_slice(), r3.as_slice()),
-        (&mut m4, a22.as_slice(), r4.as_slice()),
-        (&mut m5, l5.as_slice(), b22.as_slice()),
-        (&mut m6, l6.as_slice(), r6.as_slice()),
-        (&mut m7, l7.as_slice(), r7.as_slice()),
-    ] {
-        prod.fill(0);
-        gemm_blocked_seq(m, m, m, left, right, prod);
-    }
-    let mut c11 = vec![0i64; sz];
-    let mut c12 = vec![0i64; sz];
-    let mut c21 = vec![0i64; sz];
-    let mut c22 = vec![0i64; sz];
-    for i in 0..sz {
-        c11[i] = m1[i].wrapping_add(m4[i]).wrapping_sub(m5[i]).wrapping_add(m7[i]);
-        c12[i] = m3[i].wrapping_add(m5[i]);
-        c21[i] = m2[i].wrapping_add(m4[i]);
-        c22[i] = m1[i].wrapping_sub(m2[i]).wrapping_add(m3[i]).wrapping_add(m6[i]);
-    }
-    insert_quad(m, n, &c11, 0, 0, c);
-    insert_quad(m, n, &c12, 0, m, c);
-    insert_quad(m, n, &c21, m, 0, c);
-    insert_quad(m, n, &c22, m, m, c);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -919,7 +887,7 @@ mod strassen_tests {
         let mut c = vec![0i64; n * n];
         // Call even-Strassen directly (ignores STRASSEN_LEAF early-out by using
         // a local recurse that always splits once).
-        gemm_strassen_even_force(n, &da, &db, &mut c);
+        gemm_strassen_even_always(n, &da, &db, &mut c);
         let mut r = vec![0i64; n * n];
         gemm_blocked(n, n, n, &da, &db, &mut r);
         assert_eq!(c.as_slice(), r.as_slice());
