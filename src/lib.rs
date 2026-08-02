@@ -14,6 +14,7 @@
 pub mod array;
 pub mod error;
 pub mod linalg;
+pub mod random;
 
 #[cfg(feature = "lua")]
 #[cfg_attr(docsrs, doc(cfg(feature = "lua")))]

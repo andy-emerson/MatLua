@@ -48,6 +48,7 @@ work on arrays (and array ↔ number). Matrix product is always explicit:
 | **Broadcast / views** | elementwise broadcast; `broadcast_to`; `slice`/`rows`/`row`/`col` (1-based half-open on face) |
 | **NaN reductions** | `nansum`, `nanmean`, `nanmin`, `nanmax`, `nanvar`, `nanstd` |
 | **Tier-2** | `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis on `sum`/`mean`/…, `any`/`all` |
+| **Random** | `seed`, `random`, `randn`, `uniform`, `normal`, `integers` (i64), `choice` |
 | **Constructors** | `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`, half-open), `array` (nested tables → dense `f64`), `eye` |
 | **Array methods** | `shape`, `rank`, `get` / `set`, `sum` / `mean` / `min` / `max`, `var` / `std`, **`median`/`quantile`**, `argmin` / `argmax`, ufuncs (`abs`/`sqrt`/`exp`/`log`/`log1p`/`sign`/`power`/`clip`/`isnan`/`isfinite`/`cumsum`), `copy`, `reshape` (may share; write COWs), `transpose`, `fill`, `#a` |
 | **Elementwise** | `+`, `-`, `*`, `/`, unary `-` (array–array or array–number) |

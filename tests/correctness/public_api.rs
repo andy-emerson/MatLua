@@ -271,3 +271,20 @@ fn m7b_median_quantile() {
     assert!((i.median().unwrap() - 2.0).abs() < 1e-12);
     assert!((i.quantile(1.0).unwrap() - 3.0).abs() < 1e-12);
 }
+
+#[test]
+fn m7b_random_reproducible() {
+    use matlua::random::{choice, integers, random, seed};
+    use matlua::array::Array;
+    seed(99);
+    let a = random(vec![4]).unwrap();
+    seed(99);
+    let b = random(vec![4]).unwrap();
+    assert_eq!(a.as_slice(), b.as_slice());
+    seed(3);
+    let z = integers(vec![50], -5, 5).unwrap();
+    assert!(z.as_slice().iter().all(|&x| (-5..5).contains(&x)));
+    let pop = Array::from_shape_slice(vec![3], &[1., 2., 3.]).unwrap();
+    let c = choice(&pop, 5).unwrap();
+    assert_eq!(c.len(), 5);
+}

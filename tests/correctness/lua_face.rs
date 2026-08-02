@@ -429,3 +429,28 @@ assert(math.abs(ml.array_i64({10,20,30}):median() - 20) < 1e-12)
     )
     .unwrap();
 }
+
+#[test]
+fn m7b_random_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+ml.seed(123)
+local a = ml.random(4)
+ml.seed(123)
+local b = ml.random(4)
+for i=1,4 do assert(a:get(i) == b:get(i)) end
+local u = ml.uniform(2, 0, 10)
+assert(u:get(1) >= 0 and u:get(1) < 10)
+local n = ml.randn(3)
+assert(#n == 3)
+local ints = ml.integers(5, 0, 3)
+assert(ints:dtype() == "i64")
+local ch = ml.choice(ml.array({1,2,3}), 4)
+assert(#ch == 4)
+"#,
+    )
+    .unwrap();
+}

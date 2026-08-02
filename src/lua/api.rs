@@ -48,6 +48,132 @@ unsafe fn is_i64(L: *mut lua_State, idx: c_int) -> bool {
 
 // ----- module functions -----
 
+pub unsafe extern "C" fn l_seed(L: *mut lua_State) -> c_int {
+    let s = unsafe { luaL_checkinteger(L, 1) };
+    crate::random::seed(s as u64);
+    0
+}
+
+pub unsafe extern "C" fn l_random(L: *mut lua_State) -> c_int {
+    let shape = lua_try!(L, unsafe { shape_from_args(L, 1) });
+    let a = lua_try!(L, crate::random::random(shape));
+    unsafe { push_array(L, a) };
+    1
+}
+
+pub unsafe extern "C" fn l_randn(L: *mut lua_State) -> c_int {
+    let shape = lua_try!(L, unsafe { shape_from_args(L, 1) });
+    let a = lua_try!(L, crate::random::randn(shape));
+    unsafe { push_array(L, a) };
+    1
+}
+
+/// `uniform(shape..., low, high)` — low/high are the last two numeric args.
+pub unsafe extern "C" fn l_uniform(L: *mut lua_State) -> c_int {
+    let top = unsafe { lua_gettop(L) };
+    if top < 3 {
+        return super::ud::lua_error_msg(L, "uniform(shape..., low, high) requires low and high");
+    }
+    let low = unsafe { luaL_checknumber(L, top - 1) };
+    let high = unsafe { luaL_checknumber(L, top) };
+    let shape = if top == 3 && unsafe { lua_type(L, 1) } == LUA_TTABLE {
+        lua_try!(L, unsafe { super::ud::shape_from_table(L, 1) })
+    } else {
+        let mut dims = Vec::new();
+        for i in 1..=(top - 2) {
+            if !unsafe { lua_isnumber(L, i) } {
+                return super::ud::lua_error_msg(L, "uniform shape dims must be numbers");
+            }
+            let n = unsafe { luaL_checkinteger(L, i) };
+            if n < 0 {
+                return super::ud::lua_error_msg(L, "shape dims must be non-negative");
+            }
+            dims.push(n as usize);
+        }
+        dims
+    };
+    let a = lua_try!(L, crate::random::uniform(shape, low, high));
+    unsafe { push_array(L, a) };
+    1
+}
+
+/// `normal(shape..., mu, sigma)` — mu/sigma last two args.
+pub unsafe extern "C" fn l_normal(L: *mut lua_State) -> c_int {
+    let top = unsafe { lua_gettop(L) };
+    if top < 3 {
+        return super::ud::lua_error_msg(L, "normal(shape..., mu, sigma) requires mu and sigma");
+    }
+    let mu = unsafe { luaL_checknumber(L, top - 1) };
+    let sigma = unsafe { luaL_checknumber(L, top) };
+    let shape = if top == 3 && unsafe { lua_type(L, 1) } == LUA_TTABLE {
+        lua_try!(L, unsafe { super::ud::shape_from_table(L, 1) })
+    } else {
+        let mut dims = Vec::new();
+        for i in 1..=(top - 2) {
+            if !unsafe { lua_isnumber(L, i) } {
+                return super::ud::lua_error_msg(L, "normal shape dims must be numbers");
+            }
+            let n = unsafe { luaL_checkinteger(L, i) };
+            if n < 0 {
+                return super::ud::lua_error_msg(L, "shape dims must be non-negative");
+            }
+            dims.push(n as usize);
+        }
+        dims
+    };
+    let a = lua_try!(L, crate::random::normal(shape, mu, sigma));
+    unsafe { push_array(L, a) };
+    1
+}
+
+/// `integers(shape..., low, high)` → ArrayI64, high exclusive.
+pub unsafe extern "C" fn l_integers(L: *mut lua_State) -> c_int {
+    let top = unsafe { lua_gettop(L) };
+    if top < 3 {
+        return super::ud::lua_error_msg(L, "integers(shape..., low, high) requires low and high");
+    }
+    let low = unsafe { luaL_checkinteger(L, top - 1) };
+    let high = unsafe { luaL_checkinteger(L, top) };
+    let shape = if top == 3 && unsafe { lua_type(L, 1) } == LUA_TTABLE {
+        lua_try!(L, unsafe { super::ud::shape_from_table(L, 1) })
+    } else {
+        let mut dims = Vec::new();
+        for i in 1..=(top - 2) {
+            if !unsafe { lua_isnumber(L, i) } {
+                return super::ud::lua_error_msg(L, "integers shape dims must be numbers");
+            }
+            let n = unsafe { luaL_checkinteger(L, i) };
+            if n < 0 {
+                return super::ud::lua_error_msg(L, "shape dims must be non-negative");
+            }
+            dims.push(n as usize);
+        }
+        dims
+    };
+    let a = lua_try!(L, crate::random::integers(shape, low, high));
+    unsafe { push_array_i64(L, a) };
+    1
+}
+
+pub unsafe extern "C" fn l_choice(L: *mut lua_State) -> c_int {
+    let k = unsafe { luaL_checkinteger(L, 2) };
+    if k < 0 {
+        return super::ud::lua_error_msg(L, "choice k must be >= 0");
+    }
+    if unsafe { is_i64(L, 1) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let o = lua_try!(L, crate::random::choice_i64(&a.array, k as usize));
+        unsafe { push_array_i64(L, o) };
+        return 1;
+    }
+    let a = unsafe { &*check_array(L, 1) };
+    let o = lua_try!(L, crate::random::choice(&a.array, k as usize));
+    unsafe { push_array(L, o) };
+    1
+}
+
+
+
 pub unsafe extern "C" fn l_zeros(L: *mut lua_State) -> c_int {
     let shape = lua_try!(L, unsafe { shape_from_args(L, 1) });
     let a = lua_try!(L, Array::zeros(shape));
@@ -1305,7 +1431,7 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
         lua_pop(L, 1);
 
         lua_newtable(L);
-        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 34] = [
+        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 41] = [
             (c"zeros", l_zeros),
             (c"ones", l_ones),
             (c"full", l_full),
@@ -1340,6 +1466,13 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
             (c"cond", l_cond),
             (c"eigvals", l_eigvals),
             (c"eig", l_eig),
+            (c"seed", l_seed),
+            (c"random", l_random),
+            (c"randn", l_randn),
+            (c"uniform", l_uniform),
+            (c"normal", l_normal),
+            (c"integers", l_integers),
+            (c"choice", l_choice),
         ];
         for (name, f) in funcs {
             lua_pushcfunction(L, Some(f));

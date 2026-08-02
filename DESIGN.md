@@ -282,10 +282,17 @@ Names match the `lua` feature on `main`. Tutorial samples live in
 - **Axis:** `median_axis` / `quantile_axis` on rank-2 (`f64`).
 - **`i64`:** scalar `median`/`quantile` return **`f64`** (even-length median averages).
 
+### 3.20 M7.b random
+
+- **PRNG:** process-global xoshiro256**; `seed(u64)` resets stream (not crypto).
+- **`random` / `randn` / `uniform` / `normal`:** `f64` arrays.
+- **`integers`:** `i64` arrays, half-open `[low, high)`.
+- **`choice`:** sample with replacement from rank-1 (`f64` or `i64`).
+
 ### 4.1 Module functions
 
 **`f64`:** `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`), `array`, `eye`, `where`,
-`matmul`, `matmul_at`, `matmul_bt`, `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd`, **`det`**, **`slogdet`**, **`matrix_rank`**, **`cond`**, **`eigvals`**, **`eig`**.
+`matmul`, …, `svd`, **`det`/`slogdet`/`matrix_rank`/`cond`/`eig`/`eigvals`**, **`seed`/`random`/`randn`/`uniform`/`normal`/`integers`/`choice`**.
 
 **`i64` constructors / helpers:** `zeros_i64`, `ones_i64`, `full_i64`, `arange_i64`, `array_i64`, `eye_i64`, `diag_i64`, `outer_i64`, `where_i64`, `concatenate_i64`, `stack_i64`, `broadcast_to_i64`, plus `matmul_i64` / `dot_i64` / …  
 **Dual:** `matmul` / `solve` / `eigh` / … accept `ArrayI64` where applicable (integer matmul stays i64; solvers return `f64` arrays). See §3.17.
@@ -373,7 +380,7 @@ explicit boundaries (zero-copy views in, owned results out).
 | **M6** | Tier-2 quant sugar: `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis reductions (rank-2), `any`/`all` | **Done** |
 | **v0.1** tag | Explicit release cut | **Deferred** |
 | **M7** | **`i64` surface (correctness):** shared array grammar + integer-path LA (wrapping) + **i64-unique** + views + gcd/lcm/divmod/bitcount + **`from_i64` solvers** (i64 in → f64 out). | **Done** |
-| **M7.b** | **Quant leave-late pack:** (1) LA diagnostics **done** → (2) median/quantile **done** → (3) random → (4) indexing → (5) `out=` #21 → (6) host Lua views. One dtype at a time (`f64` first). | **In progress** |
+| **M7.b** | **Quant leave-late pack:** (1) LA diagnostics **done** → (2) median/quantile **done** → (3) random **done** → (4) indexing → (5) `out=` #21 → (6) host Lua views. | **In progress** |
 | **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once correctness bars for M7/M7.b hold | **Planned** (after M7.b or when Human gates perf) |
 | **M8** | **Lua host-buffer / view face** — may **fold into M7.b** host zero-copy; kept as explicit embed slice until then | Planned |
 | **M9** | **Small-window pool** — freelist for *n* ≪ 256 | Planned |
