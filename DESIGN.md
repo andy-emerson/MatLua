@@ -166,7 +166,7 @@ Arrays are **not** plain Lua tables at runtime.
 - Metamethods: elementwise `+`, `-`, `*`, `/`, unary `-` (array–array or array–number).
 - **Matrix multiplication:** module function `ml.matmul(a, b)` only (not `*`, no `@`).
 - **Transpose:** `ml.transpose(a)` and method `a:transpose()`.
-- Other LA: `matmul_at`, `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `dot`, `norm`, `cholesky`, `qr`, `svd`.
+- Other LA: `matmul_at`, `matmul_bt`, `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `dot`, `norm`, `cholesky`, `qr`, `svd`.
 
 Rationale: Lua has a single `*`; naming matmul avoids silent confusion.
 
@@ -429,12 +429,12 @@ Human is always **author** of record; agent may be **co-author** when allowed fo
 
 **Shipped surface** matches §3–§4: row-major `f64` arrays, views, elementwise,
 Arrow interchange, faer LA, Lua face with 1-based indexing, composed paths
-(`matmul_at`, `normal_eq`), reshape buffer sharing (§3.13).
+(`matmul_at`, `matmul_bt`, `normal_eq`), M4a–M6 surface, reshape buffer sharing (§3.13).
 
 Package version is **`0.0.1`**. Call **v0.1** when the human tags a release;
-until then treat the tree as a **v0.1 candidate** per §7.1.
+until then treat the tree as a **v0.1 candidate** per §7.1. **Next open milestone: M7 (`i64`)** (§7.1).
 
-Open work and measured tables live in **GitHub Issues** and
+Open work: §7.1 M7–M12, GitHub Issues (e.g. `out=` #21), and measured tables in
 [`tests/README.md`](tests/README.md) — not as a living log in this file.
 
 Update this document when rulings or the frozen public face change — not on

@@ -11,7 +11,7 @@ front, systems language in the core. Python → Lua 5.4, C → Rust, `ndarray` �
 
 | You are… | You get… |
 |----------|----------|
-| **Lua author** (inside a host) | `require "matlua"`, 1-based arrays, operators, `matmul` / `matmul_at` / `normal_eq` / `solve` / factorizations |
+| **Lua author** (inside a host) | `require "matlua"`, 1-based arrays, operators, `matmul` / `matmul_at` / `matmul_bt` / `normal_eq` / `solve` / factorizations |
 | **Host / embedder** | Rust crate: owned `f64` n-D arrays, faer LA, optional `lua` feature + `matlua::lua::register` |
 | **Rust-only consumer** | Same arrays + LA without linking Lua |
 
@@ -51,7 +51,7 @@ work on arrays (and array ↔ number). Matrix product is always explicit:
 | **Constructors** | `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`, half-open), `array` (nested tables → dense `f64`), `eye` |
 | **Array methods** | `shape`, `rank`, `get` / `set`, `sum` / `mean` / `min` / `max`, `var` / `std`, `argmin` / `argmax`, ufuncs (`abs`/`sqrt`/`exp`/`log`/`log1p`/`sign`/`power`/`clip`/`isnan`/`isfinite`/`cumsum`), `copy`, `reshape` (may share; write COWs), `transpose`, `fill`, `#a` |
 | **Elementwise** | `+`, `-`, `*`, `/`, unary `-` (array–array or array–number) |
-| **Linear algebra** | `matmul`, `matmul_at`, `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd` |
+| **Linear algebra** | `matmul`, `matmul_at`, `matmul_bt`, `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd` |
 | **Rust core** | `Array` (row-major n-D `f64`), views over host buffers, Arrow `Float64Array` interchange, same LA under `matlua::linalg` |
 
 Quality bar is **`f64`**. Storage is a dense buffer, not nested Lua tables
@@ -107,17 +107,19 @@ Closed decisions and milestones: [DESIGN.md](DESIGN.md).
 
 ## Status
 
-**M0–M3 are on `main`.** The tree is a **v0.1 candidate**: a host can embed
-MatLua and scripts can do ordinary dense array and linear-algebra work
-end-to-end. Crate version remains **`0.0.1`** until a formal `0.1.0` cut.
+**M0–M6 are on `main`** (see [DESIGN.md](DESIGN.md) §7.1). The tree is a **v0.1
+candidate**: a host can embed MatLua and scripts can do ordinary dense array and
+linear-algebra work end-to-end. Crate version remains **`0.0.1`** until a formal
+`0.1.0` cut. **Next: M7 (`i64` arrays).**
 
 **Performance:** fair three-way microbench (NumPy · MatLua Rust · MatLua Lua) lives
 under [`tests/`](tests/README.md). Run `python3 tests/bench/compare_fair.py`.
-Open function-level work is in GitHub Issues; DESIGN holds closed rulings.
+Path-length A/B: `cargo test --release --test path_length -- --run`.
 
-Known thin spots vs a full “leave late” desk (column views, richer slicing,
-broadcasting, host zero-copy *from* Lua) are intentional feature follow-ups,
-not blockers for basic embed + bulk math.
+**Known limits (not basic-desk blockers; tracked as M7–M12 / issues):** no Lua
+host-buffer views yet (Rust views exist); small-buffer pool min size; embed error
+boundary; multi-dtype beyond `f64`; shared `arrow-lite` cutover. In-place `out=`
+is [#21](https://github.com/andy-emerson/MatLua/issues/21).
 
 ## License
 
