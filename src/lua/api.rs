@@ -438,6 +438,40 @@ pub unsafe extern "C" fn l_eig(L: *mut lua_State) -> c_int {
     4
 }
 
+
+pub unsafe extern "C" fn a_median(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    if unsafe { lua_gettop(L) } >= 2 && unsafe { lua_type(L, 2) } != LUA_TNIL {
+        let axis = unsafe { luaL_checkinteger(L, 2) };
+        if axis < 1 {
+            return super::ud::lua_error_msg(L, "axis must be >= 1");
+        }
+        let o = lua_try!(L, a.array.median_axis((axis - 1) as usize));
+        unsafe { push_array(L, o) };
+        return 1;
+    }
+    let m = lua_try!(L, a.array.median());
+    unsafe { lua_pushnumber(L, m) };
+    1
+}
+
+pub unsafe extern "C" fn a_quantile(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let q = unsafe { luaL_checknumber(L, 2) };
+    if unsafe { lua_gettop(L) } >= 3 && unsafe { lua_type(L, 3) } != LUA_TNIL {
+        let axis = unsafe { luaL_checkinteger(L, 3) };
+        if axis < 1 {
+            return super::ud::lua_error_msg(L, "axis must be >= 1");
+        }
+        let o = lua_try!(L, a.array.quantile_axis((axis - 1) as usize, q));
+        unsafe { push_array(L, o) };
+        return 1;
+    }
+    let v = lua_try!(L, a.array.quantile(q));
+    unsafe { lua_pushnumber(L, v) };
+    1
+}
+
 // ----- array methods / metamethods -----
 
 pub unsafe extern "C" fn a_gc(L: *mut lua_State) -> c_int {
@@ -1190,59 +1224,61 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
     unsafe {
         if luaL_newmetatable(L, ARRAY_MT.as_ptr()) != 0 {
             lua_newtable(L);
-            let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 51] = [
-                (c"shape", a_shape),
-                (c"rank", a_rank),
-                (c"get", a_get),
-                (c"set", a_set),
-                (c"sum", a_sum),
-                (c"mean", a_mean),
-                (c"min", a_min),
-                (c"max", a_max),
-                (c"copy", a_copy),
-                (c"reshape", a_reshape),
-                (c"transpose", a_transpose),
-                (c"fill", a_fill),
-                (c"abs", a_abs),
-                (c"sqrt", a_sqrt),
-                (c"exp", a_exp),
-                (c"log", a_log),
-                (c"log1p", a_log1p),
-                (c"sign", a_sign),
-                (c"power", a_power),
-                (c"clip", a_clip),
-                (c"isnan", a_isnan),
-                (c"isfinite", a_isfinite),
-                (c"cumsum", a_cumsum),
-                (c"argmin", a_argmin),
-                (c"argmax", a_argmax),
-                (c"var", a_var),
-                (c"std", a_std),
-                (c"eq", a_eq),
-                (c"ne", a_ne),
-                (c"lt", a_lt),
-                (c"le", a_le),
-                (c"gt", a_gt),
-                (c"ge", a_ge),
-                (c"nansum", a_nansum),
-                (c"nanmean", a_nanmean),
-                (c"nanmin", a_nanmin),
-                (c"nanmax", a_nanmax),
-                (c"nanvar", a_nanvar),
-                (c"nanstd", a_nanstd),
-                (c"slice", a_slice),
-                (c"rows", a_rows),
-                (c"row", a_row),
-                (c"col", a_col),
-                (c"var_axis", a_var_axis),
-                (c"std_axis", a_std_axis),
-                (c"any", a_any),
-                (c"all", a_all),
-                (c"argsort", a_argsort),
-                (c"take", a_take),
-                (c"diagonal", a_diagonal),
-                (c"trace", a_trace),
-            ];
+            let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 53] = [
+            (c"shape", a_shape),
+            (c"rank", a_rank),
+            (c"get", a_get),
+            (c"set", a_set),
+            (c"sum", a_sum),
+            (c"mean", a_mean),
+            (c"min", a_min),
+            (c"max", a_max),
+            (c"copy", a_copy),
+            (c"reshape", a_reshape),
+            (c"transpose", a_transpose),
+            (c"fill", a_fill),
+            (c"abs", a_abs),
+            (c"sqrt", a_sqrt),
+            (c"exp", a_exp),
+            (c"log", a_log),
+            (c"log1p", a_log1p),
+            (c"sign", a_sign),
+            (c"power", a_power),
+            (c"clip", a_clip),
+            (c"isnan", a_isnan),
+            (c"isfinite", a_isfinite),
+            (c"cumsum", a_cumsum),
+            (c"argmin", a_argmin),
+            (c"argmax", a_argmax),
+            (c"var", a_var),
+            (c"std", a_std),
+            (c"eq", a_eq),
+            (c"ne", a_ne),
+            (c"lt", a_lt),
+            (c"le", a_le),
+            (c"gt", a_gt),
+            (c"ge", a_ge),
+            (c"nansum", a_nansum),
+            (c"nanmean", a_nanmean),
+            (c"nanmin", a_nanmin),
+            (c"nanmax", a_nanmax),
+            (c"nanvar", a_nanvar),
+            (c"nanstd", a_nanstd),
+            (c"slice", a_slice),
+            (c"rows", a_rows),
+            (c"row", a_row),
+            (c"col", a_col),
+            (c"var_axis", a_var_axis),
+            (c"std_axis", a_std_axis),
+            (c"any", a_any),
+            (c"all", a_all),
+            (c"argsort", a_argsort),
+            (c"take", a_take),
+            (c"diagonal", a_diagonal),
+            (c"trace", a_trace),
+            (c"median", a_median),
+            (c"quantile", a_quantile),
+        ];
             for (name, f) in methods {
                 lua_pushcfunction(L, Some(f));
                 lua_setfield(L, -2, name.as_ptr());

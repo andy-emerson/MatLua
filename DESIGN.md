@@ -276,6 +276,12 @@ Names match the `lua` feature on `main`. Tutorial samples live in
 - **`eigvals` / `eig`**: general (possibly non-symmetric) eigen via faer; complex results as **real/imag split** arrays (no `c64` yet). Prefer **`eigh`** for symmetric.
 - **i64 inputs:** `linalg::from_i64` and Lua dual face promote to `f64` results (same as `solve`).
 
+### 3.19 M7.b order statistics
+
+- **`median` / `quantile` / `quantiles`**: linear interpolation (NumPy-style `q∈[0,1]`); empty errors.
+- **Axis:** `median_axis` / `quantile_axis` on rank-2 (`f64`).
+- **`i64`:** scalar `median`/`quantile` return **`f64`** (even-length median averages).
+
 ### 4.1 Module functions
 
 **`f64`:** `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`), `array`, `eye`, `where`,
@@ -367,7 +373,7 @@ explicit boundaries (zero-copy views in, owned results out).
 | **M6** | Tier-2 quant sugar: `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis reductions (rank-2), `any`/`all` | **Done** |
 | **v0.1** tag | Explicit release cut | **Deferred** |
 | **M7** | **`i64` surface (correctness):** shared array grammar + integer-path LA (wrapping) + **i64-unique** + views + gcd/lcm/divmod/bitcount + **`from_i64` solvers** (i64 in → f64 out). | **Done** |
-| **M7.b** | **Quant leave-late pack:** (1) LA diagnostics `det`/`slogdet`/`matrix_rank`/`cond`/`eig`/`eigvals` **in progress** → (2) median/quantile → (3) random → (4) indexing → (5) `out=` #21 → (6) host Lua views. One dtype at a time (`f64` first). | **In progress** |
+| **M7.b** | **Quant leave-late pack:** (1) LA diagnostics **done** → (2) median/quantile **done** → (3) random → (4) indexing → (5) `out=` #21 → (6) host Lua views. One dtype at a time (`f64` first). | **In progress** |
 | **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once correctness bars for M7/M7.b hold | **Planned** (after M7.b or when Human gates perf) |
 | **M8** | **Lua host-buffer / view face** — may **fold into M7.b** host zero-copy; kept as explicit embed slice until then | Planned |
 | **M9** | **Small-window pool** — freelist for *n* ≪ 256 | Planned |

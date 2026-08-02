@@ -861,6 +861,31 @@ impl ArrayI64 {
         Ok(self.var(ddof)?.sqrt())
     }
 
+    /// Median as `f64` (even length averages the two centers). Empty → error.
+    pub fn median(&self) -> Result<f64> {
+        if self.is_empty() {
+            return Err(Error::Shape("median of empty array".into()));
+        }
+        let mut v: Vec<f64> = self.as_slice().iter().map(|&x| x as f64).collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        super::kernels::quantile_sorted(&v, 0.5)
+            .ok_or_else(|| Error::Shape("median of empty array".into()))
+    }
+
+    /// Linear quantile `q ∈ [0, 1]` as `f64`. Empty → error.
+    pub fn quantile(&self, q: f64) -> Result<f64> {
+        if !(0.0..=1.0).contains(&q) || !q.is_finite() {
+            return Err(Error::Shape(format!("quantile q must be in [0, 1], got {q}")));
+        }
+        if self.is_empty() {
+            return Err(Error::Shape("quantile of empty array".into()));
+        }
+        let mut v: Vec<f64> = self.as_slice().iter().map(|&x| x as f64).collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(super::kernels::quantile_sorted(&v, q).unwrap())
+    }
+
+
     /// Concatenate along `axis` (rank 1–2).
     pub fn concatenate(axis: usize, parts: &[&ArrayI64]) -> Result<ArrayI64> {
         if parts.is_empty() {

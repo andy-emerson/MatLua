@@ -807,13 +807,28 @@ pub unsafe extern "C" fn a_i64_trailing_zeros(L: *mut lua_State) -> c_int {
     1
 }
 
+
+pub unsafe extern "C" fn a_i64_median(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let m = lua_try!(L, a.array.median());
+    unsafe { lua_pushnumber(L, m) };
+    1
+}
+pub unsafe extern "C" fn a_i64_quantile(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let q = unsafe { luaL_checknumber(L, 2) };
+    let v = lua_try!(L, a.array.quantile(q));
+    unsafe { lua_pushnumber(L, v) };
+    1
+}
+
 /// Install `ArrayI64` metatable.
 pub unsafe fn install_metatable(L: *mut lua_State) {
     unsafe {
         luaL_newmetatable(L, ARRAY_I64_MT.as_ptr());
         lua_pushvalue(L, -1);
         lua_setfield(L, -2, c"__index".as_ptr());
-        let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 67] = [
+        let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 69] = [
             (c"__gc", a_i64_gc),
             (c"__len", a_i64_len),
             (c"__tostring", a_i64_tostring),
@@ -881,6 +896,8 @@ pub unsafe fn install_metatable(L: *mut lua_State) {
             (c"count_ones", a_i64_count_ones),
             (c"leading_zeros", a_i64_leading_zeros),
             (c"trailing_zeros", a_i64_trailing_zeros),
+            (c"median", a_i64_median),
+            (c"quantile", a_i64_quantile),
         ];
         for (name, f) in methods {
             lua_pushcfunction(L, Some(f));

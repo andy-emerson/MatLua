@@ -614,6 +614,114 @@ impl Array {
         Ok(self.var(ddof)?.sqrt())
     }
 
+    /// Median of all elements (linear quantile at 0.5). Empty → error.
+    pub fn median(&self) -> Result<f64> {
+        kernels::median_slice(self.as_slice())
+            .ok_or_else(|| Error::Shape("median of empty array".into()))
+    }
+
+    /// Linear quantile `q ∈ [0, 1]` (NumPy default interpolation). Empty → error.
+    pub fn quantile(&self, q: f64) -> Result<f64> {
+        if !(0.0..=1.0).contains(&q) || !q.is_finite() {
+            return Err(Error::Shape(format!("quantile q must be in [0, 1], got {q}")));
+        }
+        if self.is_empty() {
+            return Err(Error::Shape("quantile of empty array".into()));
+        }
+        let mut v = self.as_slice().to_vec();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(kernels::quantile_sorted(&v, q).unwrap())
+    }
+
+    /// Evaluate several quantiles; `qs` each in \[0, 1\]. Returns rank-1.
+    pub fn quantiles(&self, qs: &[f64]) -> Result<Array> {
+        for &q in qs {
+            if !(0.0..=1.0).contains(&q) || !q.is_finite() {
+                return Err(Error::Shape(format!("quantile q must be in [0, 1], got {q}")));
+            }
+        }
+        if self.is_empty() {
+            return Err(Error::Shape("quantiles of empty array".into()));
+        }
+        let mut v = self.as_slice().to_vec();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut data = pool::take_uninit(qs.len());
+        for (i, &q) in qs.iter().enumerate() {
+            data[i] = kernels::quantile_sorted(&v, q).unwrap();
+        }
+        Ok(Array::from_parts(Shape::from_len(qs.len()), data))
+    }
+
+    /// Median along axis for rank-2 → rank-1.
+    pub fn median_axis(&self, axis: usize) -> Result<Array> {
+        let (m, n) = self.rank2_dims()?;
+        let src = self.as_slice();
+        match axis {
+            0 => {
+                let mut data = pool::take_uninit(n);
+                let mut col = vec![0.0f64; m];
+                for j in 0..n {
+                    for i in 0..m {
+                        col[i] = src[i * n + j];
+                    }
+                    data[j] = kernels::median_slice(&col).ok_or_else(|| {
+                        Error::Shape("median_axis of empty".into())
+                    })?;
+                }
+                Ok(Array::from_parts(Shape::from_len(n), data))
+            }
+            1 => {
+                let mut data = pool::take_uninit(m);
+                for i in 0..m {
+                    let row = &src[i * n..(i + 1) * n];
+                    data[i] = kernels::median_slice(row).ok_or_else(|| {
+                        Error::Shape("median_axis of empty".into())
+                    })?;
+                }
+                Ok(Array::from_parts(Shape::from_len(m), data))
+            }
+            _ => Err(Error::Shape(format!("axis {axis} out of range for rank-2"))),
+        }
+    }
+
+    /// Quantile along axis for rank-2 → rank-1.
+    pub fn quantile_axis(&self, axis: usize, q: f64) -> Result<Array> {
+        if !(0.0..=1.0).contains(&q) || !q.is_finite() {
+            return Err(Error::Shape(format!("quantile q must be in [0, 1], got {q}")));
+        }
+        let (m, n) = self.rank2_dims()?;
+        let src = self.as_slice();
+        match axis {
+            0 => {
+                let mut data = pool::take_uninit(n);
+                let mut col = vec![0.0f64; m];
+                for j in 0..n {
+                    for i in 0..m {
+                        col[i] = src[i * n + j];
+                    }
+                    col.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    data[j] = kernels::quantile_sorted(&col, q).ok_or_else(|| {
+                        Error::Shape("quantile_axis of empty".into())
+                    })?;
+                }
+                Ok(Array::from_parts(Shape::from_len(n), data))
+            }
+            1 => {
+                let mut data = pool::take_uninit(m);
+                for i in 0..m {
+                    let mut row = src[i * n..(i + 1) * n].to_vec();
+                    row.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    data[i] = kernels::quantile_sorted(&row, q).ok_or_else(|| {
+                        Error::Shape("quantile_axis of empty".into())
+                    })?;
+                }
+                Ok(Array::from_parts(Shape::from_len(m), data))
+            }
+            _ => Err(Error::Shape(format!("axis {axis} out of range for rank-2"))),
+        }
+    }
+
+
     /// Concatenate arrays along `axis` (0 or 1 for rank ≤ 2).
     ///
     /// All inputs must share the same rank and matching sizes on non-`axis` dims.
@@ -1373,6 +1481,20 @@ mod tests {
         assert_eq!(b.cumsum().as_slice(), &[1., 3., 6.]);
         let c = Array::from_shape_slice(vec![2], &[1., f64::NAN]).unwrap();
         assert_eq!(c.isnan().as_slice(), &[0., 1.]);
+    }
+
+    #[test]
+    fn median_and_quantile() {
+        let a = Array::from_shape_slice(vec![5], &[1., 3., 2., 5., 4.]).unwrap();
+        assert!((a.median().unwrap() - 3.0).abs() < 1e-12);
+        assert!((a.quantile(0.0).unwrap() - 1.0).abs() < 1e-12);
+        assert!((a.quantile(1.0).unwrap() - 5.0).abs() < 1e-12);
+        let q = a.quantiles(&[0.25, 0.5, 0.75]).unwrap();
+        assert!((q.as_slice()[1] - 3.0).abs() < 1e-12);
+        let m = Array::from_shape_slice(vec![2, 3], &[1., 2., 3., 4., 5., 6.]).unwrap();
+        let ma = m.median_axis(1).unwrap();
+        assert!((ma.as_slice()[0] - 2.0).abs() < 1e-12);
+        assert!((ma.as_slice()[1] - 5.0).abs() < 1e-12);
     }
 
 

@@ -260,3 +260,14 @@ fn m7b_diagnostics_from_i64() {
     assert!((from_i64::det(&a).unwrap() + 2.0).abs() < 1e-10);
     assert_eq!(from_i64::matrix_rank(&a, None).unwrap(), 2);
 }
+
+#[test]
+fn m7b_median_quantile() {
+    use matlua::array::{Array, ArrayI64};
+    let a = Array::from_shape_slice(vec![4], &[1., 2., 3., 4.]).unwrap();
+    assert!((a.median().unwrap() - 2.5).abs() < 1e-12);
+    assert!((a.quantile(0.25).unwrap() - 1.75).abs() < 1e-12);
+    let i = ArrayI64::from_shape_slice(vec![3], &[1, 2, 3]).unwrap();
+    assert!((i.median().unwrap() - 2.0).abs() < 1e-12);
+    assert!((i.quantile(1.0).unwrap() - 3.0).abs() < 1e-12);
+}

@@ -410,3 +410,22 @@ assert(math.abs(ml.det(ml.array_i64({{1,2},{3,4}})) + 2) < 1e-9)
     )
     .unwrap();
 }
+
+#[test]
+fn m7b_median_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local a = ml.array({1, 3, 2, 5, 4})
+assert(math.abs(a:median() - 3) < 1e-12)
+assert(math.abs(a:quantile(0) - 1) < 1e-12)
+local m = ml.array({{1,2,3},{4,5,6}})
+local row_med = m:median(2) -- axis 2 = columns direction (1-based axis=2 is axis 1 in 0-based)
+assert(math.abs(row_med:get(1) - 2) < 1e-12)
+assert(math.abs(ml.array_i64({10,20,30}):median() - 20) < 1e-12)
+"#,
+    )
+    .unwrap();
+}
