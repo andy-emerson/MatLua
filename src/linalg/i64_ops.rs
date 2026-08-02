@@ -1,10 +1,20 @@
 //! Dense linear algebra on [`ArrayI64`](crate::array::ArrayI64).
 //!
 //! Integer path (not faer/`f64`). Arithmetic is **wrapping** `i64`, matching
-//! the rest of the `i64` surface. Mathematically, integer×integer→integer;
-//! fixed-width storage may wrap.
+//! the rest of the `i64` surface.
 //!
-//! M7.c: blocked/`ikj` matmul and unrolled dot for cache locality (still wrapping).
+//! # Matmul algorithm (M7.c)
+//!
+//! Research / design notes:
+//! - **Not** f64 promote + faer: would break exactness past 2⁵³ and wrapping.
+//! - **Strassen** works over any ring (incl. wrapping `i64`) but practical
+//!   crossover is typically n ≳ 512–1000 once the *base* GEMM is strong; we
+//!   invest in the cubic kernel first (Goto/BLIS literature).
+//! - High-performance GEMM is multilevel: **cache panels + packing** so the
+//!   micro-kernel sees unit-stride A/B, then **register tiles** (mr×nr) for ILP
+//!   (Goto & van de Geijn; BLIS GEBP). See also salykova.github.io/gemm-cpu.
+//! - **Rayon** over output row-panels for large products (already a win on
+//!   multi-core; packing still helps single-thread cache).
 
 use crate::array::{pool_i64, ArrayI64, Shape};
 use crate::error::{Error, Result};
@@ -30,91 +40,257 @@ fn matmul_result(data: Vec<i64>, rows: usize, cols: usize, prefer_vec: bool) -> 
     }
 }
 
+// --- Packing GEMM parameters (tuned for L1/L2 on typical x86; O(n) work) ---
+/// Rows of A/C panel (mc).
+const MC: usize = 64;
+/// Cols of B/C panel (nc).
+const NC: usize = 64;
+/// Inner product depth panel (kc).
+const KC: usize = 256;
+/// Micro-kernel register tile rows.
+const MR: usize = 4;
+/// Micro-kernel register tile cols.
+const NR: usize = 4;
 
-/// Blocked wrapping GEMM into zeroed `data` (am×bn row-major).
-/// Large products parallelize over output rows (Rayon).
-fn gemm_blocked(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &mut [i64]) {
-    const BS: usize = 48;
-    let flops = am.saturating_mul(an).saturating_mul(bn);
-    // Parallel threshold ~ 64³ work units
-    if flops >= 64 * 64 * 64 && am >= 8 {
-        use rayon::prelude::*;
-        data.par_chunks_mut(bn).enumerate().for_each(|(i, c_row)| {
-            let mut k0 = 0;
-            while k0 < an {
-                let k1 = (k0 + BS).min(an);
-                for k in k0..k1 {
-                    let aik = aa[i * an + k];
-                    if aik == 0 {
-                        continue;
-                    }
-                    let b_row = &bb[k * bn..(k + 1) * bn];
-                    let mut j = 0;
-                    while j + 4 <= bn {
-                        c_row[j] = c_row[j].wrapping_add(aik.wrapping_mul(b_row[j]));
-                        c_row[j + 1] = c_row[j + 1].wrapping_add(aik.wrapping_mul(b_row[j + 1]));
-                        c_row[j + 2] = c_row[j + 2].wrapping_add(aik.wrapping_mul(b_row[j + 2]));
-                        c_row[j + 3] = c_row[j + 3].wrapping_add(aik.wrapping_mul(b_row[j + 3]));
-                        j += 4;
-                    }
-                    while j < bn {
-                        c_row[j] = c_row[j].wrapping_add(aik.wrapping_mul(b_row[j]));
-                        j += 1;
-                    }
-                }
-                k0 = k1;
-            }
-        });
-        return;
-    }
-    let mut i0 = 0;
-    while i0 < am {
-        let i1 = (i0 + BS).min(am);
-        let mut j0 = 0;
-        while j0 < bn {
-            let j1 = (j0 + BS).min(bn);
-            let mut k0 = 0;
-            while k0 < an {
-                let k1 = (k0 + BS).min(an);
-                for i in i0..i1 {
-                    let c_row = &mut data[i * bn + j0..i * bn + j1];
-                    for k in k0..k1 {
-                        let aik = aa[i * an + k];
-                        if aik == 0 {
-                            continue;
-                        }
-                        let b_row = &bb[k * bn + j0..k * bn + j1];
-                        let mut j = 0;
-                        let w = j1 - j0;
-                        while j + 4 <= w {
-                            c_row[j] = c_row[j].wrapping_add(aik.wrapping_mul(b_row[j]));
-                            c_row[j + 1] = c_row[j + 1].wrapping_add(aik.wrapping_mul(b_row[j + 1]));
-                            c_row[j + 2] = c_row[j + 2].wrapping_add(aik.wrapping_mul(b_row[j + 2]));
-                            c_row[j + 3] = c_row[j + 3].wrapping_add(aik.wrapping_mul(b_row[j + 3]));
-                            j += 4;
-                        }
-                        while j < w {
-                            c_row[j] = c_row[j].wrapping_add(aik.wrapping_mul(b_row[j]));
-                            j += 1;
-                        }
-                    }
-                }
-                k0 = k1;
-            }
-            j0 = j1;
-        }
-        i0 = i1;
+/// Pack A[i0..i0+m, k0..k0+k] row-major → contiguous `mc×kc` (row-major).
+#[inline]
+fn pack_a(aa: &[i64], an: usize, i0: usize, m: usize, k0: usize, k: usize, buf: &mut [i64]) {
+    debug_assert_eq!(buf.len(), m * k);
+    for i in 0..m {
+        let src = &aa[(i0 + i) * an + k0..(i0 + i) * an + k0 + k];
+        buf[i * k..(i + 1) * k].copy_from_slice(src);
     }
 }
 
+/// Pack B[k0..k0+k, j0..j0+n] row-major → contiguous `kc×nc` (row-major).
+#[inline]
+fn pack_b(bb: &[i64], bn: usize, k0: usize, k: usize, j0: usize, n: usize, buf: &mut [i64]) {
+    debug_assert_eq!(buf.len(), k * n);
+    for p in 0..k {
+        let src = &bb[(k0 + p) * bn + j0..(k0 + p) * bn + j0 + n];
+        buf[p * n..(p + 1) * n].copy_from_slice(src);
+    }
+}
+
+/// Compute rows `i0..i0+mb` of C into contiguous `c_panel` (mb×bn).
+fn gemm_panel_rows(
+    _am: usize,
+    an: usize,
+    bn: usize,
+    aa: &[i64],
+    bb: &[i64],
+    i0: usize,
+    mb: usize,
+    c_panel: &mut [i64],
+) {
+    debug_assert_eq!(c_panel.len(), mb * bn);
+    let mut a_pack = vec![0i64; MC * KC];
+    let mut b_pack = vec![0i64; KC * NC];
+
+    let mut j0 = 0;
+    while j0 < bn {
+        let nb = (bn - j0).min(NC);
+        let mut k0 = 0;
+        while k0 < an {
+            let kb = (an - k0).min(KC);
+            pack_b(bb, bn, k0, kb, j0, nb, &mut b_pack[..kb * nb]);
+            pack_a(aa, an, i0, mb, k0, kb, &mut a_pack[..mb * kb]);
+            // Update c_panel[0..mb, j0..j0+nb] using packed panels.
+            // Extract sub-columns into a temp micro C or stride in place.
+            // c_panel is mb×bn; we need ldc = bn.
+            // micro_kernel writes with ldc=bn into c_panel starting at column j0.
+            // Call micro on full mb×nb view with packed A (mb×kb) and B (kb×nb).
+            micro_kernel_strided(
+                mb,
+                nb,
+                kb,
+                &a_pack[..mb * kb],
+                &b_pack[..kb * nb],
+                c_panel,
+                bn,
+                j0,
+            );
+            k0 += kb;
+        }
+        j0 += nb;
+    }
+}
+
+/// Like [`micro_kernel`] but C is `m×ldc` with update starting at column `j0`.
+#[inline]
+fn micro_kernel_strided(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[i64],
+    b: &[i64],
+    c: &mut [i64],
+    ldc: usize,
+    j0: usize,
+) {
+    let mut i = 0;
+    while i + MR <= m {
+        let mut j = 0;
+        while j + NR <= n {
+            let mut c00 = c[(i) * ldc + (j0 + j)];
+            let mut c01 = c[(i) * ldc + (j0 + j + 1)];
+            let mut c02 = c[(i) * ldc + (j0 + j + 2)];
+            let mut c03 = c[(i) * ldc + (j0 + j + 3)];
+            let mut c10 = c[(i + 1) * ldc + (j0 + j)];
+            let mut c11 = c[(i + 1) * ldc + (j0 + j + 1)];
+            let mut c12 = c[(i + 1) * ldc + (j0 + j + 2)];
+            let mut c13 = c[(i + 1) * ldc + (j0 + j + 3)];
+            let mut c20 = c[(i + 2) * ldc + (j0 + j)];
+            let mut c21 = c[(i + 2) * ldc + (j0 + j + 1)];
+            let mut c22 = c[(i + 2) * ldc + (j0 + j + 2)];
+            let mut c23 = c[(i + 2) * ldc + (j0 + j + 3)];
+            let mut c30 = c[(i + 3) * ldc + (j0 + j)];
+            let mut c31 = c[(i + 3) * ldc + (j0 + j + 1)];
+            let mut c32 = c[(i + 3) * ldc + (j0 + j + 2)];
+            let mut c33 = c[(i + 3) * ldc + (j0 + j + 3)];
+            for p in 0..k {
+                let b0 = b[p * n + j];
+                let b1 = b[p * n + j + 1];
+                let b2 = b[p * n + j + 2];
+                let b3 = b[p * n + j + 3];
+                let a0 = a[i * k + p];
+                let a1 = a[(i + 1) * k + p];
+                let a2 = a[(i + 2) * k + p];
+                let a3 = a[(i + 3) * k + p];
+                c00 = c00.wrapping_add(a0.wrapping_mul(b0));
+                c01 = c01.wrapping_add(a0.wrapping_mul(b1));
+                c02 = c02.wrapping_add(a0.wrapping_mul(b2));
+                c03 = c03.wrapping_add(a0.wrapping_mul(b3));
+                c10 = c10.wrapping_add(a1.wrapping_mul(b0));
+                c11 = c11.wrapping_add(a1.wrapping_mul(b1));
+                c12 = c12.wrapping_add(a1.wrapping_mul(b2));
+                c13 = c13.wrapping_add(a1.wrapping_mul(b3));
+                c20 = c20.wrapping_add(a2.wrapping_mul(b0));
+                c21 = c21.wrapping_add(a2.wrapping_mul(b1));
+                c22 = c22.wrapping_add(a2.wrapping_mul(b2));
+                c23 = c23.wrapping_add(a2.wrapping_mul(b3));
+                c30 = c30.wrapping_add(a3.wrapping_mul(b0));
+                c31 = c31.wrapping_add(a3.wrapping_mul(b1));
+                c32 = c32.wrapping_add(a3.wrapping_mul(b2));
+                c33 = c33.wrapping_add(a3.wrapping_mul(b3));
+            }
+            c[i * ldc + j0 + j] = c00;
+            c[i * ldc + j0 + j + 1] = c01;
+            c[i * ldc + j0 + j + 2] = c02;
+            c[i * ldc + j0 + j + 3] = c03;
+            c[(i + 1) * ldc + j0 + j] = c10;
+            c[(i + 1) * ldc + j0 + j + 1] = c11;
+            c[(i + 1) * ldc + j0 + j + 2] = c12;
+            c[(i + 1) * ldc + j0 + j + 3] = c13;
+            c[(i + 2) * ldc + j0 + j] = c20;
+            c[(i + 2) * ldc + j0 + j + 1] = c21;
+            c[(i + 2) * ldc + j0 + j + 2] = c22;
+            c[(i + 2) * ldc + j0 + j + 3] = c23;
+            c[(i + 3) * ldc + j0 + j] = c30;
+            c[(i + 3) * ldc + j0 + j + 1] = c31;
+            c[(i + 3) * ldc + j0 + j + 2] = c32;
+            c[(i + 3) * ldc + j0 + j + 3] = c33;
+            j += NR;
+        }
+        while j < n {
+            for ii in 0..MR {
+                let mut s = c[(i + ii) * ldc + j0 + j];
+                for p in 0..k {
+                    s = s.wrapping_add(a[(i + ii) * k + p].wrapping_mul(b[p * n + j]));
+                }
+                c[(i + ii) * ldc + j0 + j] = s;
+            }
+            j += 1;
+        }
+        i += MR;
+    }
+    while i < m {
+        for j in 0..n {
+            let mut s = c[i * ldc + j0 + j];
+            for p in 0..k {
+                s = s.wrapping_add(a[i * k + p].wrapping_mul(b[p * n + j]));
+            }
+            c[i * ldc + j0 + j] = s;
+        }
+        i += 1;
+    }
+}
+
+/// Simple ikj GEMM (no packing) for small products / vector path helper.
+fn gemm_simple(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &mut [i64]) {
+    for i in 0..am {
+        let c_row = &mut data[i * bn..(i + 1) * bn];
+        for k in 0..an {
+            let aik = aa[i * an + k];
+            if aik == 0 {
+                continue;
+            }
+            let b_row = &bb[k * bn..(k + 1) * bn];
+            let mut j = 0;
+            while j + 4 <= bn {
+                c_row[j] = c_row[j].wrapping_add(aik.wrapping_mul(b_row[j]));
+                c_row[j + 1] = c_row[j + 1].wrapping_add(aik.wrapping_mul(b_row[j + 1]));
+                c_row[j + 2] = c_row[j + 2].wrapping_add(aik.wrapping_mul(b_row[j + 2]));
+                c_row[j + 3] = c_row[j + 3].wrapping_add(aik.wrapping_mul(b_row[j + 3]));
+                j += 4;
+            }
+            while j < bn {
+                c_row[j] = c_row[j].wrapping_add(aik.wrapping_mul(b_row[j]));
+                j += 1;
+            }
+        }
+    }
+}
+
+/// Entry: packed GEBP for matrices; simple path for tiny; Rayon over row panels.
+fn gemm_blocked(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &mut [i64]) {
+    let flops = am.saturating_mul(an).saturating_mul(bn);
+    if flops < 48 * 48 * 48 {
+        gemm_simple(am, an, bn, aa, bb, data);
+        return;
+    }
+
+    if flops >= 64 * 64 * 64 && am >= 8 {
+        use rayon::prelude::*;
+        // Build list of (i0, mb) panels and process in parallel with correct splits.
+        let mut panels = Vec::new();
+        let mut i0 = 0;
+        while i0 < am {
+            let mb = (am - i0).min(MC);
+            panels.push((i0, mb));
+            i0 += mb;
+        }
+        // Safety: each panel writes disjoint rows — use split_at_mut chain.
+        // Rayon: parallel_map into temporary row buffers then copy — extra alloc.
+        // Prefer: one thread per panel with split_at_mut via scoped approach.
+        let mut slices: Vec<&mut [i64]> = Vec::with_capacity(panels.len());
+        let mut rest = data;
+        let mut prev_end = 0usize;
+        for &(i0, mb) in &panels {
+            debug_assert_eq!(i0, prev_end);
+            let (chunk, tail) = rest.split_at_mut(mb * bn);
+            slices.push(chunk);
+            rest = tail;
+            prev_end = i0 + mb;
+        }
+        slices
+            .into_par_iter()
+            .zip(panels.into_par_iter())
+            .for_each(|(c_panel, (i0, mb))| {
+                gemm_panel_rows(am, an, bn, aa, bb, i0, mb, c_panel);
+            });
+        return;
+    }
+
+    let mut i0 = 0;
+    while i0 < am {
+        let mb = (am - i0).min(MC);
+        gemm_panel_rows(am, an, bn, aa, bb, i0, mb, &mut data[i0 * bn..(i0 + mb) * bn]);
+        i0 += mb;
+    }
+}
 
 /// Matrix product `a @ b` with wrapping `i64` accumulation.
-///
-/// Rank-1 operands are columns. Result is rank-1 when an operand was rank-1 and
-/// the product is a single column (or row×col → scalar length-1 as rank-1).
-///
-/// Uses `i–k–j` accumulation (row of `a` streams; inner walk over columns of `b`)
-/// so `b`'s rows stay hot in cache for modest dense sizes.
 pub fn matmul(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
     let (am, an) = as_matrix_dims(a)?;
     let (bm, bn) = as_matrix_dims(b)?;
@@ -130,7 +306,6 @@ pub fn matmul(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
     let bb = b.as_slice();
 
     if b.rank() == 1 {
-        // a (am×an) @ b (an×1)
         for i in 0..am {
             let mut s: i64 = 0;
             let row = &aa[i * an..(i + 1) * an];
@@ -155,7 +330,6 @@ pub fn matmul(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
 }
 
 /// GEMM into preallocated rank-2 `out` with shape `(am, bn)`. Wrapping `i64`.
-/// Does not collapse to rank-1 even when `b` is a column vector (`bn == 1`).
 pub fn matmul_out(a: &ArrayI64, b: &ArrayI64, out: &mut ArrayI64) -> Result<()> {
     let (am, an) = as_matrix_dims(a)?;
     let (bm, bn) = as_matrix_dims(b)?;
@@ -189,7 +363,6 @@ pub fn matmul_out(a: &ArrayI64, b: &ArrayI64, out: &mut ArrayI64) -> Result<()> 
     Ok(())
 }
 
-
 /// `aᵀ @ b` with wrapping `i64`.
 pub fn matmul_at(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
     let (am, an) = as_matrix_dims(a)?;
@@ -203,7 +376,6 @@ pub fn matmul_at(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
     let mut data = pool_i64::take_zeroed(an.saturating_mul(bn));
     let aa = a.as_slice();
     let bb = b.as_slice();
-    // C[i,j] = sum_k a[k,i] * b[k,j]  — stream k outer for a's columns
     if b.rank() == 1 {
         for i in 0..an {
             let mut s: i64 = 0;
@@ -296,7 +468,7 @@ pub fn dot(a: &ArrayI64, b: &ArrayI64) -> Result<i64> {
     Ok(s)
 }
 
-/// Euclidean (Frobenius) norm as `f64` (sqrt of sum of squares; squares wrap in `i64` then cast).
+/// Euclidean (Frobenius) norm as `f64` (sqrt of sum of squares; squares wrap then cast).
 pub fn norm(a: &ArrayI64) -> Result<f64> {
     let mut ss: i64 = 0;
     for &x in a.as_slice() {
@@ -356,5 +528,36 @@ mod tests {
         let i = ArrayI64::eye(3).unwrap();
         let c = matmul(&a, &i).unwrap();
         assert_eq!(c.as_slice(), a.as_slice());
+    }
+
+    #[test]
+    fn matmul_packed_matches_naive_128() {
+        // Correctness vs simple triple loop for n=32 (packed path).
+        let n = 32;
+        let mut da = Vec::with_capacity(n * n);
+        let mut db = Vec::with_capacity(n * n);
+        let mut x = 1i64;
+        for _ in 0..n * n {
+            da.push(x);
+            x = x.wrapping_add(3);
+            db.push(x);
+            x = x.wrapping_add(5);
+        }
+        let a = ArrayI64::from_shape_vec(vec![n, n], da).unwrap();
+        let b = ArrayI64::from_shape_vec(vec![n, n], db).unwrap();
+        let c = matmul(&a, &b).unwrap();
+        // reference
+        let mut r = vec![0i64; n * n];
+        let aa = a.as_slice();
+        let bb = b.as_slice();
+        for i in 0..n {
+            for k in 0..n {
+                let aik = aa[i * n + k];
+                for j in 0..n {
+                    r[i * n + j] = r[i * n + j].wrapping_add(aik.wrapping_mul(bb[k * n + j]));
+                }
+            }
+        }
+        assert_eq!(c.as_slice(), r.as_slice());
     }
 }

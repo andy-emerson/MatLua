@@ -516,7 +516,12 @@ M7.b delivered **host entry** (`push_view_f64`/`i64`, `push_array_copy_*`) as re
 - **i64 matmul:** blocked GEMM + **Rayon** row-parallel for ≥~64³ work (≈2× on 2-core host at n=256).
 - **Harness:** `tests/bench/i64_surface.rs` (`cargo test --release --test i64_surface -- --run --sizes 64,256,1024`).
 
-**Still open:** f64 min residual / solve vs NumPy; i64 matmul still slower than faer-f64 (no wrapping integer BLAS); fuller fair table refresh; more `out=`.
+**Wave 4 (landed): i64 matmul research → packed GEBP**
+- Literature: Goto/BLIS multilevel GEMM (cache panels + **packing** + register tiles); Strassen valid on rings but crossover high until base kernel is strong — **deferred**.
+- Implemented: **pack A/B panels** (`mc×kc`, `kc×nc`) + **4×4 wrapping micro-kernel** + Rayon over row panels; small products keep simple ikj.
+- Measured (release, 2-core): i64 matmul n=256 **~5.2 ms → ~3.3 ms**.
+
+**Still open:** more micro-kernel width / pack reuse; Strassen trial at n≥512; f64 min/solve; fair table refresh.
 
 #### What remains explicitly *not* TallyDB-owned
 

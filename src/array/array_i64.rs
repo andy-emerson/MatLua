@@ -1064,7 +1064,7 @@ impl ArrayI64 {
             1 => {
                 let mut data = super::pool::take_uninit(m);
                 for i in 0..m {
-                    let mut row: Vec<f64> = src[i * n..(i + 1) * n].iter().map(|&x| x as f64).collect();
+                    let row: Vec<f64> = src[i * n..(i + 1) * n].iter().map(|&x| x as f64).collect();
                     data[i] = super::kernels::median_slice(&row).ok_or_else(|| {
                         Error::Shape("median_axis of empty".into())
                     })?;
