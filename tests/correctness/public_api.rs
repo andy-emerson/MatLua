@@ -219,3 +219,20 @@ fn m7_i64_views_and_finish() {
     assert_eq!(a.gcd(&b).unwrap().as_slice(), &[3, 5]);
     assert_eq!((&a + 1i64).as_slice(), &[7, 16]);
 }
+
+
+#[test]
+fn m7_from_i64_solve_and_eigh() {
+    use matlua::array::ArrayI64;
+    use matlua::linalg::from_i64;
+    let a = ArrayI64::from_shape_slice(vec![2, 2], &[2, 0, 0, 2]).unwrap();
+    let b = ArrayI64::from_shape_slice(vec![2], &[2, 4]).unwrap();
+    let x = from_i64::solve(&a, &b).unwrap();
+    assert!((x.as_slice()[0] - 1.0).abs() < 1e-12);
+    assert!((x.as_slice()[1] - 2.0).abs() < 1e-12);
+    let (w, v) = from_i64::eigh(&a).unwrap();
+    assert_eq!(w.dtype(), matlua::DType::F64);
+    assert_eq!(v.rank(), 2);
+    let p = from_i64::pinv(&ArrayI64::from_shape_slice(vec![2, 2], &[1, 0, 0, 1]).unwrap()).unwrap();
+    assert!((p.as_slice()[0] - 1.0).abs() < 1e-10);
+}

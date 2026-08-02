@@ -363,3 +363,28 @@ assert(ml.array_i64({7}):count_ones():get(1) == 3)
     )
     .unwrap();
 }
+
+
+#[test]
+fn m7_solve_accepts_i64_returns_f64() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local A = ml.array_i64({{2,0},{0,2}})
+local b = ml.array_i64({2,4})
+local x = ml.solve(A, b)
+-- f64 array: dtype via sum being number path; check values
+assert(math.abs(x:get(1) - 1) < 1e-9)
+assert(math.abs(x:get(2) - 2) < 1e-9)
+local w, v = ml.eigh(ml.array_i64({{2,0},{0,3}}))
+assert(w:rank() == 1 and v:rank() == 2)
+-- integer matmul still returns i64
+local C = ml.matmul(ml.array_i64({{1,2},{3,4}}), ml.array_i64({{1,0},{0,1}}))
+assert(C:dtype() == "i64")
+assert(C:get(2,1) == 3)
+"#,
+    )
+    .unwrap();
+}

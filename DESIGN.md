@@ -255,7 +255,8 @@ Names match the `lua` feature on `main`. Tutorial samples live in
 - **`ArrayI64`**: owned row-major `i64`, same shape/rank model as `f64` [`Array`].
 - **Introduction order:** `f64` first, then `i64` (not a permanent “LA is only f64” hierarchy).
 - **Integer LA path:** `matmul` / `matmul_at` / `matmul_bt` / `dot` / `transpose` / `eye` on `ArrayI64` via `linalg::i64_ops` (wrapping `i64` accumulators; not faer). Integer×integer→integer in \(\mathbb{Z}\); fixed-width may wrap.
-- **Not pure-integer (no exact integer codomain in general):** `solve`, `lstsq`, `eigh`, `pinv`, SVD/QR/Cholesky — stay on `f64` (cast with `to_f64` when needed).
+- **Real LA on integer inputs (NumPy-style):** `linalg::from_i64::{solve,lstsq,normal_eq,pinv,eigh,cholesky,qr,svd}` promote with `to_f64` and return **`f64` arrays**. Lua `ml.solve` / `eigh` / … accept `ArrayI64` the same way. Not exact rational solve; values \(>2^{53}\) lose integer exactness.
+- **Still not pure-`i64` codomain:** those ops never return `ArrayI64` (math is real-valued).
 - **Stats that are real-valued:** `mean` / `var` / `std` (+ axis) take `i64` and return `f64`.
 - **Arithmetic:** wrapping add/sub/mul/neg/abs; truncating `/`; division by zero → `0` (no panic).
 - **Mean** (scalar or axis) returns **`f64`** (or `f64` array).
@@ -332,7 +333,7 @@ explicit boundaries (zero-copy views in, owned results out).
 | Path | Role |
 |------|------|
 | `matlua::array` | `Array`, `Shape`, views, elementwise ops |
-| `matlua::linalg` | matmul, solve, decompositions, norm, eye |
+| `matlua::linalg` | matmul, solve, decompositions, norm, eye; `i64_ops` integer LA; `from_i64` promote solvers |
 | `matlua::error` | `Error` / `Result` |
 | `matlua::lua` | register, userdata, optional test `Lua` helper (`lua` feature) |
 
