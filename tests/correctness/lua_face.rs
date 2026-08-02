@@ -388,3 +388,115 @@ assert(C:get(2,1) == 3)
     )
     .unwrap();
 }
+
+#[test]
+fn m7b_diagnostics_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local A = ml.array({{1,2},{3,4}})
+assert(math.abs(ml.det(A) + 2) < 1e-9)
+local sign, logabs = ml.slogdet(A)
+assert(sign < 0)
+assert(ml.matrix_rank(A) == 2)
+assert(ml.cond(ml.eye(2)) < 1.01)
+local wr, wi = ml.eigvals(ml.eye(3))
+assert(#wr == 3)
+-- i64 promote
+assert(math.abs(ml.det(ml.array_i64({{1,2},{3,4}})) + 2) < 1e-9)
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn m7b_median_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local a = ml.array({1, 3, 2, 5, 4})
+assert(math.abs(a:median() - 3) < 1e-12)
+assert(math.abs(a:quantile(0) - 1) < 1e-12)
+local m = ml.array({{1,2,3},{4,5,6}})
+local row_med = m:median(2) -- axis 2 = columns direction (1-based axis=2 is axis 1 in 0-based)
+assert(math.abs(row_med:get(1) - 2) < 1e-12)
+assert(math.abs(ml.array_i64({10,20,30}):median() - 20) < 1e-12)
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn m7b_random_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+ml.seed(123)
+local a = ml.random(4)
+ml.seed(123)
+local b = ml.random(4)
+for i=1,4 do assert(a:get(i) == b:get(i)) end
+local u = ml.uniform(2, 0, 10)
+assert(u:get(1) >= 0 and u:get(1) < 10)
+local n = ml.randn(3)
+assert(#n == 3)
+local ints = ml.integers(5, 0, 3)
+assert(ints:dtype() == "i64")
+local ch = ml.choice(ml.array({1,2,3}), 4)
+assert(#ch == 4)
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn m7b_indexing_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local a = ml.array({0, 1, 0, 3, 4})
+local nz = a:nonzero()
+assert(nz:dtype() == "i64" and nz:get(1) == 2)
+local c = a:compress(ml.array({0,1,0,1,0}))
+assert(#c == 2 and c:get(1) == 1 and c:get(2) == 3)
+local b = ml.zeros(4)
+b:put(ml.array_i64({2, 4}), ml.array({10, 20}))
+assert(b:get(2) == 10 and b:get(4) == 20)
+b:put_mask(ml.array({1,0,1,0}), 7)
+assert(b:get(1) == 7 and b:get(3) == 7)
+local t = a:take(ml.array_i64({2, 4}))
+assert(t:get(1) == 1 and t:get(2) == 3)
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn m7b_out_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local a = ml.array({1,2,3})
+local b = ml.array({4,5,6})
+local out = ml.zeros(3)
+a:add_out(b, out)
+assert(out:get(1) == 5 and out:get(3) == 9)
+local A = ml.array({{1,2},{3,4}})
+local B = ml.array({{5,6},{7,8}})
+local C = ml.zeros(2,2)
+ml.matmul_out(A, B, C)
+assert(C:get(1,1) == 19 and C:get(2,2) == 50)
+"#,
+    )
+    .unwrap();
+}

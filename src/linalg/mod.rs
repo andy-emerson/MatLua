@@ -153,6 +153,38 @@ pub fn matmul(a: &Array, b: &Array) -> Result<Array> {
     matmul_result(data, am, bn, prefer_vec)
 }
 
+/// GEMM into a preallocated `out` with shape `(am, bn)` (rank-2). Does not collapse to rank-1.
+pub fn matmul_out(a: &Array, b: &Array, out: &mut Array) -> Result<()> {
+    let (am, an) = array_as_matrix_dims(a)?;
+    let (bm, bn) = array_as_matrix_dims(b)?;
+    if an != bm {
+        return Err(Error::shape(format!(
+            "matmul shape mismatch: ({am}, {an}) vs ({bm}, {bn})"
+        )));
+    }
+    if out.rank() != 2 || out.dims() != [am, bn] {
+        return Err(Error::shape(format!(
+            "matmul_out expects out shape ({am}, {bn}), got {:?}",
+            out.dims()
+        )));
+    }
+    let lhs = array_as_mat_ref(a)?;
+    let rhs = array_as_mat_ref(b)?;
+    if am * bn > 0 {
+        let mut dst = MatMut::from_row_major_slice_mut(out.as_mut_slice(), am, bn);
+        faer_matmul(
+            &mut dst,
+            Accum::Replace,
+            lhs,
+            rhs,
+            1.0,
+            matmul_par(am, bn, an),
+        );
+    }
+    Ok(())
+}
+
+
 /// Matrix product `aᵀ @ b`.
 ///
 /// Shapes: `(m, k)ᵀ × (m, n) → (k, n)` i.e. `a` is `m×k`, `b` is `m×n`.
@@ -591,6 +623,35 @@ mod tests {
         assert!((s.get(&[1]).unwrap() - 2.0).abs() < 1e-8);
     }
 
+    #[test]
+    fn det_slogdet_rank_cond() {
+        let a = Array::from_shape_slice(vec![2, 2], &[1., 2., 3., 4.]).unwrap();
+        let d = det(&a).unwrap();
+        assert!((d - (-2.0)).abs() < 1e-10, "det={d}");
+        let (sign, logabs) = slogdet(&a).unwrap();
+        assert!((sign - (-1.0)).abs() < 1e-12);
+        assert!((logabs - 2.0_f64.ln()).abs() < 1e-10);
+        assert_eq!(matrix_rank(&a, None).unwrap(), 2);
+        let singular = Array::from_shape_slice(vec![2, 2], &[1., 2., 2., 4.]).unwrap();
+        assert_eq!(matrix_rank(&singular, None).unwrap(), 1);
+        let id = Array::eye(3).unwrap();
+        assert!((cond(&id).unwrap() - 1.0).abs() < 1e-9);
+        let (wr, wi) = eigvals(&id).unwrap();
+        assert_eq!(wr.len(), 3);
+        assert!(wi.as_slice().iter().all(|&x| x.abs() < 1e-12));
+        assert!(wr.as_slice().iter().all(|&x| (x - 1.0).abs() < 1e-9));
+    }
+
+    #[test]
+    fn eig_identity_real() {
+        let id = Array::eye(2).unwrap();
+        let (wr, wi, vr, vi) = eig(&id).unwrap();
+        assert!(wr.as_slice().iter().all(|&x| (x - 1.0).abs() < 1e-8));
+        assert!(wi.as_slice().iter().all(|&x| x.abs() < 1e-10));
+        assert_eq!(vr.dims(), &[2, 2]);
+        assert!(vi.as_slice().iter().all(|&x| x.abs() < 1e-10));
+    }
+
 
     #[test]
     fn lstsq_overdetermined_matches_normal_eq_full_rank() {
@@ -670,4 +731,199 @@ mod tests {
         assert!((beta.get(&[0, 0]).unwrap() - 1.0).abs() < 1e-9);
         assert!((beta.get(&[1, 0]).unwrap() - 2.0).abs() < 1e-9);
     }
+}
+
+// ----- M7.b diagnostics (f64) -----
+
+/// Determinant of a square rank-2 matrix (via partial-pivoted LU).
+pub fn det(a: &Array) -> Result<f64> {
+    let (sign, logabs) = slogdet(a)?;
+    if sign == 0.0 {
+        return Ok(0.0);
+    }
+    Ok(sign * logabs.exp())
+}
+
+/// Sign and log of absolute determinant: `(sign, log|det|)`.
+///
+/// `sign` is `-1.0`, `0.0`, or `1.0`. When the matrix is singular, returns
+/// `(0.0, -∞)`. Matches NumPy `slogdet` for real matrices.
+pub fn slogdet(a: &Array) -> Result<(f64, f64)> {
+    if a.rank() != 2 {
+        return Err(Error::shape("slogdet requires a rank-2 matrix"));
+    }
+    let (n, m) = array_as_matrix_dims(a)?;
+    if n != m {
+        return Err(Error::shape(format!(
+            "slogdet requires a square matrix, got ({n}, {m})"
+        )));
+    }
+    if n == 0 {
+        return Ok((1.0, 0.0)); // det of 0×0 is 1 by convention
+    }
+    let am = array_as_mat_ref(a)?;
+    let lu = am.partial_piv_lu();
+    let u = lu.U();
+    let p = lu.P();
+    let mut sign = perm_sign(p.arrays().0);
+    let mut logabs = 0.0_f64;
+    for i in 0..n {
+        let d = u[(i, i)];
+        if d == 0.0 || !d.is_finite() {
+            return Ok((0.0, f64::NEG_INFINITY));
+        }
+        if d < 0.0 {
+            sign = -sign;
+        }
+        logabs += d.abs().ln();
+    }
+    Ok((sign, logabs))
+}
+
+/// Sign of a permutation given as forward image `fwd[i] = π(i)`.
+fn perm_sign(fwd: &[usize]) -> f64 {
+    let n = fwd.len();
+    let mut seen = vec![false; n];
+    let mut sign = 1.0_f64;
+    for i in 0..n {
+        if seen[i] {
+            continue;
+        }
+        let mut j = i;
+        let mut cycle_len = 0usize;
+        while !seen[j] {
+            seen[j] = true;
+            j = fwd[j];
+            cycle_len += 1;
+        }
+        // cycle length k contributes (-1)^{k-1}
+        if cycle_len > 0 && (cycle_len - 1) % 2 == 1 {
+            sign = -sign;
+        }
+    }
+    sign
+}
+
+fn singular_values_vec(a: &Array) -> Result<Vec<f64>> {
+    if a.rank() != 2 {
+        return Err(Error::shape("expected rank-2 matrix"));
+    }
+    let am = array_as_mat_ref(a)?;
+    let s = am
+        .singular_values()
+        .map_err(|e| Error::linalg(format!("singular_values failed: {e:?}")))?;
+    Ok(s)
+}
+
+/// Default numerical rank tolerance: `max(m, n) * eps * σ_max` (NumPy-style).
+pub fn matrix_rank(a: &Array, tol: Option<f64>) -> Result<usize> {
+    let (m, n) = array_as_matrix_dims(a)?;
+    if a.rank() != 2 {
+        return Err(Error::shape("matrix_rank requires a rank-2 matrix"));
+    }
+    if m == 0 || n == 0 {
+        return Ok(0);
+    }
+    let s = singular_values_vec(a)?;
+    if s.is_empty() {
+        return Ok(0);
+    }
+    let smax = s[0].abs(); // nonincreasing nonnegative
+    let thresh = tol.unwrap_or_else(|| {
+        let eps = f64::EPSILON;
+        (m.max(n) as f64) * eps * smax
+    });
+    Ok(s.iter().filter(|&&v| v > thresh).count())
+}
+
+/// 2-norm condition number `σ_max / σ_min` (via SVD).
+///
+/// Returns `+∞` if the matrix is rank-deficient (smallest singular value is 0).
+/// Empty shape errors; for non-square uses the rectangular 2-norm condition.
+pub fn cond(a: &Array) -> Result<f64> {
+    if a.rank() != 2 {
+        return Err(Error::shape("cond requires a rank-2 matrix"));
+    }
+    let (m, n) = array_as_matrix_dims(a)?;
+    if m == 0 || n == 0 {
+        return Err(Error::shape("cond of empty matrix is undefined"));
+    }
+    let s = singular_values_vec(a)?;
+    let smax = s.first().copied().unwrap_or(0.0);
+    let smin = s.last().copied().unwrap_or(0.0);
+    if smin == 0.0 {
+        return Ok(f64::INFINITY);
+    }
+    Ok(smax / smin)
+}
+
+/// Eigenvalues of a square matrix as real/imag parts `(wr, wi)` (rank-1 each).
+///
+/// Real matrices may produce complex conjugate pairs; there is no complex dtype
+/// yet, so parts are split (NumPy would use complex). Order matches faer.
+pub fn eigvals(a: &Array) -> Result<(Array, Array)> {
+    if a.rank() != 2 {
+        return Err(Error::shape("eigvals requires a rank-2 matrix"));
+    }
+    let (n, m) = array_as_matrix_dims(a)?;
+    if n != m {
+        return Err(Error::shape("eigvals requires a square matrix"));
+    }
+    let am = array_as_mat_ref(a)?;
+    let vals = am
+        .eigenvalues()
+        .map_err(|e| Error::linalg(format!("eigvals failed: {e:?}")))?;
+    let mut re = crate::array::pool_take_uninit(n);
+    let mut im = crate::array::pool_take_uninit(n);
+    for (i, z) in vals.iter().enumerate() {
+        re[i] = z.re;
+        im[i] = z.im;
+    }
+    Ok((
+        Array::from_parts(Shape::from_len(n), re),
+        Array::from_parts(Shape::from_len(n), im),
+    ))
+}
+
+/// Right eigendecomposition: `(wr, wi, vr_re, vr_im)`.
+///
+/// `A v_j = λ_j v_j` with `λ_j = wr[j] + i wi[j]` and column `j` of
+/// `vr_re + i vr_im` the eigenvector. Complex results are split into real arrays
+/// (no `c64` dtype yet).
+pub fn eig(a: &Array) -> Result<(Array, Array, Array, Array)> {
+    if a.rank() != 2 {
+        return Err(Error::shape("eig requires a rank-2 matrix"));
+    }
+    let (n, m) = array_as_matrix_dims(a)?;
+    if n != m {
+        return Err(Error::shape("eig requires a square matrix"));
+    }
+    let am = array_as_mat_ref(a)?;
+    let evd = am
+        .eigen()
+        .map_err(|e| Error::linalg(format!("eig failed: {e:?}")))?;
+    let u = evd.U(); // Complex matrix n×n
+    let s = evd.S();
+    let mut wr = crate::array::pool_take_uninit(n);
+    let mut wi = crate::array::pool_take_uninit(n);
+    let col = s.column_vector();
+    for i in 0..n {
+        wr[i] = col[i].re;
+        wi[i] = col[i].im;
+    }
+    let mut vre = crate::array::pool_take_uninit(n * n);
+    let mut vim = crate::array::pool_take_uninit(n * n);
+    for i in 0..n {
+        for j in 0..n {
+            let z = u[(i, j)];
+            vre[i * n + j] = z.re;
+            vim[i * n + j] = z.im;
+        }
+    }
+    Ok((
+        Array::from_parts(Shape::from_len(n), wr),
+        Array::from_parts(Shape::from_len(n), wi),
+        Array::from_parts(Shape::matrix(n, n)?, vre),
+        Array::from_parts(Shape::matrix(n, n)?, vim),
+    ))
 }

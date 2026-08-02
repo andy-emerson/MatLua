@@ -952,3 +952,36 @@ pub(crate) fn argsort_indices(a: &[f64], descending: bool, idx: &mut [usize]) {
         idx.sort_by(|&i, &j| a[i].partial_cmp(&a[j]).unwrap_or(std::cmp::Ordering::Equal));
     }
 }
+
+
+/// Linear quantile on a **sorted** slice (`q` in [0, 1]). Empty → None.
+#[inline]
+pub(crate) fn quantile_sorted(sorted: &[f64], q: f64) -> Option<f64> {
+    let n = sorted.len();
+    if n == 0 {
+        return None;
+    }
+    if n == 1 {
+        return Some(sorted[0]);
+    }
+    let pos = q * (n as f64 - 1.0);
+    let lo = pos.floor() as usize;
+    let hi = (pos.ceil() as usize).min(n - 1);
+    let h = pos - lo as f64;
+    if lo == hi || h == 0.0 {
+        Some(sorted[lo])
+    } else {
+        Some(sorted[lo].mul_add(1.0 - h, sorted[hi] * h))
+    }
+}
+
+/// Median of unsorted data (sorts a copy). Empty → None.
+#[inline]
+pub(crate) fn median_slice(a: &[f64]) -> Option<f64> {
+    if a.is_empty() {
+        return None;
+    }
+    let mut v = a.to_vec();
+    v.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    quantile_sorted(&v, 0.5)
+}

@@ -265,13 +265,75 @@ Names match the `lua` feature on `main`. Tutorial samples live in
 - **Lua face:** `*_i64` constructors above; methods include shared grammar + i64-unique (`unique`, `isin`, `bincount`, `searchsorted`, `sort`, bitwise, `rem`, `divmod`, `gcd`/`lcm`, …); `get`/`set` integers; `to_f64` / `dtype`.
 - **Also on i64 (Rust+Lua):** `where_cond`, `concatenate`/`stack`, `sign`/`clip`, `var`/`std` (as `f64`), `any`/`all` (+ axis), `slice`/`rows`/`row`/`col`, `broadcast_to`, compares (array and scalar).
 - **i64-unique (M7):** bitwise/rem/shift, `unique`/`isin`/`bincount`/`searchsorted`/`sort`, `divmod`/`gcd`/`lcm`, bit counts; **`ArrayViewI64` / `ArrayViewMutI64`** (Rust host buffers).
-- **Not M7 / later:** float-only ufuncs (`exp`/`log`/…), `cov`/`corrcoef`, nan*; **Lua** host-view userdata (M7.b/M8); performance (M7.c).
+- **Not M7 / later:** float-only ufuncs (`exp`/`log`/…), `cov`/`corrcoef`, nan* (as needed); performance (**M7.c**). Lua host views: entry in **M7.b**; richer face / linalg-on-views in **M8**.
 
+
+### 3.18 M7.b LA diagnostics (f64-first)
+
+- **`det` / `slogdet`**: square real matrices via partial-pivoted LU; `slogdet` → `(sign, log|det|)`.
+- **`matrix_rank`**: numerical rank from SVD; default tol `max(m,n)·ε·σ_max` (optional override).
+- **`cond`**: 2-norm condition `σ_max/σ_min` (∞ if singular).
+- **`eigvals` / `eig`**: general (possibly non-symmetric) eigen via faer; complex results as **real/imag split** arrays (no `c64` yet). Prefer **`eigh`** for symmetric.
+- **i64 inputs:** `linalg::from_i64` and Lua dual face promote to `f64` results (same as `solve`).
+
+### 3.19 M7.b order statistics
+
+- **`median` / `quantile` / `quantiles`**: linear interpolation (NumPy-style `q∈[0,1]`); empty errors.
+- **Axis:** `median_axis` / `quantile_axis` on rank-2 (`f64`).
+- **`i64`:** scalar `median`/`quantile` return **`f64`** (even-length median averages).
+
+### 3.20 M7.b random
+
+- **PRNG:** process-global xoshiro256**; `seed(u64)` resets stream (not crypto).
+- **`random` / `randn` / `uniform` / `normal`:** `f64` arrays.
+- **`integers`:** `i64` arrays, half-open `[low, high)`.
+- **`choice`:** sample with replacement from rank-1 (`f64` or `i64`).
+
+### 3.21 M7.b indexing
+
+- **`nonzero`**: flat 0-based indices as `ArrayI64` (Lua: 1-based).
+- **`compress(mask)`**: rank-1 boolean-style select (nonzero mask entries).
+- **`put` / `put_mask`**: scatter by indices or mask (in-place).
+- **`take` / `take_i64`**: gather; Lua `take` accepts f64 or i64 index arrays (1-based).
+
+### 3.22 M7.b `out=` (partial, #21)
+
+- **Rust:** `add_out`/`sub_out`/`mul_out`/`div_out`/`neg_out`/`abs_out` on `Array`; same-shape `*_out` on `ArrayI64`; `linalg::matmul_out`.
+- **Lua:** `a:add_out(b, out)`, …, `ml.matmul_out(A,B,out)` — returns `out`.
+- **Not yet:** full surface `out=` on reductions/LA/ufuncs (tracked #21).
+
+### 3.23 M7.b host buffer → Lua
+
+Embedders (TallyDB) push engine columns without a second interpreter:
+
+| API | Behavior |
+|-----|----------|
+| `lua::push_view_f64` / `push_view_i64` | **Zero-copy** read-only userdata (`matlua.ArrayView` / `ArrayViewI64`). Host owns memory; MatLua does **not** free. Methods: `shape`, `rank`, `get`, `dtype`, `to_array` (copy to owned). |
+| `lua::push_array_copy_f64` / `push_array_copy_i64` | Safe **copy** into owned `ml.array` / `ml.array_i64`. |
+
+Views are not yet accepted by `linalg` (owned `&Array` only) — TallyDB letter §5 notes copies are fine for current windows; view-aware LA is a later optimization.
+
+### 3.24 TallyDB requirements letter (alignment)
+
+External letter *“TallyDB → MatLua: what we need”* (not a MatLua file). **Authoritative milestone mapping: §7.1.1.** Summary:
+
+| § | Ask | MatLua stance / milestone |
+|---|-----|---------------------------|
+| **1.1** | Face without vendored second Lua | `register(L)` already host-state; **split `lua` feature** (face vs interpreter) → **M10** |
+| **1.2** | No `Drop` live across longjmp | Documented risk; systematic fix → **M10** |
+| **1.3** | No panic across C | `catch_unwind` boundary → **M10** |
+| **2.1** | `i64` exact end-to-end | **M7 done**; keep no silent i64→f64 at face for values |
+| **2.2** | Documented absence contract | Prefer **explicit refuse / mask at boundary** (aligns with their validity bytes); document in M8/Arrow work — **default: non-null in, refuse nulls** (today’s Arrow path) until mask lands |
+| **3.1–3.4** | Arrow C Data Interface, release callback, no null buffer reads | **arrow-lite / C ABI** track when lite v0.1; drop unused arrow-rs deps opportunistically |
+| **4** | Design freedom | Ours (1-based Lua, faer, etc.) |
+| **5** | View-aware linalg later | Acknowledged; not required now |
+| **6** | One array type in Lua tier | Prefer **MatLua as the math array**; host pushes via view/copy APIs; retiring `tallydb.vector` for math is their call — we make adoption cheap |
+| **7** | APICHECK / differential tests | Welcome; our CI should grow APICHECK (M10) |
 
 ### 4.1 Module functions
 
 **`f64`:** `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`), `array`, `eye`, `where`,
-`matmul`, `matmul_at` (AᵀB; large same-buffer AᵀA may materialize Aᵀ once), `matmul_bt` (ABᵀ; large AAᵀ same rule), `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd`.
+`matmul`, …, `svd`, **`det`/`slogdet`/`matrix_rank`/`cond`/`eig`/`eigvals`**, **`seed`/`random`/`randn`/`uniform`/`normal`/`integers`/`choice`**.
 
 **`i64` constructors / helpers:** `zeros_i64`, `ones_i64`, `full_i64`, `arange_i64`, `array_i64`, `eye_i64`, `diag_i64`, `outer_i64`, `where_i64`, `concatenate_i64`, `stack_i64`, `broadcast_to_i64`, plus `matmul_i64` / `dot_i64` / …  
 **Dual:** `matmul` / `solve` / `eigh` / … accept `ArrayI64` where applicable (integer matmul stays i64; solvers return `f64` arrays). See §3.17.
@@ -359,19 +421,64 @@ explicit boundaries (zero-copy views in, owned results out).
 | **M6** | Tier-2 quant sugar: `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis reductions (rank-2), `any`/`all` | **Done** |
 | **v0.1** tag | Explicit release cut | **Deferred** |
 | **M7** | **`i64` surface (correctness):** shared array grammar + integer-path LA (wrapping) + **i64-unique** + views + gcd/lcm/divmod/bitcount + **`from_i64` solvers** (i64 in → f64 out). | **Done** |
-| **M7.b** | **Quant leave-late pack (NumPy-class desk):** random, median/quantile, richer indexing, LA diagnostics (`det`/`rank`/`cond`/general eig as applicable), `out=` ([#21](https://github.com/andy-emerson/MatLua/issues/21)), host zero-copy into scripts — whatever a quant expects beyond M0–M7 basics | **Planned** (after M7 correctness) |
-| **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once correctness bars for M7/M7.b hold | **Planned** (after M7.b or when Human gates perf) |
-| **M8** | **Lua host-buffer / view face** — may **fold into M7.b** host zero-copy; kept as explicit embed slice until then | Planned |
-| **M9** | **Small-window pool** — freelist for *n* ≪ 256 | Planned |
-| **M10** | **Embed-safe Lua boundary** — no longjmp over live Rust drops; `catch_unwind` on `extern "C"` | Planned |
-| **M11** | **CI + embed hygiene** — `.github`, APICHECK, no DLOPEN embed profile, Miri-clean `take_uninit` | Planned |
-| **M12** | **`arrow-lite` cutover** when shared **arrow-lite v0.1** ships | **Gated** |
+| **M7.b** | **Quant leave-late pack:** LA diagnostics, median/quantile, random, indexing, partial `out=` (#21), host view entry (`push_view_*` / `push_array_copy_*`). | **Done** |
+| **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once M7/M7.b correctness holds | **Planned** (next product branch after merge) |
+| **M8** | **Host integration depth** (TallyDB letter §5–§6 + view face): see **§7.1.1** | **Planned** |
+| **M9** | **Small-window pool** — freelist for *n* ≪ 256 (TallyDB hot path; letter pressure) | **Planned** |
+| **M10** | **Embed-safe Lua boundary** — letter **§1.1–§1.3** (feature-split face, longjmp/`Drop`, no panic across C) | **Planned** |
+| **M11** | **CI + embed hygiene** — letter **§7** (APICHECK, ASan) + no `DLOPEN` embed profile, Miri-clean `take_uninit` | **Planned** |
+| **M12** | **Arrow C Data Interface + `arrow-lite`** — letter **§3**; cutover when shared lite v0.1 ships | **Gated** |
 
-**Priority:** **M7 Done** → **M7.b** (quant pack) → **M7.c** (optimize all); embed **M8–M11** and **M12** remain. Further dtypes (`f32`, complex, …) after this arc unless a new need appears.
+**Priority after M7.b merge:** **M7.c** (optimize) on its own branch, then or in parallel the embed track **M8→M11**, then **M12**. Further dtypes (`f32`, complex, …) after this arc unless a new need appears.
 
-**Also tracked:** TallyDB engine cutover (other repo).
+**Also tracked:** GitHub **#21** full `out=` surface (beyond M7.b partial); TallyDB engine cutover (other repo).
 
-**TallyDB readiness:** M7 keys + M7.b/M8 host views + M9–M11 embed bar; **M12** shared layout.
+**TallyDB readiness bar:** M7 `i64` + M7.b host entry + **M8–M11** embed safety/pool/CI + **M12** C ABI / lite layout. Copies into owned arrays remain acceptable for current window sizes (letter §5).
+
+### 7.1.1 TallyDB letter → milestone agreements
+
+Source: external letter *“TallyDB → MatLua: what we need, and what is yours”* (Human-supplied). These are **agreed planning constraints**, not “we implement whatever TallyDB codes.”
+
+#### Required (their §1–§3) — owned by MatLua milestones
+
+| Letter | Agreement | Milestone |
+|--------|-----------|-----------|
+| **§1.1** Host-owned interpreter; **no second vendored Lua** at link time | Keep `register(L)`. **Split Cargo features**: face/bindings vs vendored PUC (tests/tools only). Hosts compile ANSI Lua as C (`longjmp`); no `package.loadlib` required. | **M10** |
+| **§1.2** No Rust value needing `Drop` live across a Lua call that can `longjmp` | Systematic audit; error paths must drop owned values before `lua_error`. Reserve stack before multi-push. | **M10** |
+| **§1.3** No panic may cross the C boundary | `catch_unwind` (or equivalent) on `extern "C"`; map to Lua error / `Result`. | **M10** |
+| **§2.1** `i64` exact end-to-end; no silent widen past 2⁵³ at the boundary | **M7 done.** Maintain: keys/timestamps stay `i64`; f64 only on explicit promote / real LA. | **M7** (maintain) |
+| **§2.2** Documented absence contract | **Default now:** non-null in, non-null out; **refuse** Arrow/host buffers with nulls (do not read null slots). Longer term: optional **validity mask** path so crossings align with TallyDB’s per-element validity bytes (cheaper than NaN conversion). Document in public face when M8/M12 touch interchange. | **M8** (doc + host seam) / **M12** (Arrow) |
+| **§3.1** Contiguous `f64`/`i64` buffer + length + validity (or refuse nulls) | Already refuse-null on Arrow import; keep for every dtype. | **M12** + maintain |
+| **§3.2** Reachable **without linking arrow-rs on the host** | Prefer **Arrow C Data Interface** (`ArrowArray` / `ArrowSchema` + release callback) for zero-copy interchange. | **M12** |
+| **§3.3** Release-callback discipline | Producer sets `release`; consumer calls once; moved-from nulls `release`. | **M12** |
+| **§3.4** Never interpret null slot buffer contents as data | Keep refuse-or-proper-nulls policy. | maintain / **M12** |
+| **§3 preference** Drop unused direct arrow-rs crates | Manifest honesty; do when touching Arrow deps. | opportunistic / **M12** |
+
+#### Host product choices (their §4 — our design wins)
+
+1-based Lua face, row-major dense core, faer-backed LA, singular/rank-deficient behavior, error taxonomy, dtype order — **unchanged MatLua decisions**.
+
+#### Their §5–§7 — agreed responses
+
+| Letter | Agreement | Milestone |
+|--------|-----------|-----------|
+| **§5** `linalg` takes owned `&Array`; views not accepted yet | **Accepted for now** (copy at boundary OK for current windows). Shape APIs so view-aware LA can land later without API break if cheap. | **M8** (optional view-accepting linalg) / not blocking |
+| **§6** Two array types (`tallydb.vector` vs `ml.array`) is a poor surface | **Prefer one math type = MatLua.** Make host→MatLua cheap via `push_view_*` / copy. TallyDB may retire overlapping vocabulary; we do not require them to keep `tallydb.vector` for matrix work. | **M7.b** entry / **M8** deepen |
+| **§7** APICHECK + ASan/UBSan; differential tests vs NumPy/DuckDB | Welcome; wire **APICHECK** profile and encourage shared diffs for `solve`/`lstsq`/`qr`. | **M11** (+ their contrib) |
+
+#### What M8 specifically means (post–M7.b)
+
+M7.b delivered **host entry** (`push_view_f64`/`i64`, `push_array_copy_*`) as read-only views + copies. **M8** is the rest of the integration depth:
+
+1. Document host contracts (lifetime, absence §2.2, 1-based vs 0-based) as a stable embed chapter.
+2. Optional: richer view face (more methods; clear mutation → `to_array` only).
+3. Optional: `linalg` accepting views / `ArrayView` to cut allocs on small windows when measured.
+4. Alignment helpers so TallyDB can present **one** array type to scripts (conversions or direct userdata accept — design at M8 kickoff, MatLua-led).
+5. Does **not** replace M10 safety or M12 Arrow C ABI.
+
+#### What remains explicitly *not* TallyDB-owned
+
+MatLua public API stays free of TallyDB types, SQL, and storage. TallyDB is a first consumer and design pressure source (§2.3).
 
 ### 7.2 Performance program (P0–P6)
 
@@ -455,11 +562,11 @@ Human is always **author** of record; agent may be **co-author** when allowed fo
 Lua face (1-based) including `*_i64` and dual-dtype `solve`/`matmul`, M4a–M6, reshape COW (§3.13).
 
 Package version is **`0.0.1`**. Call **v0.1** when the human tags a release;
-until then treat the tree as a **v0.1 candidate** per §7.1. **M7 (`i64`) is Done.**
-**Next open product milestone: M7.b** (quant leave-late pack); then **M7.c** (optimize).
-Embed track **M8–M11** and **M12** (arrow-lite) remain per §7.1.
+until then treat the tree as a **v0.1 candidate** per §7.1. **M7** and **M7.b** are **Done**.
+**Next:** **M7.c** (optimize, new branch after merge), then embed track **M8–M11** and **M12**
+(Arrow C Data / arrow-lite) per §7.1 / §7.1.1 (TallyDB letter agreements).
 
-Open work: §7.1 M7.b–M12, GitHub Issues (e.g. `out=` #21 in M7.b), and measured tables in
+Open work: §7.1 M7.c–M12, GitHub **#21** (`out=` full surface), measured tables in
 [`tests/README.md`](tests/README.md) — not as a living log in this file.
 
 Update this document when rulings or the frozen public face change — not on

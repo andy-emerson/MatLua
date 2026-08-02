@@ -429,6 +429,53 @@ impl Array {
         self.owned_from_kernel(other, |a, b, o| op.apply_same(a, b, o))
     }
 
+    /// Write binary broadcast op into `out` (must match result shape). Avoids alloc when `out` is sized.
+    fn binary_broadcast_out(&self, other: &Array, out: &mut Array, op: BroadcastOp) -> Result<()> {
+        if self.shape.same_as(other.shape()) {
+            if !out.shape().same_as(&self.shape) {
+                return Err(Error::Shape(format!(
+                    "out shape {} != operand shape {}",
+                    out.shape(),
+                    self.shape()
+                )));
+            }
+            op.apply_same(self.as_slice(), other.as_slice(), out.as_mut_slice());
+            return Ok(());
+        }
+        if self.rank() == 2 {
+            let (m, n) = (self.dims()[0], self.dims()[1]);
+            if (other.rank() == 1 && other.len() == n)
+                || (other.rank() == 2 && other.dims() == [1, n])
+            {
+                if out.dims() != [m, n] {
+                    return Err(Error::Shape("out shape mismatch for matrix×row broadcast".into()));
+                }
+                op.apply_row(m, n, self.as_slice(), other.as_slice(), out.as_mut_slice());
+                return Ok(());
+            }
+            if other.rank() == 2 && other.dims() == [m, 1] {
+                if out.dims() != [m, n] {
+                    return Err(Error::Shape("out shape mismatch for matrix×col broadcast".into()));
+                }
+                op.apply_col(m, n, self.as_slice(), other.as_slice(), out.as_mut_slice());
+                return Ok(());
+            }
+        }
+        let out_dims = broadcast_shapes(self.dims(), other.dims())?;
+        if out.dims() != out_dims.as_slice() {
+            return Err(Error::Shape(format!(
+                "out shape {:?} != broadcast shape {:?}",
+                out.dims(),
+                out_dims
+            )));
+        }
+        let left = self.broadcast_to(out_dims.clone())?;
+        let right = other.broadcast_to(out_dims.clone())?;
+        op.apply_same(left.as_slice(), right.as_slice(), out.as_mut_slice());
+        Ok(())
+    }
+
+
     fn owned_unary_kernel<F>(&self, f: F) -> Array
     where
         F: FnOnce(&[f64], &mut [f64]),
@@ -458,6 +505,40 @@ impl Array {
     pub fn div(&self, other: &Array) -> Result<Array> {
         self.owned_binary_broadcast(other, BroadcastOp::Div)
     }
+
+    /// `out = self + other` (see [`add`]); `out` must match the result shape.
+    pub fn add_out(&self, other: &Array, out: &mut Array) -> Result<()> {
+        self.binary_broadcast_out(other, out, BroadcastOp::Add)
+    }
+    /// `out = self - other`.
+    pub fn sub_out(&self, other: &Array, out: &mut Array) -> Result<()> {
+        self.binary_broadcast_out(other, out, BroadcastOp::Sub)
+    }
+    /// `out = self * other` (elementwise).
+    pub fn mul_out(&self, other: &Array, out: &mut Array) -> Result<()> {
+        self.binary_broadcast_out(other, out, BroadcastOp::Mul)
+    }
+    /// `out = self / other` (elementwise).
+    pub fn div_out(&self, other: &Array, out: &mut Array) -> Result<()> {
+        self.binary_broadcast_out(other, out, BroadcastOp::Div)
+    }
+    /// `out = -self` (same shape).
+    pub fn neg_out(&self, out: &mut Array) -> Result<()> {
+        if !out.shape().same_as(&self.shape) {
+            return Err(Error::Shape("neg_out shape mismatch".into()));
+        }
+        kernels::neg_slice(self.as_slice(), out.as_mut_slice());
+        Ok(())
+    }
+    /// `out = abs(self)`.
+    pub fn abs_out(&self, out: &mut Array) -> Result<()> {
+        if !out.shape().same_as(&self.shape) {
+            return Err(Error::Shape("abs_out shape mismatch".into()));
+        }
+        kernels::abs_slice(self.as_slice(), out.as_mut_slice());
+        Ok(())
+    }
+
 
     /// Element-wise negation.
     pub fn neg(&self) -> Array {
@@ -613,6 +694,114 @@ impl Array {
     pub fn std(&self, ddof: usize) -> Result<f64> {
         Ok(self.var(ddof)?.sqrt())
     }
+
+    /// Median of all elements (linear quantile at 0.5). Empty → error.
+    pub fn median(&self) -> Result<f64> {
+        kernels::median_slice(self.as_slice())
+            .ok_or_else(|| Error::Shape("median of empty array".into()))
+    }
+
+    /// Linear quantile `q ∈ [0, 1]` (NumPy default interpolation). Empty → error.
+    pub fn quantile(&self, q: f64) -> Result<f64> {
+        if !(0.0..=1.0).contains(&q) || !q.is_finite() {
+            return Err(Error::Shape(format!("quantile q must be in [0, 1], got {q}")));
+        }
+        if self.is_empty() {
+            return Err(Error::Shape("quantile of empty array".into()));
+        }
+        let mut v = self.as_slice().to_vec();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(kernels::quantile_sorted(&v, q).unwrap())
+    }
+
+    /// Evaluate several quantiles; `qs` each in \[0, 1\]. Returns rank-1.
+    pub fn quantiles(&self, qs: &[f64]) -> Result<Array> {
+        for &q in qs {
+            if !(0.0..=1.0).contains(&q) || !q.is_finite() {
+                return Err(Error::Shape(format!("quantile q must be in [0, 1], got {q}")));
+            }
+        }
+        if self.is_empty() {
+            return Err(Error::Shape("quantiles of empty array".into()));
+        }
+        let mut v = self.as_slice().to_vec();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut data = pool::take_uninit(qs.len());
+        for (i, &q) in qs.iter().enumerate() {
+            data[i] = kernels::quantile_sorted(&v, q).unwrap();
+        }
+        Ok(Array::from_parts(Shape::from_len(qs.len()), data))
+    }
+
+    /// Median along axis for rank-2 → rank-1.
+    pub fn median_axis(&self, axis: usize) -> Result<Array> {
+        let (m, n) = self.rank2_dims()?;
+        let src = self.as_slice();
+        match axis {
+            0 => {
+                let mut data = pool::take_uninit(n);
+                let mut col = vec![0.0f64; m];
+                for j in 0..n {
+                    for i in 0..m {
+                        col[i] = src[i * n + j];
+                    }
+                    data[j] = kernels::median_slice(&col).ok_or_else(|| {
+                        Error::Shape("median_axis of empty".into())
+                    })?;
+                }
+                Ok(Array::from_parts(Shape::from_len(n), data))
+            }
+            1 => {
+                let mut data = pool::take_uninit(m);
+                for i in 0..m {
+                    let row = &src[i * n..(i + 1) * n];
+                    data[i] = kernels::median_slice(row).ok_or_else(|| {
+                        Error::Shape("median_axis of empty".into())
+                    })?;
+                }
+                Ok(Array::from_parts(Shape::from_len(m), data))
+            }
+            _ => Err(Error::Shape(format!("axis {axis} out of range for rank-2"))),
+        }
+    }
+
+    /// Quantile along axis for rank-2 → rank-1.
+    pub fn quantile_axis(&self, axis: usize, q: f64) -> Result<Array> {
+        if !(0.0..=1.0).contains(&q) || !q.is_finite() {
+            return Err(Error::Shape(format!("quantile q must be in [0, 1], got {q}")));
+        }
+        let (m, n) = self.rank2_dims()?;
+        let src = self.as_slice();
+        match axis {
+            0 => {
+                let mut data = pool::take_uninit(n);
+                let mut col = vec![0.0f64; m];
+                for j in 0..n {
+                    for i in 0..m {
+                        col[i] = src[i * n + j];
+                    }
+                    col.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    data[j] = kernels::quantile_sorted(&col, q).ok_or_else(|| {
+                        Error::Shape("quantile_axis of empty".into())
+                    })?;
+                }
+                Ok(Array::from_parts(Shape::from_len(n), data))
+            }
+            1 => {
+                let mut data = pool::take_uninit(m);
+                for i in 0..m {
+                    let mut row = src[i * n..(i + 1) * n].to_vec();
+                    row.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    data[i] = kernels::quantile_sorted(&row, q).ok_or_else(|| {
+                        Error::Shape("quantile_axis of empty".into())
+                    })?;
+                }
+                Ok(Array::from_parts(Shape::from_len(m), data))
+            }
+            _ => Err(Error::Shape(format!("axis {axis} out of range for rank-2"))),
+        }
+    }
+
 
     /// Concatenate arrays along `axis` (0 or 1 for rank ≤ 2).
     ///
@@ -1142,6 +1331,130 @@ impl Array {
         Ok(Self::from_parts(Shape::from_len(indices.len()), data))
     }
 
+
+    /// Flat 0-based indices of nonzero elements (row-major). Returns [`ArrayI64`].
+    pub fn nonzero(&self) -> super::ArrayI64 {
+        let src = self.as_slice();
+        let mut idx = Vec::new();
+        for (i, &v) in src.iter().enumerate() {
+            if v != 0.0 && !v.is_nan() {
+                idx.push(i as i64);
+            }
+        }
+        // NaN treated as "not selected" (not nonzero in the numeric sense used here)
+        let n = idx.len();
+        super::ArrayI64::from_parts(Shape::from_len(n), idx)
+    }
+
+    /// Gather rank-1 elements by 0-based [`ArrayI64`] indices.
+    pub fn take_i64(&self, indices: &super::ArrayI64) -> Result<Array> {
+        if self.rank() != 1 {
+            return Err(Error::Shape("take requires rank-1 source".into()));
+        }
+        if indices.rank() != 1 {
+            return Err(Error::Shape("take indices must be rank-1".into()));
+        }
+        let src = self.as_slice();
+        let n = src.len();
+        let mut data = pool::take_uninit(indices.len());
+        for (k, &i) in indices.as_slice().iter().enumerate() {
+            if i < 0 {
+                return Err(Error::Index(format!("take index {i} invalid")));
+            }
+            let i = i as usize;
+            if i >= n {
+                return Err(Error::Index(format!("take index {i} out of range for len {n}")));
+            }
+            data[k] = src[i];
+        }
+        Ok(Self::from_parts(Shape::from_len(indices.len()), data))
+    }
+
+    /// Select rank-1 elements where `mask` is nonzero (same length).
+    pub fn compress(&self, mask: &Array) -> Result<Array> {
+        if self.rank() != 1 || mask.rank() != 1 {
+            return Err(Error::Shape("compress requires rank-1 array and mask".into()));
+        }
+        if self.len() != mask.len() {
+            return Err(Error::Shape(format!(
+                "compress length mismatch: {} vs {}",
+                self.len(),
+                mask.len()
+            )));
+        }
+        let src = self.as_slice();
+        let m = mask.as_slice();
+        let mut out = Vec::new();
+        for i in 0..src.len() {
+            if m[i] != 0.0 && !m[i].is_nan() {
+                out.push(src[i]);
+            }
+        }
+        let n = out.len();
+        Ok(Self::from_parts(Shape::from_len(n), out))
+    }
+
+    /// Scatter `values` into `self` at 0-based `indices` (rank-1 all). Lengths of
+    /// `indices` and `values` must match.
+    pub fn put(&mut self, indices: &super::ArrayI64, values: &Array) -> Result<()> {
+        if self.rank() != 1 {
+            return Err(Error::Shape("put requires rank-1 destination".into()));
+        }
+        if indices.rank() != 1 || values.rank() != 1 {
+            return Err(Error::Shape("put indices and values must be rank-1".into()));
+        }
+        if indices.len() != values.len() {
+            return Err(Error::Shape("put indices and values length mismatch".into()));
+        }
+        let n = self.len();
+        let dst = self.as_mut_slice();
+        let idx = indices.as_slice();
+        let val = values.as_slice();
+        for k in 0..idx.len() {
+            let i = idx[k];
+            if i < 0 {
+                return Err(Error::Index(format!("put index {i} invalid")));
+            }
+            let i = i as usize;
+            if i >= n {
+                return Err(Error::Index(format!("put index {i} out of range for len {n}")));
+            }
+            dst[i] = val[k];
+        }
+        Ok(())
+    }
+
+    /// Assign from rank-1 `values` (or broadcast one scalar array len 1) where mask nonzero.
+    pub fn put_mask(&mut self, mask: &Array, values: &Array) -> Result<()> {
+        if self.rank() != 1 || mask.rank() != 1 {
+            return Err(Error::Shape("put_mask requires rank-1 dest and mask".into()));
+        }
+        if self.len() != mask.len() {
+            return Err(Error::Shape("put_mask length mismatch with mask".into()));
+        }
+        let m = mask.as_slice();
+        let count = m.iter().filter(|&&x| x != 0.0 && !x.is_nan()).count();
+        let val = values.as_slice();
+        if values.rank() != 1 {
+            return Err(Error::Shape("put_mask values must be rank-1".into()));
+        }
+        if val.len() != 1 && val.len() != count {
+            return Err(Error::Shape(format!(
+                "put_mask values len {} != mask true count {count} (or 1 for scalar)",
+                val.len()
+            )));
+        }
+        let dst = self.as_mut_slice();
+        let mut t = 0usize;
+        for i in 0..dst.len() {
+            if m[i] != 0.0 && !m[i].is_nan() {
+                dst[i] = if val.len() == 1 { val[0] } else { val[t] };
+                t += 1;
+            }
+        }
+        Ok(())
+    }
+
     /// Outer product of two rank-1 arrays → rank-2 `(len(a), len(b))`.
     pub fn outer(a: &Array, b: &Array) -> Result<Array> {
         if a.rank() != 1 || b.rank() != 1 {
@@ -1373,6 +1686,20 @@ mod tests {
         assert_eq!(b.cumsum().as_slice(), &[1., 3., 6.]);
         let c = Array::from_shape_slice(vec![2], &[1., f64::NAN]).unwrap();
         assert_eq!(c.isnan().as_slice(), &[0., 1.]);
+    }
+
+    #[test]
+    fn median_and_quantile() {
+        let a = Array::from_shape_slice(vec![5], &[1., 3., 2., 5., 4.]).unwrap();
+        assert!((a.median().unwrap() - 3.0).abs() < 1e-12);
+        assert!((a.quantile(0.0).unwrap() - 1.0).abs() < 1e-12);
+        assert!((a.quantile(1.0).unwrap() - 5.0).abs() < 1e-12);
+        let q = a.quantiles(&[0.25, 0.5, 0.75]).unwrap();
+        assert!((q.as_slice()[1] - 3.0).abs() < 1e-12);
+        let m = Array::from_shape_slice(vec![2, 3], &[1., 2., 3., 4., 5., 6.]).unwrap();
+        let ma = m.median_axis(1).unwrap();
+        assert!((ma.as_slice()[0] - 2.0).abs() < 1e-12);
+        assert!((ma.as_slice()[1] - 5.0).abs() < 1e-12);
     }
 
 

@@ -45,13 +45,16 @@ work on arrays (and array ↔ number). Matrix product is always explicit:
 | Area | Surface |
 |------|---------|
 | **Masks / compare** | `where`; `eq`/`ne`/`lt`/`le`/`gt`/`ge` (0/1); `isnan` / `isfinite` |
+| **Indexing** | `nonzero`, `compress`, `put`, `put_mask`, `take` (i64 or f64 indices) |
+| **Host embed (Rust)** | `lua::push_view_f64` / `push_view_i64` (zero-copy read-only), `push_array_copy_*` |
 | **Broadcast / views** | elementwise broadcast; `broadcast_to`; `slice`/`rows`/`row`/`col` (1-based half-open on face) |
 | **NaN reductions** | `nansum`, `nanmean`, `nanmin`, `nanmax`, `nanvar`, `nanstd` |
 | **Tier-2** | `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis on `sum`/`mean`/…, `any`/`all` |
+| **Random** | `seed`, `random`, `randn`, `uniform`, `normal`, `integers` (i64), `choice` |
 | **Constructors** | `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`, half-open), `array` (nested tables → dense `f64`), `eye` |
-| **Array methods** | `shape`, `rank`, `get` / `set`, `sum` / `mean` / `min` / `max`, `var` / `std`, `argmin` / `argmax`, ufuncs (`abs`/`sqrt`/`exp`/`log`/`log1p`/`sign`/`power`/`clip`/`isnan`/`isfinite`/`cumsum`), `copy`, `reshape` (may share; write COWs), `transpose`, `fill`, `#a` |
-| **Elementwise** | `+`, `-`, `*`, `/`, unary `-` (array–array or array–number) |
-| **Linear algebra (`f64`)** | `matmul`, `matmul_at`, `matmul_bt`, `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd` |
+| **Array methods** | `shape`, `rank`, `get` / `set`, `sum` / `mean` / `min` / `max`, `var` / `std`, **`median`/`quantile`**, `argmin` / `argmax`, ufuncs (`abs`/`sqrt`/`exp`/`log`/`log1p`/`sign`/`power`/`clip`/`isnan`/`isfinite`/`cumsum`), `copy`, `reshape` (may share; write COWs), `transpose`, `fill`, `#a` |
+| **Elementwise** | `+`, `-`, `*`, `/`, unary `-`; **`add_out`/`mul_out`/…** and **`matmul_out`** (preallocated) |
+| **Linear algebra (`f64`)** | `matmul`, …, `solve`, `lstsq`, `eigh`, `pinv`, `cholesky`, `qr`, `svd`, **`det`/`slogdet`/`matrix_rank`/`cond`/`eig`/`eigvals`** (M7.b) |
 | **`i64`-unique** | bitwise / rem / shift, `unique` / `isin` / `bincount` / `searchsorted` / `sort`, `divmod` / `gcd` / `lcm`, bit counts |
 | **Linear algebra (`i64`)** | Integer path: `matmul_i64` / … (wrapping). **Same** `solve`/`eigh`/… accept `ArrayI64` and return **`f64`** (NumPy-style). Also `linalg::from_i64` / `i64_ops` in Rust |
 | **Rust core** | `Array` (`f64`), `ArrayI64` (`i64`), views over host `f64`/`i64` buffers, Arrow `Float64`/`Int64`, LA `matlua::linalg` + `linalg::i64_ops` |
@@ -114,7 +117,7 @@ Closed decisions and milestones: [DESIGN.md](DESIGN.md).
 **M0–M6 are on `main`** (see [DESIGN.md](DESIGN.md) §7.1). The tree is a **v0.1
 candidate**: a host can embed MatLua and scripts can do ordinary dense array and
 linear-algebra work end-to-end. Crate version remains **`0.0.1`** until a formal
-`0.1.0` cut. **M7 (`i64`) Done** on this line of work; next **M7.b** (quant leave-late pack).
+`0.1.0` cut. **M7 Done. M7.b Done** (quant pack + host view entry). Next **M7.c** (optimize). Embed/TallyDB letter work is **M8–M12** (see DESIGN §7.1.1).
 
 **Performance:** fair three-way microbench (NumPy · MatLua Rust · MatLua Lua) lives
 under [`tests/`](tests/README.md). Run `python3 tests/bench/compare_fair.py`.

@@ -53,6 +53,37 @@ pub fn svd(a: &ArrayI64) -> Result<(Array, Array, Array)> {
     super::svd(&f(a))
 }
 
+
+/// `det` after promoting to `f64`.
+pub fn det(a: &ArrayI64) -> Result<f64> {
+    super::det(&f(a))
+}
+
+/// `slogdet` after promoting to `f64`.
+pub fn slogdet(a: &ArrayI64) -> Result<(f64, f64)> {
+    super::slogdet(&f(a))
+}
+
+/// `matrix_rank` after promoting to `f64`.
+pub fn matrix_rank(a: &ArrayI64, tol: Option<f64>) -> Result<usize> {
+    super::matrix_rank(&f(a), tol)
+}
+
+/// `cond` after promoting to `f64`.
+pub fn cond(a: &ArrayI64) -> Result<f64> {
+    super::cond(&f(a))
+}
+
+/// `eigvals` after promoting to `f64`.
+pub fn eigvals(a: &ArrayI64) -> Result<(Array, Array)> {
+    super::eigvals(&f(a))
+}
+
+/// `eig` after promoting to `f64`.
+pub fn eig(a: &ArrayI64) -> Result<(Array, Array, Array, Array)> {
+    super::eig(&f(a))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -236,3 +236,100 @@ fn m7_from_i64_solve_and_eigh() {
     let p = from_i64::pinv(&ArrayI64::from_shape_slice(vec![2, 2], &[1, 0, 0, 1]).unwrap()).unwrap();
     assert!((p.as_slice()[0] - 1.0).abs() < 1e-10);
 }
+
+#[test]
+fn m7b_diagnostics_f64() {
+    use matlua::array::Array;
+    use matlua::linalg::{cond, det, eigvals, matrix_rank, slogdet};
+    let a = Array::from_shape_slice(vec![2, 2], &[1., 2., 3., 4.]).unwrap();
+    assert!((det(&a).unwrap() + 2.0).abs() < 1e-10);
+    let (s, _) = slogdet(&a).unwrap();
+    assert!((s + 1.0).abs() < 1e-12);
+    assert_eq!(matrix_rank(&a, None).unwrap(), 2);
+    assert!(cond(&Array::eye(2).unwrap()).unwrap() < 1.01);
+    let (wr, wi) = eigvals(&Array::eye(2).unwrap()).unwrap();
+    assert!(wr.as_slice().iter().all(|&x| (x - 1.0).abs() < 1e-9));
+    assert!(wi.as_slice().iter().all(|&x| x.abs() < 1e-12));
+}
+
+#[test]
+fn m7b_diagnostics_from_i64() {
+    use matlua::array::ArrayI64;
+    use matlua::linalg::from_i64;
+    let a = ArrayI64::from_shape_slice(vec![2, 2], &[1, 2, 3, 4]).unwrap();
+    assert!((from_i64::det(&a).unwrap() + 2.0).abs() < 1e-10);
+    assert_eq!(from_i64::matrix_rank(&a, None).unwrap(), 2);
+}
+
+#[test]
+fn m7b_median_quantile() {
+    use matlua::array::{Array, ArrayI64};
+    let a = Array::from_shape_slice(vec![4], &[1., 2., 3., 4.]).unwrap();
+    assert!((a.median().unwrap() - 2.5).abs() < 1e-12);
+    assert!((a.quantile(0.25).unwrap() - 1.75).abs() < 1e-12);
+    let i = ArrayI64::from_shape_slice(vec![3], &[1, 2, 3]).unwrap();
+    assert!((i.median().unwrap() - 2.0).abs() < 1e-12);
+    assert!((i.quantile(1.0).unwrap() - 3.0).abs() < 1e-12);
+}
+
+#[test]
+fn m7b_random_reproducible() {
+    use matlua::random::{choice, integers, random, seed};
+    use matlua::array::Array;
+    seed(99);
+    let a = random(vec![4]).unwrap();
+    seed(99);
+    let b = random(vec![4]).unwrap();
+    assert_eq!(a.as_slice(), b.as_slice());
+    seed(3);
+    let z = integers(vec![50], -5, 5).unwrap();
+    assert!(z.as_slice().iter().all(|&x| (-5..5).contains(&x)));
+    let pop = Array::from_shape_slice(vec![3], &[1., 2., 3.]).unwrap();
+    let c = choice(&pop, 5).unwrap();
+    assert_eq!(c.len(), 5);
+}
+
+#[test]
+fn m7b_indexing() {
+    use matlua::array::{Array, ArrayI64};
+    let a = Array::from_shape_slice(vec![5], &[0., 1., 0., 3., 4.]).unwrap();
+    let nz = a.nonzero();
+    assert_eq!(nz.as_slice(), &[1, 3, 4]);
+    let mask = Array::from_shape_slice(vec![5], &[0., 1., 0., 1., 0.]).unwrap();
+    let c = a.compress(&mask).unwrap();
+    assert_eq!(c.as_slice(), &[1., 3.]);
+    let mut b = Array::zeros(vec![4]).unwrap();
+    let idx = ArrayI64::from_shape_slice(vec![2], &[1, 3]).unwrap();
+    let vals = Array::from_shape_slice(vec![2], &[10., 20.]).unwrap();
+    b.put(&idx, &vals).unwrap();
+    assert_eq!(b.as_slice(), &[0., 10., 0., 20.]);
+    let mut d = Array::from_shape_slice(vec![3], &[1., 2., 3.]).unwrap();
+    d.put_mask(
+        &Array::from_shape_slice(vec![3], &[1., 0., 1.]).unwrap(),
+        &Array::from_shape_slice(vec![1], &[9.]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(d.as_slice(), &[9., 2., 9.]);
+    let t = a.take_i64(&ArrayI64::from_shape_slice(vec![2], &[1, 3]).unwrap()).unwrap();
+    assert_eq!(t.as_slice(), &[1., 3.]);
+    let i = ArrayI64::from_shape_slice(vec![4], &[0, 5, 0, 7]).unwrap();
+    assert_eq!(i.nonzero().as_slice(), &[1, 3]);
+}
+
+#[test]
+fn m7b_out_buffers() {
+    use matlua::array::Array;
+    use matlua::linalg;
+    let a = Array::from_shape_slice(vec![3], &[1., 2., 3.]).unwrap();
+    let b = Array::from_shape_slice(vec![3], &[4., 5., 6.]).unwrap();
+    let mut out = Array::zeros(vec![3]).unwrap();
+    a.add_out(&b, &mut out).unwrap();
+    assert_eq!(out.as_slice(), &[5., 7., 9.]);
+    a.mul_out(&b, &mut out).unwrap();
+    assert_eq!(out.as_slice(), &[4., 10., 18.]);
+    let a2 = Array::from_shape_slice(vec![2, 2], &[1., 2., 3., 4.]).unwrap();
+    let b2 = Array::from_shape_slice(vec![2, 2], &[5., 6., 7., 8.]).unwrap();
+    let mut c = Array::zeros(vec![2, 2]).unwrap();
+    linalg::matmul_out(&a2, &b2, &mut c).unwrap();
+    assert_eq!(c.as_slice(), &[19., 22., 43., 50.]);
+}

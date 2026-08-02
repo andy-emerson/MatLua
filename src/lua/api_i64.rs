@@ -807,13 +807,97 @@ pub unsafe extern "C" fn a_i64_trailing_zeros(L: *mut lua_State) -> c_int {
     1
 }
 
+
+pub unsafe extern "C" fn a_i64_median(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let m = lua_try!(L, a.array.median());
+    unsafe { lua_pushnumber(L, m) };
+    1
+}
+pub unsafe extern "C" fn a_i64_quantile(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let q = unsafe { luaL_checknumber(L, 2) };
+    let v = lua_try!(L, a.array.quantile(q));
+    unsafe { lua_pushnumber(L, v) };
+    1
+}
+
+
+pub unsafe extern "C" fn a_i64_nonzero(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let idx = a.array.nonzero();
+    let mut d = idx.as_slice().to_vec();
+    for x in &mut d { *x += 1; }
+    let o = lua_try!(L, ArrayI64::from_shape_vec(vec![d.len()], d));
+    unsafe { push_array_i64(L, o) };
+    1
+}
+pub unsafe extern "C" fn a_i64_compress(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let mask = unsafe { &*check_array_i64(L, 2) };
+    let o = lua_try!(L, a.array.compress(&mask.array));
+    unsafe { push_array_i64(L, o) };
+    1
+}
+pub unsafe extern "C" fn a_i64_put(L: *mut lua_State) -> c_int {
+    let a = unsafe { &mut *check_array_i64(L, 1) };
+    let idx = unsafe { &*check_array_i64(L, 2) };
+    let vals = unsafe { &*check_array_i64(L, 3) };
+    let mut z = idx.array.as_slice().to_vec();
+    for x in &mut z {
+        if *x <= 0 { return super::ud::lua_error_msg(L, "put indices must be >= 1"); }
+        *x -= 1;
+    }
+    let idx0 = lua_try!(L, ArrayI64::from_shape_vec(vec![z.len()], z));
+    lua_try!(L, a.array.put(&idx0, &vals.array));
+    0
+}
+pub unsafe extern "C" fn a_i64_put_mask(L: *mut lua_State) -> c_int {
+    let a = unsafe { &mut *check_array_i64(L, 1) };
+    let mask = unsafe { &*check_array_i64(L, 2) };
+    if unsafe { lua_type(L, 3) } == LUA_TNUMBER {
+        let v = unsafe { luaL_checkinteger(L, 3) };
+        let vals = lua_try!(L, ArrayI64::full(vec![1], v));
+        lua_try!(L, a.array.put_mask(&mask.array, &vals));
+    } else {
+        let vals = unsafe { &*check_array_i64(L, 3) };
+        lua_try!(L, a.array.put_mask(&mask.array, &vals.array));
+    }
+    0
+}
+
+
+pub unsafe extern "C" fn a_i64_add_out(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let b = unsafe { &*check_array_i64(L, 2) };
+    let o = unsafe { &mut *check_array_i64(L, 3) };
+    lua_try!(L, a.array.add_out(&b.array, &mut o.array));
+    unsafe { lua_pushvalue(L, 3) };
+    1
+}
+pub unsafe extern "C" fn a_i64_mul_out(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let b = unsafe { &*check_array_i64(L, 2) };
+    let o = unsafe { &mut *check_array_i64(L, 3) };
+    lua_try!(L, a.array.mul_out(&b.array, &mut o.array));
+    unsafe { lua_pushvalue(L, 3) };
+    1
+}
+pub unsafe extern "C" fn a_i64_neg_out(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let o = unsafe { &mut *check_array_i64(L, 2) };
+    lua_try!(L, a.array.neg_out(&mut o.array));
+    unsafe { lua_pushvalue(L, 2) };
+    1
+}
+
 /// Install `ArrayI64` metatable.
 pub unsafe fn install_metatable(L: *mut lua_State) {
     unsafe {
         luaL_newmetatable(L, ARRAY_I64_MT.as_ptr());
         lua_pushvalue(L, -1);
         lua_setfield(L, -2, c"__index".as_ptr());
-        let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 67] = [
+        let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 76] = [
             (c"__gc", a_i64_gc),
             (c"__len", a_i64_len),
             (c"__tostring", a_i64_tostring),
@@ -881,6 +965,15 @@ pub unsafe fn install_metatable(L: *mut lua_State) {
             (c"count_ones", a_i64_count_ones),
             (c"leading_zeros", a_i64_leading_zeros),
             (c"trailing_zeros", a_i64_trailing_zeros),
+            (c"median", a_i64_median),
+            (c"quantile", a_i64_quantile),
+            (c"nonzero", a_i64_nonzero),
+            (c"compress", a_i64_compress),
+            (c"put", a_i64_put),
+            (c"put_mask", a_i64_put_mask),
+            (c"add_out", a_i64_add_out),
+            (c"mul_out", a_i64_mul_out),
+            (c"neg_out", a_i64_neg_out),
         ];
         for (name, f) in methods {
             lua_pushcfunction(L, Some(f));
