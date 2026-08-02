@@ -635,13 +635,131 @@ pub unsafe extern "C" fn l_transpose_i64(L: *mut lua_State) -> c_int {
     1
 }
 
+
+pub unsafe extern "C" fn a_i64_bitand(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let b = unsafe { &*check_array_i64(L, 2) };
+    let o = lua_try!(L, a.array.bitand(&b.array));
+    unsafe { push_array_i64(L, o) };
+    1
+}
+pub unsafe extern "C" fn a_i64_bitor(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let b = unsafe { &*check_array_i64(L, 2) };
+    let o = lua_try!(L, a.array.bitor(&b.array));
+    unsafe { push_array_i64(L, o) };
+    1
+}
+pub unsafe extern "C" fn a_i64_bitxor(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let b = unsafe { &*check_array_i64(L, 2) };
+    let o = lua_try!(L, a.array.bitxor(&b.array));
+    unsafe { push_array_i64(L, o) };
+    1
+}
+pub unsafe extern "C" fn a_i64_bitnot(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    unsafe { push_array_i64(L, a.array.bitnot()) };
+    1
+}
+pub unsafe extern "C" fn a_i64_shift_left(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let b = unsafe { luaL_checkinteger(L, 2) };
+    if b < 0 { return super::ud::lua_error_msg(L, "shift_left bits must be >= 0"); }
+    unsafe { push_array_i64(L, a.array.shift_left(b as u32)) };
+    1
+}
+pub unsafe extern "C" fn a_i64_shift_right(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let b = unsafe { luaL_checkinteger(L, 2) };
+    if b < 0 { return super::ud::lua_error_msg(L, "shift_right bits must be >= 0"); }
+    unsafe { push_array_i64(L, a.array.shift_right(b as u32)) };
+    1
+}
+pub unsafe extern "C" fn a_i64_rem(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    if unsafe { lua_type(L, 2) } == LUA_TNUMBER {
+        let s = unsafe { luaL_checkinteger(L, 2) };
+        unsafe { push_array_i64(L, a.array.rem_scalar(s)) };
+        return 1;
+    }
+    let b = unsafe { &*check_array_i64(L, 2) };
+    let o = lua_try!(L, a.array.rem(&b.array));
+    unsafe { push_array_i64(L, o) };
+    1
+}
+pub unsafe extern "C" fn a_i64_unique(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let o = lua_try!(L, a.array.unique());
+    unsafe { push_array_i64(L, o) };
+    1
+}
+pub unsafe extern "C" fn a_i64_unique_counts(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let (u, c) = lua_try!(L, a.array.unique_counts());
+    unsafe { push_array_i64(L, u) };
+    unsafe { push_array_i64(L, c) };
+    2
+}
+pub unsafe extern "C" fn a_i64_isin(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let t = unsafe { &*check_array_i64(L, 2) };
+    let o = lua_try!(L, a.array.isin(&t.array));
+    unsafe { push_array_i64(L, o) };
+    1
+}
+pub unsafe extern "C" fn a_i64_bincount(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let minlength = if unsafe { lua_gettop(L) } >= 2 {
+        let v = unsafe { luaL_checkinteger(L, 2) };
+        if v < 0 { return super::ud::lua_error_msg(L, "bincount minlength >= 0"); }
+        v as usize
+    } else { 0 };
+    let o = lua_try!(L, a.array.bincount(minlength));
+    unsafe { push_array_i64(L, o) };
+    1
+}
+pub unsafe extern "C" fn a_i64_searchsorted(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let side_right = if unsafe { lua_gettop(L) } >= 3 {
+        unsafe { lua_toboolean(L, 3) != 0 }
+    } else {
+        false
+    };
+    if unsafe { test_array_i64(L, 2) }.is_null() {
+        let v = unsafe { luaL_checkinteger(L, 2) };
+        let i = lua_try!(L, a.array.searchsorted(v, side_right));
+        unsafe { lua_pushinteger(L, (i + 1) as lua_Integer) };
+        1
+    } else {
+        let vals = unsafe { &*check_array_i64(L, 2) };
+        let o = lua_try!(L, a.array.searchsorted_array(&vals.array, side_right));
+        let mut d = o.as_slice().to_vec();
+        for x in &mut d {
+            *x += 1;
+        }
+        let out = lua_try!(L, ArrayI64::from_shape_vec(vec![d.len()], d));
+        unsafe { push_array_i64(L, out) };
+        1
+    }
+}
+pub unsafe extern "C" fn a_i64_sort(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let desc = if unsafe { lua_gettop(L) } >= 2 {
+        unsafe { lua_toboolean(L, 2) != 0 }
+    } else { false };
+    let o = lua_try!(L, a.array.sort(desc));
+    unsafe { push_array_i64(L, o) };
+    1
+}
+
 /// Install `ArrayI64` metatable.
 pub unsafe fn install_metatable(L: *mut lua_State) {
     unsafe {
         luaL_newmetatable(L, ARRAY_I64_MT.as_ptr());
         lua_pushvalue(L, -1);
         lua_setfield(L, -2, c"__index".as_ptr());
-        let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 47] = [
+        let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 60] = [
             (c"__gc", a_i64_gc),
             (c"__len", a_i64_len),
             (c"__tostring", a_i64_tostring),
@@ -689,6 +807,19 @@ pub unsafe fn install_metatable(L: *mut lua_State) {
             (c"diagonal", a_i64_diagonal),
             (c"trace", a_i64_trace),
             (c"broadcast_to", a_i64_broadcast_to),
+            (c"bitand", a_i64_bitand),
+            (c"bitor", a_i64_bitor),
+            (c"bitxor", a_i64_bitxor),
+            (c"bitnot", a_i64_bitnot),
+            (c"shift_left", a_i64_shift_left),
+            (c"shift_right", a_i64_shift_right),
+            (c"rem", a_i64_rem),
+            (c"unique", a_i64_unique),
+            (c"unique_counts", a_i64_unique_counts),
+            (c"isin", a_i64_isin),
+            (c"bincount", a_i64_bincount),
+            (c"searchsorted", a_i64_searchsorted),
+            (c"sort", a_i64_sort),
         ];
         for (name, f) in methods {
             lua_pushcfunction(L, Some(f));

@@ -1106,6 +1106,192 @@ impl ArrayI64 {
         })
     }
 
+
+    /// Bitwise AND (elementwise).
+    pub fn bitand(&self, other: &ArrayI64) -> Result<ArrayI64> {
+        self.owned_from_kernel(other, kernels::bitand_slices)
+    }
+    /// Bitwise OR (elementwise).
+    pub fn bitor(&self, other: &ArrayI64) -> Result<ArrayI64> {
+        self.owned_from_kernel(other, kernels::bitor_slices)
+    }
+    /// Bitwise XOR (elementwise).
+    pub fn bitxor(&self, other: &ArrayI64) -> Result<ArrayI64> {
+        self.owned_from_kernel(other, kernels::bitxor_slices)
+    }
+    /// Bitwise NOT (elementwise).
+    pub fn bitnot(&self) -> ArrayI64 {
+        self.owned_unary(|a, o| {
+            for i in 0..a.len() {
+                o[i] = !a[i];
+            }
+        })
+    }
+    /// Left shift by scalar (logical on bits; Rust `<<` for `i64`).
+    pub fn shift_left(&self, bits: u32) -> ArrayI64 {
+        self.owned_unary(|a, o| {
+            for i in 0..a.len() {
+                o[i] = a[i].wrapping_shl(bits);
+            }
+        })
+    }
+    /// Arithmetic right shift by scalar.
+    pub fn shift_right(&self, bits: u32) -> ArrayI64 {
+        self.owned_unary(|a, o| {
+            for i in 0..a.len() {
+                o[i] = a[i].wrapping_shr(bits);
+            }
+        })
+    }
+    /// Remainder `self % other` (Rust `%`; divisor 0 → 0).
+    pub fn rem(&self, other: &ArrayI64) -> Result<ArrayI64> {
+        self.owned_from_kernel(other, kernels::rem_slices)
+    }
+    /// `rem_scalar`.
+    pub fn rem_scalar(&self, s: i64) -> ArrayI64 {
+        self.owned_unary(|a, o| {
+            for i in 0..a.len() {
+                o[i] = if s == 0 { 0 } else { a[i] % s };
+            }
+        })
+    }
+
+    /// Sorted unique values (rank-1). Stable order = sorted ascending.
+    pub fn unique(&self) -> Result<ArrayI64> {
+        if self.rank() != 1 {
+            return Err(Error::Shape("unique requires rank-1".into()));
+        }
+        let mut v = self.as_slice().to_vec();
+        v.sort_unstable();
+        v.dedup();
+        Ok(Self::from_parts(Shape::from_len(v.len()), v))
+    }
+
+    /// `(unique_values, counts)` for rank-1 (sorted uniques).
+    pub fn unique_counts(&self) -> Result<(ArrayI64, ArrayI64)> {
+        if self.rank() != 1 {
+            return Err(Error::Shape("unique_counts requires rank-1".into()));
+        }
+        let mut v = self.as_slice().to_vec();
+        v.sort_unstable();
+        if v.is_empty() {
+            return Ok((
+                Self::from_parts(Shape::from_len(0), Vec::new()),
+                Self::from_parts(Shape::from_len(0), Vec::new()),
+            ));
+        }
+        let mut vals = Vec::new();
+        let mut counts = Vec::new();
+        let mut cur = v[0];
+        let mut c: i64 = 1;
+        for &x in &v[1..] {
+            if x == cur {
+                c = c.wrapping_add(1);
+            } else {
+                vals.push(cur);
+                counts.push(c);
+                cur = x;
+                c = 1;
+            }
+        }
+        vals.push(cur);
+        counts.push(c);
+        let n = vals.len();
+        Ok((
+            Self::from_parts(Shape::from_len(n), vals),
+            Self::from_parts(Shape::from_len(n), counts),
+        ))
+    }
+
+    /// Membership test: for each element of `self`, 1 if in `test_elements` (rank-1), else 0.
+    pub fn isin(&self, test_elements: &ArrayI64) -> Result<ArrayI64> {
+        if test_elements.rank() != 1 {
+            return Err(Error::Shape("isin test_elements must be rank-1".into()));
+        }
+        let set: std::collections::BTreeSet<i64> =
+            test_elements.as_slice().iter().copied().collect();
+        let mut data = pool::take_uninit(self.len());
+        for (i, &x) in self.as_slice().iter().enumerate() {
+            data[i] = if set.contains(&x) { 1 } else { 0 };
+        }
+        Ok(Self::from_parts(self.shape.clone(), data))
+    }
+
+    /// Count occurrences of non-negative integers in rank-1 `self` into bins `0..minlength` (or auto).
+    /// Negative values error. Matches NumPy `bincount` without weights.
+    pub fn bincount(&self, minlength: usize) -> Result<ArrayI64> {
+        if self.rank() != 1 {
+            return Err(Error::Shape("bincount requires rank-1".into()));
+        }
+        let mut max_v: i64 = -1;
+        for &x in self.as_slice() {
+            if x < 0 {
+                return Err(Error::Shape("bincount does not accept negative values".into()));
+            }
+            if x > max_v {
+                max_v = x;
+            }
+        }
+        let n = if max_v < 0 {
+            minlength
+        } else {
+            (max_v as usize + 1).max(minlength)
+        };
+        let mut data = pool::take_zeroed(n);
+        for &x in self.as_slice() {
+            let i = x as usize;
+            data[i] = data[i].wrapping_add(1);
+        }
+        Ok(Self::from_parts(Shape::from_len(n), data))
+    }
+
+    /// Insertion indices to maintain order (rank-1 sorted `self` is not required;
+    /// we sort a copy of `self` for search — NumPy requires sorted `a`. **We require
+    /// `self` sorted ascending**; unsorted is an error if not monotonic.
+    pub fn searchsorted(&self, v: i64, side_right: bool) -> Result<usize> {
+        if self.rank() != 1 {
+            return Err(Error::Shape("searchsorted requires rank-1".into()));
+        }
+        let a = self.as_slice();
+        for w in a.windows(2) {
+            if w[0] > w[1] {
+                return Err(Error::Shape("searchsorted requires non-decreasing array".into()));
+            }
+        }
+        let r = if side_right {
+            a.partition_point(|&x| x <= v)
+        } else {
+            a.partition_point(|&x| x < v)
+        };
+        Ok(r)
+    }
+
+    /// Searchsorted for each element of `values` (rank-1) → rank-1 indices.
+    pub fn searchsorted_array(&self, values: &ArrayI64, side_right: bool) -> Result<ArrayI64> {
+        if values.rank() != 1 {
+            return Err(Error::Shape("searchsorted values must be rank-1".into()));
+        }
+        let mut data = pool::take_uninit(values.len());
+        for (i, &v) in values.as_slice().iter().enumerate() {
+            data[i] = self.searchsorted(v, side_right)? as i64;
+        }
+        Ok(Self::from_parts(Shape::from_len(values.len()), data))
+    }
+
+    /// Return a sorted copy (rank-1). `descending` optional.
+    pub fn sort(&self, descending: bool) -> Result<ArrayI64> {
+        if self.rank() != 1 {
+            return Err(Error::Shape("sort requires rank-1".into()));
+        }
+        let mut v = self.as_slice().to_vec();
+        if descending {
+            v.sort_unstable_by(|a, b| b.cmp(a));
+        } else {
+            v.sort_unstable();
+        }
+        Ok(Self::from_parts(Shape::from_len(v.len()), v))
+    }
+
     /// Deep copy alias matching `Array::to_owned_array`.
     pub fn to_owned_array(&self) -> ArrayI64 {
         self.clone()
@@ -1172,6 +1358,27 @@ mod tests {
         assert_eq!(w.as_slice(), &[1, 4]);
         assert_eq!(ArrayI64::from_shape_slice(vec![3], &[-2, 0, 5]).unwrap().sign().as_slice(), &[-1, 0, 1]);
         assert_eq!(a.var(0).unwrap(), 0.25);
+    }
+
+    #[test]
+    fn unique_isin_bincount_bits() {
+        let a = ArrayI64::from_shape_slice(vec![6], &[3, 1, 2, 1, 3, 2]).unwrap();
+        assert_eq!(a.unique().unwrap().as_slice(), &[1, 2, 3]);
+        let (u, c) = a.unique_counts().unwrap();
+        assert_eq!(u.as_slice(), &[1, 2, 3]);
+        assert_eq!(c.as_slice(), &[2, 2, 2]);
+        let m = a.isin(&ArrayI64::from_shape_slice(vec![2], &[1, 9]).unwrap()).unwrap();
+        assert_eq!(m.as_slice(), &[0, 1, 0, 1, 0, 0]);
+        let b = ArrayI64::from_shape_slice(vec![5], &[0, 1, 1, 3, 0]).unwrap().bincount(0).unwrap();
+        assert_eq!(b.as_slice(), &[2, 2, 0, 1]);
+        let s = ArrayI64::from_shape_slice(vec![4], &[1, 3, 5, 7]).unwrap();
+        assert_eq!(s.searchsorted(4, false).unwrap(), 2);
+        assert_eq!(s.searchsorted(3, true).unwrap(), 2);
+        assert_eq!(a.sort(false).unwrap().as_slice(), &[1, 1, 2, 2, 3, 3]);
+        let x = ArrayI64::from_shape_slice(vec![2], &[0b1100, 0b1010]).unwrap();
+        let y = ArrayI64::from_shape_slice(vec![2], &[0b1010, 0b1100]).unwrap();
+        assert_eq!(x.bitand(&y).unwrap().as_slice(), &[0b1000, 0b1000]);
+        assert_eq!(x.rem_scalar(5).as_slice(), &[2, 0]); // 12%5=2, 10%5=0
     }
 
     #[test]

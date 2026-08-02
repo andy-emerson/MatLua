@@ -353,18 +353,20 @@ explicit boundaries (zero-copy views in, owned results out).
 | **M5** | Tier-1 leave-late array ops | **Done** |
 | **M6** | Tier-2 quant sugar: `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis reductions (rank-2), `any`/`all` | **Done** |
 | **v0.1** tag | Explicit release cut | **Deferred** |
-| **M7** | **`i64` arrays** + integer-path LA (`matmul`/… wrapping); real-valued stats; not a permanent f64-only LA hierarchy | **In progress** (correctness) |
-| **M8** | **Lua host-buffer / view face** — scripts can use engine (or other host) memory without only owned copies (`from_host` / view userdata; lifetime contract) | Planned |
-| **M9** | **Small-window pool** — freelist / recycle policy that covers *n* ≪ 256 (TallyDB-style 64-row windows), not only bulk desk sizes | Planned |
-| **M10** | **Embed-safe Lua boundary** — no `lua_error` longjmp over live Rust drops; `catch_unwind` on every `extern "C"` entry | Planned |
-| **M11** | **CI + embed hygiene** — `.github` CI (tests, `MATLUA_LUA_APICHECK`); no `LUA_USE_DLOPEN` on embed/vendored profile; `take_uninit` Miri-clean (or init-only public paths) | Planned |
-| **M12** | **`arrow-lite` cutover** — runtime off `arrow-array`/`arrow-buffer`/`arrow-schema` once shared **`arrow-lite` v0.1** is released; refactor sooner rather than later after that gate | **Gated** on arrow-lite v0.1 |
+| **M7** | **`i64` surface (correctness):** shared array grammar + integer-path LA (wrapping) + **i64-unique territory** (keys/indices, bitwise/mod, `unique`/`isin`/`bincount`/`searchsorted`/`sort`, exact discrete ops). Not a permanent f64-only LA hierarchy. | **In progress** |
+| **M7.b** | **Quant leave-late pack (NumPy-class desk):** random, median/quantile, richer indexing, LA diagnostics (`det`/`rank`/`cond`/general eig as applicable), `out=` ([#21](https://github.com/andy-emerson/MatLua/issues/21)), host zero-copy into scripts — whatever a quant expects beyond M0–M7 basics | **Planned** (after M7 correctness) |
+| **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once correctness bars for M7/M7.b hold | **Planned** (after M7.b or when Human gates perf) |
+| **M8** | **Lua host-buffer / view face** — may **fold into M7.b** host zero-copy; kept as explicit embed slice until then | Planned |
+| **M9** | **Small-window pool** — freelist for *n* ≪ 256 | Planned |
+| **M10** | **Embed-safe Lua boundary** — no longjmp over live Rust drops; `catch_unwind` on `extern "C"` | Planned |
+| **M11** | **CI + embed hygiene** — `.github`, APICHECK, no DLOPEN embed profile, Miri-clean `take_uninit` | Planned |
+| **M12** | **`arrow-lite` cutover** when shared **arrow-lite v0.1** ships | **Gated** |
 
-**Priority (Human, 2026-08-02):** **M7 (`i64`) first** among open work; then **M8–M11** (TallyDB fusion / embed bar from host review); **M12** as soon as **arrow-lite v0.1** exists (layout refactor is cheaper early). Further dtypes (`f32`, complex, …) wait until after M7–M12 unless a new need appears.
+**Priority (Human, 2026-08-02 / refined):** **M7** (include i64-unique) → **M7.b** (quant pack) → **M7.c** (optimize all) ; embed track **M8–M11** and **M12** remain. Further dtypes (`f32`, complex, …) after this arc unless a new need appears.
 
-**Also tracked (not renumbered milestones):** in-place `out=` ([#21](https://github.com/andy-emerson/MatLua/issues/21)); TallyDB engine cutover (other repo); optional later dtypes beyond `i64`.
+**Also tracked:** TallyDB engine cutover (other repo).
 
-**TallyDB readiness framing:** M0–M6 solve bulk desk math and vocabulary. Fusion needs **M8–M9** (host views + small allocs) and embed bar **M10–M11**. Shared layout **M12** and keys **M7** complete the long joint stack; **M7 is urgent for integer columns even before full fusion polish.**
+**TallyDB readiness:** M7 keys + M7.b/M8 host views + M9–M11 embed bar; **M12** shared layout.
 
 ### 7.2 Performance program (P0–P6)
 

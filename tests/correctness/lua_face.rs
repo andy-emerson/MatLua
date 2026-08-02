@@ -319,3 +319,28 @@ assert(A:eq(1):get(1,1) == 1 and A:eq(1):get(1,2) == 0)
     )
     .unwrap();
 }
+
+#[test]
+fn m7_i64_unique_bits_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local a = ml.array_i64({3,1,2,1,3})
+local u = a:unique()
+assert(#u == 3 and u:get(1) == 1)
+local vals, counts = a:unique_counts()
+assert(counts:sum() == 5)
+assert(a:isin(ml.array_i64({1,9})):sum() == 2)
+assert(ml.array_i64({0,1,1,2}):bincount():get(2) == 1)
+local s = ml.array_i64({1,3,5,7})
+assert(s:searchsorted(4) == 3)
+assert(a:sort():get(1) == 1)
+local x = ml.array_i64({12, 10})
+assert(x:rem(5):get(1) == 2)
+assert(x:bitand(ml.array_i64({10,12})):get(1) == 8)
+"#,
+    )
+    .unwrap();
+}

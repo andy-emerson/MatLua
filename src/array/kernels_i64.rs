@@ -400,3 +400,28 @@ pub(crate) fn axis1_all(m: usize, n: usize, a: &[i64], out: &mut [i64]) {
         out[i] = v;
     }
 }
+
+#[inline]
+pub(crate) fn bitand_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
+    for i in 0..a.len() {
+        out[i] = a[i] & b[i];
+    }
+}
+#[inline]
+pub(crate) fn bitor_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
+    for i in 0..a.len() {
+        out[i] = a[i] | b[i];
+    }
+}
+#[inline]
+pub(crate) fn bitxor_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
+    for i in 0..a.len() {
+        out[i] = a[i] ^ b[i];
+    }
+}
+#[inline]
+pub(crate) fn rem_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
+    for i in 0..a.len() {
+        out[i] = if b[i] == 0 { 0 } else { a[i] % b[i] };
+    }
+}
