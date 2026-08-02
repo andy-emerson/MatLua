@@ -160,3 +160,53 @@ impl Neg for ArrayI64 {
         ArrayI64::neg(&self)
     }
 }
+
+
+impl Add<i64> for &ArrayI64 {
+    type Output = ArrayI64;
+    fn add(self, rhs: i64) -> ArrayI64 {
+        self.add_scalar(rhs)
+    }
+}
+impl Add<i64> for ArrayI64 {
+    type Output = ArrayI64;
+    fn add(self, rhs: i64) -> ArrayI64 {
+        Add::add(&self, rhs)
+    }
+}
+impl Sub<i64> for &ArrayI64 {
+    type Output = ArrayI64;
+    fn sub(self, rhs: i64) -> ArrayI64 {
+        self.sub_scalar(rhs)
+    }
+}
+impl Sub<i64> for ArrayI64 {
+    type Output = ArrayI64;
+    fn sub(self, rhs: i64) -> ArrayI64 {
+        Sub::sub(&self, rhs)
+    }
+}
+impl Mul<i64> for &ArrayI64 {
+    type Output = ArrayI64;
+    fn mul(self, rhs: i64) -> ArrayI64 {
+        self.mul_scalar(rhs)
+    }
+}
+impl Mul<i64> for ArrayI64 {
+    type Output = ArrayI64;
+    fn mul(self, rhs: i64) -> ArrayI64 {
+        Mul::mul(&self, rhs)
+    }
+}
+impl Div<i64> for &ArrayI64 {
+    type Output = ArrayI64;
+    fn div(self, rhs: i64) -> ArrayI64 {
+        self.div_scalar(rhs)
+    }
+}
+impl Div<i64> for ArrayI64 {
+    type Output = ArrayI64;
+    fn div(self, rhs: i64) -> ArrayI64 {
+        Div::div(&self, rhs)
+    }
+}

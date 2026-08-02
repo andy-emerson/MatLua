@@ -12,6 +12,7 @@
 //! - [`Array`] — owned `f64` values (product bar / dense LA).
 //! - [`ArrayI64`] — owned `i64` values (M7; keys / exact integers).
 //! - [`ArrayView`] / [`ArrayViewMut`] — borrowed views over contiguous `f64` buffers.
+//! - [`ArrayViewI64`] / [`ArrayViewMutI64`] — borrowed views over contiguous `i64` buffers.
 //! - [`ArrayView::to_owned_array`] copies into an owned array.
 //!
 //! # Arrow
@@ -31,12 +32,14 @@ mod ops;
 mod ops_i64;
 mod shape;
 mod view;
+mod view_i64;
 
 pub use array::Array;
 pub use array_i64::ArrayI64;
 pub use dtype::DType;
 pub use shape::Shape;
 pub use view::{ArrayView, ArrayViewMut};
+pub use view_i64::{ArrayViewI64, ArrayViewMutI64};
 
 /// Pooled uninitialized buffer for sibling modules (linalg kernels).
 #[inline]

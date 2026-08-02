@@ -753,13 +753,67 @@ pub unsafe extern "C" fn a_i64_sort(L: *mut lua_State) -> c_int {
     1
 }
 
+
+pub unsafe extern "C" fn a_i64_power(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    if unsafe { lua_type(L, 2) } == LUA_TNUMBER {
+        let e = unsafe { luaL_checkinteger(L, 2) };
+        if e < 0 {
+            return super::ud::lua_error_msg(L, "power exponent must be >= 0");
+        }
+        unsafe { push_array_i64(L, a.array.power_scalar(e as u32)) };
+        return 1;
+    }
+    let e = unsafe { &*check_array_i64(L, 2) };
+    let o = lua_try!(L, a.array.power(&e.array));
+    unsafe { push_array_i64(L, o) };
+    1
+}
+pub unsafe extern "C" fn a_i64_divmod(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let b = unsafe { &*check_array_i64(L, 2) };
+    let (q, r) = lua_try!(L, a.array.divmod(&b.array));
+    unsafe { push_array_i64(L, q) };
+    unsafe { push_array_i64(L, r) };
+    2
+}
+pub unsafe extern "C" fn a_i64_gcd(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let b = unsafe { &*check_array_i64(L, 2) };
+    let o = lua_try!(L, a.array.gcd(&b.array));
+    unsafe { push_array_i64(L, o) };
+    1
+}
+pub unsafe extern "C" fn a_i64_lcm(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let b = unsafe { &*check_array_i64(L, 2) };
+    let o = lua_try!(L, a.array.lcm(&b.array));
+    unsafe { push_array_i64(L, o) };
+    1
+}
+pub unsafe extern "C" fn a_i64_count_ones(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    unsafe { push_array_i64(L, a.array.count_ones()) };
+    1
+}
+pub unsafe extern "C" fn a_i64_leading_zeros(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    unsafe { push_array_i64(L, a.array.leading_zeros()) };
+    1
+}
+pub unsafe extern "C" fn a_i64_trailing_zeros(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    unsafe { push_array_i64(L, a.array.trailing_zeros()) };
+    1
+}
+
 /// Install `ArrayI64` metatable.
 pub unsafe fn install_metatable(L: *mut lua_State) {
     unsafe {
         luaL_newmetatable(L, ARRAY_I64_MT.as_ptr());
         lua_pushvalue(L, -1);
         lua_setfield(L, -2, c"__index".as_ptr());
-        let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 60] = [
+        let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 67] = [
             (c"__gc", a_i64_gc),
             (c"__len", a_i64_len),
             (c"__tostring", a_i64_tostring),
@@ -820,6 +874,13 @@ pub unsafe fn install_metatable(L: *mut lua_State) {
             (c"bincount", a_i64_bincount),
             (c"searchsorted", a_i64_searchsorted),
             (c"sort", a_i64_sort),
+            (c"power", a_i64_power),
+            (c"divmod", a_i64_divmod),
+            (c"gcd", a_i64_gcd),
+            (c"lcm", a_i64_lcm),
+            (c"count_ones", a_i64_count_ones),
+            (c"leading_zeros", a_i64_leading_zeros),
+            (c"trailing_zeros", a_i64_trailing_zeros),
         ];
         for (name, f) in methods {
             lua_pushcfunction(L, Some(f));

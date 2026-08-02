@@ -19,5 +19,5 @@ pub mod linalg;
 #[cfg_attr(docsrs, doc(cfg(feature = "lua")))]
 pub mod lua;
 
-pub use array::{Array, ArrayI64, ArrayView, ArrayViewMut, DType, Shape};
+pub use array::{Array, ArrayI64, ArrayView, ArrayViewMut, ArrayViewI64, ArrayViewMutI64, DType, Shape};
 pub use error::{Error, Result};

@@ -353,7 +353,7 @@ explicit boundaries (zero-copy views in, owned results out).
 | **M5** | Tier-1 leave-late array ops | **Done** |
 | **M6** | Tier-2 quant sugar: `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis reductions (rank-2), `any`/`all` | **Done** |
 | **v0.1** tag | Explicit release cut | **Deferred** |
-| **M7** | **`i64` surface (correctness):** shared array grammar + integer-path LA (wrapping) + **i64-unique territory** (keys/indices, bitwise/mod, `unique`/`isin`/`bincount`/`searchsorted`/`sort`, exact discrete ops). Not a permanent f64-only LA hierarchy. | **In progress** |
+| **M7** | **`i64` surface (correctness):** shared array grammar + integer-path LA (wrapping) + **i64-unique territory** + `ArrayViewI64` + gcd/lcm/divmod/bitcount. Not a permanent f64-only LA hierarchy. | **Done** |
 | **M7.b** | **Quant leave-late pack (NumPy-class desk):** random, median/quantile, richer indexing, LA diagnostics (`det`/`rank`/`cond`/general eig as applicable), `out=` ([#21](https://github.com/andy-emerson/MatLua/issues/21)), host zero-copy into scripts — whatever a quant expects beyond M0–M7 basics | **Planned** (after M7 correctness) |
 | **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once correctness bars for M7/M7.b hold | **Planned** (after M7.b or when Human gates perf) |
 | **M8** | **Lua host-buffer / view face** — may **fold into M7.b** host zero-copy; kept as explicit embed slice until then | Planned |
@@ -362,7 +362,7 @@ explicit boundaries (zero-copy views in, owned results out).
 | **M11** | **CI + embed hygiene** — `.github`, APICHECK, no DLOPEN embed profile, Miri-clean `take_uninit` | Planned |
 | **M12** | **`arrow-lite` cutover** when shared **arrow-lite v0.1** ships | **Gated** |
 
-**Priority (Human, 2026-08-02 / refined):** **M7** (include i64-unique) → **M7.b** (quant pack) → **M7.c** (optimize all) ; embed track **M8–M11** and **M12** remain. Further dtypes (`f32`, complex, …) after this arc unless a new need appears.
+**Priority:** **M7 Done** → **M7.b** (quant pack) → **M7.c** (optimize all); embed **M8–M11** and **M12** remain. Further dtypes (`f32`, complex, …) after this arc unless a new need appears.
 
 **Also tracked:** TallyDB engine cutover (other repo).
 

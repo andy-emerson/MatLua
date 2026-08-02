@@ -344,3 +344,22 @@ assert(x:bitand(ml.array_i64({10,12})):get(1) == 8)
     )
     .unwrap();
 }
+
+#[test]
+fn m7_i64_finish_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local a = ml.array_i64({2, 3, 4})
+assert(a:power(2):get(1) == 4)
+local q, r = a:divmod(ml.array_i64({2, 2, 3}))
+assert(q:get(1) == 1 and r:get(3) == 1)
+assert(ml.array_i64({12, 8}):gcd(ml.array_i64({8, 12})):get(1) == 4)
+assert(ml.array_i64({4}):lcm(ml.array_i64({6})):get(1) == 12)
+assert(ml.array_i64({7}):count_ones():get(1) == 3)
+"#,
+    )
+    .unwrap();
+}

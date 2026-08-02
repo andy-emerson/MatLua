@@ -54,7 +54,7 @@ work on arrays (and array ↔ number). Matrix product is always explicit:
 | **Linear algebra (`f64`)** | `matmul`, `matmul_at`, `matmul_bt`, `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd` |
 | **`i64`-unique** | bitwise / rem / shift, `unique` / `isin` / `bincount` / `searchsorted` / `sort` |
 | **Linear algebra (`i64`)** | `matmul_i64`, `matmul_at_i64`, `matmul_bt_i64`, `dot_i64`, `norm_i64`, `transpose_i64`, `eye_i64` (wrapping `i64`; solvers/factorizations remain on `f64`) |
-| **Rust core** | `Array` (`f64`), `ArrayI64` (`i64`, M7), views over host `f64` buffers, Arrow `Float64`/`Int64` interchange, LA under `matlua::linalg` (`f64`) |
+| **Rust core** | `Array` (`f64`), `ArrayI64` (`i64`), views over host `f64`/`i64` buffers, Arrow `Float64`/`Int64`, LA `matlua::linalg` + `linalg::i64_ops` |
 
 Quality bar for dense LA is **`f64`**. **`i64` arrays** (M7) cover keys and exact
 integers on the Lua face (`zeros_i64`, `array_i64`, `where_i64`, `concatenate_i64`,
@@ -114,7 +114,7 @@ Closed decisions and milestones: [DESIGN.md](DESIGN.md).
 **M0–M6 are on `main`** (see [DESIGN.md](DESIGN.md) §7.1). The tree is a **v0.1
 candidate**: a host can embed MatLua and scripts can do ordinary dense array and
 linear-algebra work end-to-end. Crate version remains **`0.0.1`** until a formal
-`0.1.0` cut. **M7 (`i64`) in progress** (correctness surface landing).
+`0.1.0` cut. **M7 (`i64`) Done** on this line of work; next **M7.b** (quant leave-late pack).
 
 **Performance:** fair three-way microbench (NumPy · MatLua Rust · MatLua Lua) lives
 under [`tests/`](tests/README.md). Run `python3 tests/bench/compare_fair.py`.

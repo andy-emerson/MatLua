@@ -11,6 +11,32 @@ use super::shape::{broadcast_shapes, Shape};
 use super::Array;
 use crate::error::{Error, Result};
 
+fn gcd_i64(a: i64, b: i64) -> i64 {
+    let mut a = a.unsigned_abs();
+    let mut b = b.unsigned_abs();
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    // Result fits in i64 except gcd(i64::MIN, i64::MIN) == 2^63; clamp.
+    i64::try_from(a).unwrap_or(i64::MAX)
+}
+
+fn lcm_i64(a: i64, b: i64) -> i64 {
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    let g = gcd_i64(a, b);
+    // wrapping |a|/g*|b|
+    let au = a.unsigned_abs();
+    let bu = b.unsigned_abs();
+    let gu = g.unsigned_abs();
+    let prod = au / gu * bu;
+    i64::try_from(prod).unwrap_or(i64::MAX)
+}
+
+
 #[derive(Clone, Copy)]
 enum BroadcastOp {
     Add,
@@ -1292,6 +1318,110 @@ impl ArrayI64 {
         Ok(Self::from_parts(Shape::from_len(v.len()), v))
     }
 
+
+    /// Shared view of the whole array.
+    #[inline]
+    /// `view`.
+    pub fn view(&self) -> super::ArrayViewI64<'_> {
+        super::ArrayViewI64::from_shape_slice(self.shape.clone(), self.data.as_ref())
+    }
+
+    /// Mutable view of the whole array (COW if buffer shared).
+    #[inline]
+    /// `view_mut`.
+    pub fn view_mut(&mut self) -> super::ArrayViewMutI64<'_> {
+        let shape = self.shape.clone();
+        super::ArrayViewMutI64::from_shape_slice(shape, self.as_mut_slice())
+    }
+
+    /// Element-wise power with non-negative integer exponents (wrapping).
+    /// Negative exponents error.
+    pub fn power(&self, exponents: &ArrayI64) -> Result<ArrayI64> {
+        self.same_shape(exponents)?;
+        let mut data = pool::take_uninit(self.len());
+        for i in 0..self.len() {
+            let e = exponents.as_slice()[i];
+            if e < 0 {
+                return Err(Error::Shape("power: negative exponent".into()));
+            }
+            if e > u32::MAX as i64 {
+                return Err(Error::Shape("power: exponent too large".into()));
+            }
+            data[i] = self.as_slice()[i].wrapping_pow(e as u32);
+        }
+        Ok(Self::from_parts(self.shape.clone(), data))
+    }
+
+    /// `(quotients, remainders)` for elementwise Euclidean-style Rust `/` and `%`.
+    /// Divisor 0 → quot 0, rem 0.
+    pub fn divmod(&self, other: &ArrayI64) -> Result<(ArrayI64, ArrayI64)> {
+        self.same_shape(other)?;
+        let mut q = pool::take_uninit(self.len());
+        let mut r = pool::take_uninit(self.len());
+        let a = self.as_slice();
+        let b = other.as_slice();
+        for i in 0..a.len() {
+            if b[i] == 0 {
+                q[i] = 0;
+                r[i] = 0;
+            } else {
+                q[i] = a[i] / b[i];
+                r[i] = a[i] % b[i];
+            }
+        }
+        Ok((
+            Self::from_parts(self.shape.clone(), q),
+            Self::from_parts(self.shape.clone(), r),
+        ))
+    }
+
+    /// Element-wise GCD (`0` if both zero; always non-negative result).
+    pub fn gcd(&self, other: &ArrayI64) -> Result<ArrayI64> {
+        self.same_shape(other)?;
+        let mut data = pool::take_uninit(self.len());
+        for i in 0..self.len() {
+            data[i] = gcd_i64(self.as_slice()[i], other.as_slice()[i]);
+        }
+        Ok(Self::from_parts(self.shape.clone(), data))
+    }
+
+    /// Element-wise LCM (wrapping); `0` if either arg is 0.
+    pub fn lcm(&self, other: &ArrayI64) -> Result<ArrayI64> {
+        self.same_shape(other)?;
+        let mut data = pool::take_uninit(self.len());
+        for i in 0..self.len() {
+            data[i] = lcm_i64(self.as_slice()[i], other.as_slice()[i]);
+        }
+        Ok(Self::from_parts(self.shape.clone(), data))
+    }
+
+    /// Population count (number of `1` bits) per element.
+    pub fn count_ones(&self) -> ArrayI64 {
+        self.owned_unary(|a, o| {
+            for i in 0..a.len() {
+                o[i] = a[i].count_ones() as i64;
+            }
+        })
+    }
+
+    /// Number of leading zeros per element (`i64::leading_zeros`).
+    pub fn leading_zeros(&self) -> ArrayI64 {
+        self.owned_unary(|a, o| {
+            for i in 0..a.len() {
+                o[i] = a[i].leading_zeros() as i64;
+            }
+        })
+    }
+
+    /// Number of trailing zeros per element.
+    pub fn trailing_zeros(&self) -> ArrayI64 {
+        self.owned_unary(|a, o| {
+            for i in 0..a.len() {
+                o[i] = a[i].trailing_zeros() as i64;
+            }
+        })
+    }
+
     /// Deep copy alias matching `Array::to_owned_array`.
     pub fn to_owned_array(&self) -> ArrayI64 {
         self.clone()
@@ -1379,6 +1509,54 @@ mod tests {
         let y = ArrayI64::from_shape_slice(vec![2], &[0b1010, 0b1100]).unwrap();
         assert_eq!(x.bitand(&y).unwrap().as_slice(), &[0b1000, 0b1000]);
         assert_eq!(x.rem_scalar(5).as_slice(), &[2, 0]); // 12%5=2, 10%5=0
+    }
+
+    #[test]
+    fn view_power_divmod_gcd() {
+        let mut a = ArrayI64::from_shape_slice(vec![2, 2], &[2, 4, 6, 8]).unwrap();
+        assert_eq!(a.view().get(&[0, 1]).unwrap(), 4);
+        a.view_mut().set(&[1, 0], 7).unwrap();
+        assert_eq!(a.get(&[1, 0]).unwrap(), 7);
+        let e = ArrayI64::from_shape_slice(vec![3], &[2, 3, 1]).unwrap();
+        let b = ArrayI64::from_shape_slice(vec![3], &[2, 2, 5]).unwrap();
+        assert_eq!(b.power(&e).unwrap().as_slice(), &[4, 8, 5]);
+        let (q, r) = ArrayI64::from_shape_slice(vec![2], &[17, 20])
+            .unwrap()
+            .divmod(&ArrayI64::from_shape_slice(vec![2], &[5, 6]).unwrap())
+            .unwrap();
+        assert_eq!(q.as_slice(), &[3, 3]);
+        assert_eq!(r.as_slice(), &[2, 2]);
+        let g = ArrayI64::from_shape_slice(vec![2], &[12, 7])
+            .unwrap()
+            .gcd(&ArrayI64::from_shape_slice(vec![2], &[8, 0]).unwrap())
+            .unwrap();
+        assert_eq!(g.as_slice(), &[4, 7]);
+        let l = ArrayI64::from_shape_slice(vec![1], &[4])
+            .unwrap()
+            .lcm(&ArrayI64::from_shape_slice(vec![1], &[6]).unwrap())
+            .unwrap();
+        assert_eq!(l.as_slice(), &[12]);
+        assert_eq!(
+            ArrayI64::from_shape_slice(vec![2], &[0b1011, 0])
+                .unwrap()
+                .count_ones()
+                .as_slice(),
+            &[3, 0]
+        );
+        // empty + matmul wrap smoke
+        let empty = ArrayI64::zeros(vec![0]).unwrap();
+        assert!(empty.is_empty());
+        assert_eq!(empty.unique().unwrap().len(), 0);
+        let big = ArrayI64::full(vec![2, 2], i64::MAX).unwrap();
+        let _ = crate::linalg::i64_ops::matmul(&big, &ArrayI64::eye(2).unwrap()).unwrap();
+        // searchsorted unsorted errors
+        assert!(ArrayI64::from_shape_slice(vec![3], &[1, 3, 2])
+            .unwrap()
+            .searchsorted(2, false)
+            .is_err());
+        // scalar ops
+        let s = &ArrayI64::from_shape_slice(vec![2], &[1, 2]).unwrap() + 10;
+        assert_eq!(s.as_slice(), &[11, 12]);
     }
 
     #[test]
