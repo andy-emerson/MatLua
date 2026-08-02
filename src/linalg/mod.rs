@@ -17,6 +17,7 @@
 //! Use [`dot`] for the inner product of two equal-length vectors.
 
 mod convert;
+pub mod i64_ops;
 
 use faer::linalg::matmul::matmul as faer_matmul;
 use faer::linalg::solvers::{Solve, SolveLstsq};

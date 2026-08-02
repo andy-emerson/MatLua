@@ -994,6 +994,118 @@ impl ArrayI64 {
         Ok(())
     }
 
+
+    /// Variance along axis for rank-2 → rank-1 `f64` array.
+    pub fn var_axis(&self, axis: usize, ddof: usize) -> Result<Array> {
+        let (m, n) = self.rank2_dims()?;
+        let (len_out, count) = match axis {
+            0 => (n, m),
+            1 => (m, n),
+            _ => return Err(Error::Shape(format!("axis {axis} out of range for rank-2"))),
+        };
+        if count <= ddof {
+            return Err(Error::shape(format!(
+                "var_axis requires size > ddof (size={count}, ddof={ddof})"
+            )));
+        }
+        let means = self.mean_axis(axis)?;
+        let mut data = super::pool::take_uninit(len_out);
+        let src = self.as_slice();
+        let mu = means.as_slice();
+        match axis {
+            0 => {
+                for j in 0..n {
+                    let mut acc = 0.0f64;
+                    for i in 0..m {
+                        let d = src[i * n + j] as f64 - mu[j];
+                        acc += d * d;
+                    }
+                    data[j] = acc / (count - ddof) as f64;
+                }
+            }
+            1 => {
+                for i in 0..m {
+                    let mut acc = 0.0f64;
+                    for j in 0..n {
+                        let d = src[i * n + j] as f64 - mu[i];
+                        acc += d * d;
+                    }
+                    data[i] = acc / (count - ddof) as f64;
+                }
+            }
+            _ => unreachable!(),
+        }
+        Ok(Array::from_parts(Shape::from_len(len_out), data))
+    }
+
+    /// Std-dev along axis for rank-2 → rank-1 `f64` array.
+    pub fn std_axis(&self, axis: usize, ddof: usize) -> Result<Array> {
+        let v = self.var_axis(axis, ddof)?;
+        let mut data = super::pool::take_uninit(v.len());
+        for (i, &x) in v.as_slice().iter().enumerate() {
+            data[i] = x.sqrt();
+        }
+        Ok(Array::from_parts(v.shape().clone(), data))
+    }
+
+    /// Element-wise power with non-negative integer exponent (wrapping).
+    pub fn power_scalar(&self, exp: u32) -> ArrayI64 {
+        self.owned_unary(|a, out| {
+            for i in 0..a.len() {
+                out[i] = a[i].wrapping_pow(exp);
+            }
+        })
+    }
+
+    /// Compare to scalar → 0/1 mask.
+    pub fn eq_scalar(&self, s: i64) -> ArrayI64 {
+        self.owned_unary(|a, o| {
+            for i in 0..a.len() {
+                o[i] = if a[i] == s { 1 } else { 0 };
+            }
+        })
+    }
+    /// `ne_scalar`.
+    pub fn ne_scalar(&self, s: i64) -> ArrayI64 {
+        self.owned_unary(|a, o| {
+            for i in 0..a.len() {
+                o[i] = if a[i] != s { 1 } else { 0 };
+            }
+        })
+    }
+    /// `lt_scalar`.
+    pub fn lt_scalar(&self, s: i64) -> ArrayI64 {
+        self.owned_unary(|a, o| {
+            for i in 0..a.len() {
+                o[i] = if a[i] < s { 1 } else { 0 };
+            }
+        })
+    }
+    /// `le_scalar`.
+    pub fn le_scalar(&self, s: i64) -> ArrayI64 {
+        self.owned_unary(|a, o| {
+            for i in 0..a.len() {
+                o[i] = if a[i] <= s { 1 } else { 0 };
+            }
+        })
+    }
+    /// `gt_scalar`.
+    pub fn gt_scalar(&self, s: i64) -> ArrayI64 {
+        self.owned_unary(|a, o| {
+            for i in 0..a.len() {
+                o[i] = if a[i] > s { 1 } else { 0 };
+            }
+        })
+    }
+    /// `ge_scalar`.
+    pub fn ge_scalar(&self, s: i64) -> ArrayI64 {
+        self.owned_unary(|a, o| {
+            for i in 0..a.len() {
+                o[i] = if a[i] >= s { 1 } else { 0 };
+            }
+        })
+    }
+
     /// Deep copy alias matching `Array::to_owned_array`.
     pub fn to_owned_array(&self) -> ArrayI64 {
         self.clone()

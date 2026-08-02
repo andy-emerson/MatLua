@@ -26,8 +26,9 @@ pub mod dtype;
 pub(crate) mod kernels;
 pub(crate) mod kernels_i64;
 mod pool;
-mod pool_i64;
+pub(crate) mod pool_i64;
 mod ops;
+mod ops_i64;
 mod shape;
 mod view;
 

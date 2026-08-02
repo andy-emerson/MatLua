@@ -253,7 +253,10 @@ Names match the `lua` feature on `main`. Tutorial samples live in
 ### 3.17 `i64` arrays (M7)
 
 - **`ArrayI64`**: owned row-major `i64`, same shape/rank model as `f64` [`Array`].
-- **Product bar for LA remains `f64`.** Integer arrays do not enter `matmul`/`solve`/factorizations.
+- **Introduction order:** `f64` first, then `i64` (not a permanent “LA is only f64” hierarchy).
+- **Integer LA path:** `matmul` / `matmul_at` / `matmul_bt` / `dot` / `transpose` / `eye` on `ArrayI64` via `linalg::i64_ops` (wrapping `i64` accumulators; not faer). Integer×integer→integer in \(\mathbb{Z}\); fixed-width may wrap.
+- **Not pure-integer (no exact integer codomain in general):** `solve`, `lstsq`, `eigh`, `pinv`, SVD/QR/Cholesky — stay on `f64` (cast with `to_f64` when needed).
+- **Stats that are real-valued:** `mean` / `var` / `std` (+ axis) take `i64` and return `f64`.
 - **Arithmetic:** wrapping add/sub/mul/neg/abs; truncating `/`; division by zero → `0` (no panic).
 - **Mean** (scalar or axis) returns **`f64`** (or `f64` array).
 - **Casts:** `ArrayI64::to_f64` / `Array::to_i64` (truncate toward zero).
@@ -350,7 +353,7 @@ explicit boundaries (zero-copy views in, owned results out).
 | **M5** | Tier-1 leave-late array ops | **Done** |
 | **M6** | Tier-2 quant sugar: `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis reductions (rank-2), `any`/`all` | **Done** |
 | **v0.1** tag | Explicit release cut | **Deferred** |
-| **M7** | **`i64` arrays** (first multi-dtype step): owned construct/index/elementwise needed for ordering keys and exact integer columns; LA remains `f64`-first | **In progress** (correctness) |
+| **M7** | **`i64` arrays** + integer-path LA (`matmul`/… wrapping); real-valued stats; not a permanent f64-only LA hierarchy | **In progress** (correctness) |
 | **M8** | **Lua host-buffer / view face** — scripts can use engine (or other host) memory without only owned copies (`from_host` / view userdata; lifetime contract) | Planned |
 | **M9** | **Small-window pool** — freelist / recycle policy that covers *n* ≪ 256 (TallyDB-style 64-row windows), not only bulk desk sizes | Planned |
 | **M10** | **Embed-safe Lua boundary** — no `lua_error` longjmp over live Rust drops; `catch_unwind` on every `extern "C"` entry | Planned |

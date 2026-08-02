@@ -294,3 +294,28 @@ assert(a:lt(b):all())
     )
     .unwrap();
 }
+
+#[test]
+fn m7_i64_matmul_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local A = ml.array_i64({{1,2},{3,4}})
+local B = ml.array_i64({{5,6},{7,8}})
+local C = ml.matmul_i64(A, B)
+assert(C:get(1,1) == 19 and C:get(2,2) == 50)
+local v = ml.array_i64({1,1})
+local Av = ml.matmul_i64(A, v)
+assert(#Av == 2 and Av:get(1) == 3 and Av:get(2) == 7)
+assert(ml.dot_i64(ml.array_i64({1,2,3}), ml.array_i64({4,5,6})) == 32)
+local X = ml.array_i64({{1,0},{1,1},{1,2}})
+local y = ml.array_i64({1,2,3})
+local xty = ml.matmul_at_i64(X, y)
+assert(xty:get(1) == 6 and xty:get(2) == 8)
+assert(A:eq(1):get(1,1) == 1 and A:eq(1):get(1,2) == 0)
+"#,
+    )
+    .unwrap();
+}

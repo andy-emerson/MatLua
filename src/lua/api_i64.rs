@@ -258,6 +258,11 @@ pub unsafe extern "C" fn a_i64_to_f64(L: *mut lua_State) -> c_int {
 }
 pub unsafe extern "C" fn a_i64_eq(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array_i64(L, 1) };
+    if unsafe { lua_type(L, 2) } == LUA_TNUMBER {
+        let s = unsafe { luaL_checkinteger(L, 2) };
+        unsafe { push_array_i64(L, a.array.eq_scalar(s)) };
+        return 1;
+    }
     let b = unsafe { &*check_array_i64(L, 2) };
     let o = lua_try!(L, a.array.eq(&b.array));
     unsafe { push_array_i64(L, o) };
@@ -265,6 +270,11 @@ pub unsafe extern "C" fn a_i64_eq(L: *mut lua_State) -> c_int {
 }
 pub unsafe extern "C" fn a_i64_lt(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array_i64(L, 1) };
+    if unsafe { lua_type(L, 2) } == LUA_TNUMBER {
+        let s = unsafe { luaL_checkinteger(L, 2) };
+        unsafe { push_array_i64(L, a.array.lt_scalar(s)) };
+        return 1;
+    }
     let b = unsafe { &*check_array_i64(L, 2) };
     let o = lua_try!(L, a.array.lt(&b.array));
     unsafe { push_array_i64(L, o) };
@@ -400,6 +410,11 @@ pub unsafe extern "C" fn l_broadcast_to_i64(L: *mut lua_State) -> c_int {
 
 pub unsafe extern "C" fn a_i64_ne(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array_i64(L, 1) };
+    if unsafe { lua_type(L, 2) } == LUA_TNUMBER {
+        let s = unsafe { luaL_checkinteger(L, 2) };
+        unsafe { push_array_i64(L, a.array.ne_scalar(s)) };
+        return 1;
+    }
     let b = unsafe { &*check_array_i64(L, 2) };
     let o = lua_try!(L, a.array.ne(&b.array));
     unsafe { push_array_i64(L, o) };
@@ -407,6 +422,11 @@ pub unsafe extern "C" fn a_i64_ne(L: *mut lua_State) -> c_int {
 }
 pub unsafe extern "C" fn a_i64_le(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array_i64(L, 1) };
+    if unsafe { lua_type(L, 2) } == LUA_TNUMBER {
+        let s = unsafe { luaL_checkinteger(L, 2) };
+        unsafe { push_array_i64(L, a.array.le_scalar(s)) };
+        return 1;
+    }
     let b = unsafe { &*check_array_i64(L, 2) };
     let o = lua_try!(L, a.array.le(&b.array));
     unsafe { push_array_i64(L, o) };
@@ -414,6 +434,11 @@ pub unsafe extern "C" fn a_i64_le(L: *mut lua_State) -> c_int {
 }
 pub unsafe extern "C" fn a_i64_gt(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array_i64(L, 1) };
+    if unsafe { lua_type(L, 2) } == LUA_TNUMBER {
+        let s = unsafe { luaL_checkinteger(L, 2) };
+        unsafe { push_array_i64(L, a.array.gt_scalar(s)) };
+        return 1;
+    }
     let b = unsafe { &*check_array_i64(L, 2) };
     let o = lua_try!(L, a.array.gt(&b.array));
     unsafe { push_array_i64(L, o) };
@@ -421,6 +446,11 @@ pub unsafe extern "C" fn a_i64_gt(L: *mut lua_State) -> c_int {
 }
 pub unsafe extern "C" fn a_i64_ge(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array_i64(L, 1) };
+    if unsafe { lua_type(L, 2) } == LUA_TNUMBER {
+        let s = unsafe { luaL_checkinteger(L, 2) };
+        unsafe { push_array_i64(L, a.array.ge_scalar(s)) };
+        return 1;
+    }
     let b = unsafe { &*check_array_i64(L, 2) };
     let o = lua_try!(L, a.array.ge(&b.array));
     unsafe { push_array_i64(L, o) };
@@ -563,6 +593,48 @@ pub unsafe extern "C" fn a_i64_broadcast_to(L: *mut lua_State) -> c_int {
     1
 }
 
+
+pub unsafe extern "C" fn l_matmul_i64(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let b = unsafe { &*check_array_i64(L, 2) };
+    let c = lua_try!(L, crate::linalg::i64_ops::matmul(&a.array, &b.array));
+    unsafe { push_array_i64(L, c) };
+    1
+}
+pub unsafe extern "C" fn l_matmul_at_i64(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let b = unsafe { &*check_array_i64(L, 2) };
+    let c = lua_try!(L, crate::linalg::i64_ops::matmul_at(&a.array, &b.array));
+    unsafe { push_array_i64(L, c) };
+    1
+}
+pub unsafe extern "C" fn l_matmul_bt_i64(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let b = unsafe { &*check_array_i64(L, 2) };
+    let c = lua_try!(L, crate::linalg::i64_ops::matmul_bt(&a.array, &b.array));
+    unsafe { push_array_i64(L, c) };
+    1
+}
+pub unsafe extern "C" fn l_dot_i64(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let b = unsafe { &*check_array_i64(L, 2) };
+    let d = lua_try!(L, crate::linalg::i64_ops::dot(&a.array, &b.array));
+    unsafe { lua_pushinteger(L, d) };
+    1
+}
+pub unsafe extern "C" fn l_norm_i64(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let n = lua_try!(L, crate::linalg::i64_ops::norm(&a.array));
+    unsafe { lua_pushnumber(L, n) };
+    1
+}
+pub unsafe extern "C" fn l_transpose_i64(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let t = lua_try!(L, crate::linalg::i64_ops::transpose(&a.array));
+    unsafe { push_array_i64(L, t) };
+    1
+}
+
 /// Install `ArrayI64` metatable.
 pub unsafe fn install_metatable(L: *mut lua_State) {
     unsafe {
@@ -629,7 +701,7 @@ pub unsafe fn install_metatable(L: *mut lua_State) {
 /// Register i64 constructors on the module table (top of stack).
 pub unsafe fn register_module_funcs(L: *mut lua_State) {
     unsafe {
-        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 12] = [
+        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 18] = [
             (c"zeros_i64", l_zeros_i64),
             (c"ones_i64", l_ones_i64),
             (c"full_i64", l_full_i64),
@@ -642,6 +714,12 @@ pub unsafe fn register_module_funcs(L: *mut lua_State) {
             (c"concatenate_i64", l_concatenate_i64),
             (c"stack_i64", l_stack_i64),
             (c"broadcast_to_i64", l_broadcast_to_i64),
+            (c"matmul_i64", l_matmul_i64),
+            (c"matmul_at_i64", l_matmul_at_i64),
+            (c"matmul_bt_i64", l_matmul_bt_i64),
+            (c"dot_i64", l_dot_i64),
+            (c"norm_i64", l_norm_i64),
+            (c"transpose_i64", l_transpose_i64),
         ];
         for (name, f) in funcs {
             lua_pushcfunction(L, Some(f));

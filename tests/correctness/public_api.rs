@@ -182,3 +182,26 @@ fn m7_i64_extended_surface() {
     assert_eq!(m.clip(0, 0).unwrap().as_slice(), &[0, 0, 0, 0]);
     assert!((a.std(0).unwrap() - 0.5).abs() < 1e-12);
 }
+
+#[test]
+fn m7_i64_matmul_and_dot() {
+    use matlua::array::ArrayI64;
+    use matlua::linalg::i64_ops;
+    let a = ArrayI64::from_shape_slice(vec![2, 2], &[1, 2, 3, 4]).unwrap();
+    let b = ArrayI64::from_shape_slice(vec![2, 2], &[5, 6, 7, 8]).unwrap();
+    let c = i64_ops::matmul(&a, &b).unwrap();
+    assert_eq!(c.as_slice(), &[19, 22, 43, 50]);
+    // wrapping product still integer type
+    let big = ArrayI64::full(vec![2, 2], i64::MAX / 2).unwrap();
+    let _ = i64_ops::matmul(&big, &big).unwrap();
+    let d = i64_ops::dot(
+        &ArrayI64::from_shape_slice(vec![3], &[1, 2, 3]).unwrap(),
+        &ArrayI64::from_shape_slice(vec![3], &[1, 1, 1]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(d, 6);
+    let m = ArrayI64::from_shape_slice(vec![2, 3], &[1, 2, 3, 4, 5, 6]).unwrap();
+    let va = m.var_axis(0, 0).unwrap();
+    assert_eq!(va.rank(), 1);
+    assert_eq!(va.len(), 3);
+}

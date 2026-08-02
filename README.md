@@ -51,7 +51,8 @@ work on arrays (and array ↔ number). Matrix product is always explicit:
 | **Constructors** | `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`, half-open), `array` (nested tables → dense `f64`), `eye` |
 | **Array methods** | `shape`, `rank`, `get` / `set`, `sum` / `mean` / `min` / `max`, `var` / `std`, `argmin` / `argmax`, ufuncs (`abs`/`sqrt`/`exp`/`log`/`log1p`/`sign`/`power`/`clip`/`isnan`/`isfinite`/`cumsum`), `copy`, `reshape` (may share; write COWs), `transpose`, `fill`, `#a` |
 | **Elementwise** | `+`, `-`, `*`, `/`, unary `-` (array–array or array–number) |
-| **Linear algebra** | `matmul`, `matmul_at`, `matmul_bt`, `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd` |
+| **Linear algebra (`f64`)** | `matmul`, `matmul_at`, `matmul_bt`, `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd` |
+| **Linear algebra (`i64`)** | `matmul_i64`, `matmul_at_i64`, `matmul_bt_i64`, `dot_i64`, `norm_i64`, `transpose_i64`, `eye_i64` (wrapping `i64`; solvers/factorizations remain on `f64`) |
 | **Rust core** | `Array` (`f64`), `ArrayI64` (`i64`, M7), views over host `f64` buffers, Arrow `Float64`/`Int64` interchange, LA under `matlua::linalg` (`f64`) |
 
 Quality bar for dense LA is **`f64`**. **`i64` arrays** (M7) cover keys and exact
