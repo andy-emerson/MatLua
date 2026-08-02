@@ -223,3 +223,34 @@ assert(mask:any() and not mask:all())
     )
     .unwrap();
 }
+
+#[test]
+fn m7_i64_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local a = ml.array_i64({{1,2,3},{4,5,6}})
+assert(a:dtype() == "i64")
+assert(a:rank() == 2)
+assert(a:sum() == 21)
+assert(a:get(1,1) == 1 and a:get(2,3) == 6)
+local b = ml.arange_i64(0, 5)
+assert(#b == 5 and b:get(1) == 0 and b:get(5) == 4)
+local c = a + ml.full_i64({2,3}, 1)
+assert(c:get(1,1) == 2)
+local f = a:to_f64()
+assert(type(f:sum()) == "number")
+local z = ml.zeros_i64(3)
+assert(z:sum() == 0)
+local s = a:sum(0)
+assert(s:get(1) == 5 and s:get(3) == 9)
+local idx = ml.array_i64({3,1,2}):argsort()
+assert(idx:get(1) == 2 and idx:get(2) == 3 and idx:get(3) == 1)
+local t = ml.array_i64({10,20,30}):take(idx)
+assert(t:get(1) == 20 and t:get(2) == 30 and t:get(3) == 10)
+"#,
+    )
+    .unwrap();
+}

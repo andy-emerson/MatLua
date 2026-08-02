@@ -139,3 +139,29 @@ fn m6_tier2_smoke() {
     assert_eq!(v.take(&idx).unwrap().as_slice(), &[1., 2., 3.]);
     assert_eq!(Array::diag(&v).unwrap().dims(), &[3, 3]);
 }
+
+#[test]
+fn m7_i64_surface_smoke() {
+    use matlua::{Array, ArrayI64, DType};
+    let a = ArrayI64::from_shape_slice(vec![2, 3], &[1, 2, 3, 4, 5, 6]).unwrap();
+    assert_eq!(a.dtype(), DType::I64);
+    assert_eq!(a.sum(), 21);
+    assert_eq!(a.sum_axis(0).unwrap().as_slice(), &[5, 7, 9]);
+    let b = ArrayI64::arange(0, 4).unwrap();
+    assert_eq!(b.as_slice(), &[0, 1, 2, 3]);
+    let c = a.add(&ArrayI64::full(vec![2, 3], 1).unwrap()).unwrap();
+    assert_eq!(c.as_slice()[0], 2);
+    let f = a.to_f64();
+    assert_eq!(f.dtype(), DType::F64);
+    assert_eq!(f.as_slice()[0], 1.0);
+    let back = f.to_i64();
+    assert_eq!(back.as_slice(), a.as_slice());
+    let idx = ArrayI64::from_shape_slice(vec![3], &[3, 1, 4]).unwrap().argsort(false).unwrap();
+    assert_eq!(idx.as_slice(), &[1, 0, 2]);
+    let ar = a.to_arrow();
+    let a2 = ArrayI64::from_arrow(&ar, vec![2, 3]).unwrap();
+    assert_eq!(a, a2);
+    // f64 LA path unchanged
+    let m = Array::eye(2).unwrap();
+    let _ = matlua::linalg::solve(&m, &Array::from_shape_slice(vec![2], &[1., 2.]).unwrap()).unwrap();
+}

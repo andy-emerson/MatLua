@@ -77,6 +77,12 @@ impl Array {
         &self.shape
     }
 
+    /// Element type ([`super::DType::F64`]).
+    #[inline]
+    pub fn dtype(&self) -> super::DType {
+        super::DType::F64
+    }
+
     /// Axis lengths.
     #[inline]
     pub fn dims(&self) -> &[usize] {
@@ -334,6 +340,11 @@ impl Array {
     pub fn max(&self) -> Result<f64> {
         kernels::max_slice(self.as_slice())
             .ok_or_else(|| Error::Shape("max of empty array".into()))
+    }
+
+    /// Truncate toward zero into an [`super::ArrayI64`].
+    pub fn to_i64(&self) -> super::ArrayI64 {
+        super::ArrayI64::from_f64(self)
     }
 
     /// Export as a non-null Arrow [`Float64Array`] (flat row-major values).

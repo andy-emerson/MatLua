@@ -1074,6 +1074,9 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
             lua_pushcfunction(L, Some(f));
             lua_setfield(L, -2, name.as_ptr());
         }
+        // M7 i64 surface
+        super::api_i64::install_metatable(L);
+        super::api_i64::register_module_funcs(L);
     }
     1
 }
