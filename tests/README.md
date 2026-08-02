@@ -19,25 +19,45 @@ For each op and size \(n \in \{64, 256, 1024\}\):
 
 **Relative tables:** NumPy is always **1.00x**. Other columns are `time / NumPy_time`.
 
+### How many trials? Is it deterministic?
+
+**Not a single deterministic run.** Each cell is:
+
+1. **Warmup:** `warm` untimed calls (fill caches / GC steady state).
+2. **Timed trials:** `iters` wall-clock samples of **one call** each.
+3. **Report:** **median** of those samples (ms), not mean — less sensitive to a single GC spike.
+
+Budget (same idea as `fair_all` / `i64_surface`):
+
+| n | light ops (iters, warm) | heavy LA (iters, warm) |
+|---|-------------------------|------------------------|
+| 64 | 30–50, 5–8 | 10–15, 2–3 |
+| 256 | 12–20, 3–4 | 4–6, 1–2 |
+| 1024 | 6–8, 2 | 2–3, 1 |
+
+So rows are **reproducible in distribution**, not bit-identical across machines/loads. Re-run on the same host for A/B opts.
+
+Promote-out sizes default: **64, 256, 1024**.
+
 ```bash
 # Correctness
 cargo test
 cargo test --features lua
 
 # Full refresh of the four tables below
-cargo test --release --features lua --test fair_all -- --run --sizes 64,256,1024 \
+cargo test --release --features lua --test fair_all -- --run --sizes 64,256,1024,1024 \
   | awk -F'\t' 'NF==4 && ($1=="rust"||$1=="lua"){print}' > tests/bench/last_f64.tsv
-python3 tests/bench/numpy_fair.py --sizes 64,256,1024 \
+python3 tests/bench/numpy_fair.py --sizes 64,256,1024,1024 \
   | awk -F'\t' 'NF==4 && $1=="numpy"{print}' >> tests/bench/last_f64.tsv
 
-cargo test --release --features lua --test i64_surface -- --run --sizes 64,256,1024 \
+cargo test --release --features lua --test i64_surface -- --run --sizes 64,256,1024,1024 \
   | awk -F'\t' 'NF==4 && ($1=="rust"||$1=="lua"){print}' > tests/bench/last_i64.tsv
-python3 tests/bench/numpy_i64_fair.py --sizes 64,256,1024 \
+python3 tests/bench/numpy_i64_fair.py --sizes 64,256,1024,1024 \
   | awk -F'\t' 'NF==4 && $1=="numpy"{print}' >> tests/bench/last_i64.tsv
 
-cargo test --release --features lua --test i64_promote -- --run --sizes 64,256 \
+cargo test --release --features lua --test i64_promote -- --run --sizes 64,256,1024 \
   | awk -F'\t' 'NF==4 && ($1=="rust"||$1=="lua"){print}' > tests/bench/last_i64_promote.tsv
-python3 tests/bench/numpy_i64_promote.py --sizes 64,256 \
+python3 tests/bench/numpy_i64_promote.py --sizes 64,256,1024 \
   | awk -F'\t' 'NF==4 && $1=="numpy"{print}' >> tests/bench/last_i64_promote.tsv
 
 python3 tests/bench/compare_tables.py --write-readme tests/README.md
@@ -375,22 +395,28 @@ NumPy uses int64 stats where natural, else float64 after cast for LA.
 
 | op | n | NumPy (ms) | MatLua Rust (ms) | MatLua Lua (ms) |
 | --- | ---: | ---: | ---: | ---: |
-| cholesky | 64 | 0.019822 | 0.014973 | 0.017097 |
-| cholesky | 256 | 0.863943 | 0.679758 | 0.715329 |
-| mean | 64 | 0.006147 | 0.000335 | 0.000501 |
-| mean | 256 | 0.040219 | 0.007679 | 0.007882 |
-| median | 64 | 0.015283 | 0.003513 | 0.003571 |
-| median | 256 | 0.100047 | 0.151093 | 0.151495 |
-| norm | 64 | 0.002613 | 0.001454 | 0.001694 |
-| norm | 256 | 0.007906 | 0.021923 | 0.022233 |
-| qr | 64 | 0.110148 | 0.298185 | 0.264748 |
-| qr | 256 | 5.1322 | 4.1461 | 4.5988 |
-| quantile | 64 | 0.052447 | 0.003504 | 0.003759 |
-| quantile | 256 | 0.218513 | 0.151069 | 0.152849 |
-| solve | 64 | 0.032741 | 0.075226 | 0.105378 |
-| solve | 256 | 0.716595 | 1.3850 | 1.4684 |
-| std | 64 | 0.018056 | 0.003119 | 0.003201 |
-| std | 256 | 0.123245 | 0.051379 | 0.051613 |
+| cholesky | 64 | 0.018924 | 0.015160 | — |
+| cholesky | 256 | 0.819506 | 0.639453 | — |
+| mean | 64 | 0.006196 | 0.000372 | — |
+| mean | 256 | 0.040957 | 0.007667 | — |
+| mean | 1024 | 0.672370 | 0.339691 | — |
+| median | 64 | 0.014910 | 0.003514 | — |
+| median | 256 | 0.098730 | 0.148421 | — |
+| median | 1024 | 1.8540 | 1.4269 | — |
+| norm | 64 | 0.002616 | 0.001406 | — |
+| norm | 256 | 0.007628 | 0.021930 | — |
+| norm | 1024 | 0.152144 | 0.457871 | — |
+| qr | 64 | 0.113361 | 0.281095 | — |
+| qr | 256 | 4.8013 | 3.8716 | — |
+| quantile | 64 | 0.049570 | 0.003402 | — |
+| quantile | 256 | 0.238343 | 0.148436 | — |
+| quantile | 1024 | 3.7403 | 1.2553 | — |
+| solve | 64 | 0.032174 | 0.072677 | — |
+| solve | 256 | 0.691679 | 1.3877 | — |
+| solve | 1024 | 31.271 | 40.341 | — |
+| std | 64 | 0.018180 | 0.003116 | — |
+| std | 256 | 0.123106 | 0.051364 | — |
+| std | 1024 | 2.4054 | 1.0485 | — |
 
 ### Table F — i64→f64 promote-out vs NumPy (relative)
 
@@ -398,21 +424,27 @@ NumPy uses int64 stats where natural, else float64 after cast for LA.
 
 | op | n | NumPy | Rust/NumPy | Lua/NumPy | Lua/Rust |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| cholesky | 64 | 1.00x | 0.76x | 0.86x | 1.14x |
-| cholesky | 256 | 1.00x | 0.79x | 0.83x | 1.05x |
-| mean | 64 | 1.00x | 0.05x | 0.08x | 1.50x |
-| mean | 256 | 1.00x | 0.19x | 0.20x | 1.03x |
-| median | 64 | 1.00x | 0.23x | 0.23x | 1.02x |
-| median | 256 | 1.00x | 1.51x | 1.51x | 1.00x |
-| norm | 64 | 1.00x | 0.56x | 0.65x | 1.17x |
-| norm | 256 | 1.00x | 2.77x | 2.81x | 1.01x |
-| qr | 64 | 1.00x | 2.71x | 2.40x | 0.89x |
-| qr | 256 | 1.00x | 0.81x | 0.90x | 1.11x |
-| quantile | 64 | 1.00x | 0.07x | 0.07x | 1.07x |
-| quantile | 256 | 1.00x | 0.69x | 0.70x | 1.01x |
-| solve | 64 | 1.00x | 2.30x | 3.22x | 1.40x |
-| solve | 256 | 1.00x | 1.93x | 2.05x | 1.06x |
-| std | 64 | 1.00x | 0.17x | 0.18x | 1.03x |
-| std | 256 | 1.00x | 0.42x | 0.42x | 1.00x |
+| cholesky | 64 | 1.00x | 0.80x | — | — |
+| cholesky | 256 | 1.00x | 0.78x | — | — |
+| mean | 64 | 1.00x | 0.06x | — | — |
+| mean | 256 | 1.00x | 0.19x | — | — |
+| mean | 1024 | 1.00x | 0.51x | — | — |
+| median | 64 | 1.00x | 0.24x | — | — |
+| median | 256 | 1.00x | 1.50x | — | — |
+| median | 1024 | 1.00x | 0.77x | — | — |
+| norm | 64 | 1.00x | 0.54x | — | — |
+| norm | 256 | 1.00x | 2.87x | — | — |
+| norm | 1024 | 1.00x | 3.01x | — | — |
+| qr | 64 | 1.00x | 2.48x | — | — |
+| qr | 256 | 1.00x | 0.81x | — | — |
+| quantile | 64 | 1.00x | 0.07x | — | — |
+| quantile | 256 | 1.00x | 0.62x | — | — |
+| quantile | 1024 | 1.00x | 0.34x | — | — |
+| solve | 64 | 1.00x | 2.26x | — | — |
+| solve | 256 | 1.00x | 2.01x | — | — |
+| solve | 1024 | 1.00x | 1.29x | — | — |
+| std | 64 | 1.00x | 0.17x | — | — |
+| std | 256 | 1.00x | 0.42x | — | — |
+| std | 1024 | 1.00x | 0.44x | — | — |
 
 <!-- PERF_TABLES_END -->

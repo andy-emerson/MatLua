@@ -35,10 +35,15 @@ def dense(n: int) -> np.ndarray:
 
 
 def budget(n: int, heavy: bool) -> tuple[int, int]:
+    # Match tests/bench/i64_promote.rs budget()
     if heavy:
+        if n >= 1024:
+            return 2, 1
         if n >= 256:
             return 4, 1
         return 10, 2
+    if n >= 1024:
+        return 6, 2
     if n >= 256:
         return 12, 3
     return 30, 5
@@ -50,7 +55,7 @@ def emit(op: str, n: int, ms: float) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sizes", default="64,256")
+    ap.add_argument("--sizes", default="64,256,1024")
     args = ap.parse_args()
     sizes = [int(s) for s in args.sizes.split(",") if s.strip()]
     print("face\top\tn\tms")

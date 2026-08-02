@@ -184,9 +184,9 @@ fn main() {
     let sizes: Vec<usize> = if let Some(i) = args.iter().position(|a| a == "--sizes") {
         args.get(i + 1)
             .map(|s| s.split(',').filter_map(|p| p.parse().ok()).collect())
-            .unwrap_or_else(|| vec![64, 256])
+            .unwrap_or_else(|| vec![64, 256, 1024])
     } else {
-        vec![64, 256]
+        vec![64, 256, 1024]
     };
     eprintln!("# i64→f64 promote-out. sizes={sizes:?}");
     println!("face\top\tn\tms");
