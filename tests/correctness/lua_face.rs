@@ -131,3 +131,26 @@ assert(P:shape()[1] == 2 and P:shape()[2] == 4)
     )
     .unwrap();
 }
+
+#[test]
+fn tier1_ufuncs_face() {
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local a = ml.array({-1, 4, 9})
+assert(a:abs():get(1) == 1)
+assert(math.abs(a:sqrt():get(2) - 2) < 1e-12)
+assert(a:argmin() == 1)
+assert(a:argmax() == 3)
+local b = ml.array({1, 2, 3})
+assert(math.abs(b:var(0) - 2/3) < 1e-12)
+local c = ml.array({1, 0, 1})
+local x = ml.array({10, 20, 30})
+local y = ml.array({1, 2, 3})
+local w = ml.where(c, x, y)
+assert(w:get(1) == 10 and w:get(2) == 2 and w:get(3) == 30)
+"#,
+    )
+    .unwrap();
+}

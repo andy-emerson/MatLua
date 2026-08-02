@@ -427,12 +427,169 @@ pub unsafe extern "C" fn a_unm(L: *mut lua_State) -> c_int {
     1
 }
 
+
+pub unsafe extern "C" fn a_abs(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    unsafe { push_array(L, a.array.abs()) };
+    1
+}
+pub unsafe extern "C" fn a_sqrt(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    unsafe { push_array(L, a.array.sqrt()) };
+    1
+}
+pub unsafe extern "C" fn a_exp(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    unsafe { push_array(L, a.array.exp()) };
+    1
+}
+pub unsafe extern "C" fn a_log(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    unsafe { push_array(L, a.array.log()) };
+    1
+}
+pub unsafe extern "C" fn a_log1p(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    unsafe { push_array(L, a.array.log1p()) };
+    1
+}
+pub unsafe extern "C" fn a_sign(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    unsafe { push_array(L, a.array.sign()) };
+    1
+}
+pub unsafe extern "C" fn a_power(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    if unsafe { lua_isnumber(L, 2) } {
+        let p = unsafe { luaL_checknumber(L, 2) };
+        unsafe { push_array(L, a.array.power_scalar(p)) };
+        return 1;
+    }
+    let b = unsafe { &*check_array(L, 2) };
+    let c = lua_try!(L, a.array.power(&b.array));
+    unsafe { push_array(L, c) };
+    1
+}
+pub unsafe extern "C" fn a_clip(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let lo = unsafe { luaL_checknumber(L, 2) };
+    let hi = unsafe { luaL_checknumber(L, 3) };
+    let c = lua_try!(L, a.array.clip(lo, hi));
+    unsafe { push_array(L, c) };
+    1
+}
+pub unsafe extern "C" fn a_isnan(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    unsafe { push_array(L, a.array.isnan()) };
+    1
+}
+pub unsafe extern "C" fn a_isfinite(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    unsafe { push_array(L, a.array.isfinite()) };
+    1
+}
+pub unsafe extern "C" fn a_cumsum(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    unsafe { push_array(L, a.array.cumsum()) };
+    1
+}
+pub unsafe extern "C" fn a_argmin(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let i = lua_try!(L, a.array.argmin());
+    unsafe { lua_pushinteger(L, (i + 1) as _) }; // 1-based
+    1
+}
+pub unsafe extern "C" fn a_argmax(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let i = lua_try!(L, a.array.argmax());
+    unsafe { lua_pushinteger(L, (i + 1) as _) };
+    1
+}
+pub unsafe extern "C" fn a_var(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let ddof = if unsafe { lua_gettop(L) } >= 2 {
+        let d = unsafe { luaL_checkinteger(L, 2) };
+        if d < 0 {
+            return super::ud::lua_error_msg(L, "var ddof must be >= 0");
+        }
+        d as usize
+    } else {
+        0
+    };
+    let v = lua_try!(L, a.array.var(ddof));
+    unsafe { lua_pushnumber(L, v) };
+    1
+}
+pub unsafe extern "C" fn a_std(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let ddof = if unsafe { lua_gettop(L) } >= 2 {
+        let d = unsafe { luaL_checkinteger(L, 2) };
+        if d < 0 {
+            return super::ud::lua_error_msg(L, "std ddof must be >= 0");
+        }
+        d as usize
+    } else {
+        0
+    };
+    let v = lua_try!(L, a.array.std(ddof));
+    unsafe { lua_pushnumber(L, v) };
+    1
+}
+pub unsafe extern "C" fn l_where(L: *mut lua_State) -> c_int {
+    let c = unsafe { &*check_array(L, 1) };
+    let x = unsafe { &*check_array(L, 2) };
+    let y = unsafe { &*check_array(L, 3) };
+    let o = lua_try!(L, Array::where_cond(&c.array, &x.array, &y.array));
+    unsafe { push_array(L, o) };
+    1
+}
+
+
+pub unsafe extern "C" fn l_concatenate(L: *mut lua_State) -> c_int {
+    let axis = unsafe { luaL_checkinteger(L, 1) };
+    if axis < 0 {
+        return super::ud::lua_error_msg(L, "concatenate axis must be >= 0");
+    }
+    let top = unsafe { lua_gettop(L) };
+    if top < 3 {
+        return super::ud::lua_error_msg(L, "concatenate(axis, a, b, ...) needs arrays");
+    }
+    let mut owned = Vec::new();
+    for i in 2..=top {
+        let a = unsafe { &*check_array(L, i) };
+        owned.push(&a.array as *const _);
+    }
+    // Safety: arrays are on stack, alive for call
+    let refs: Vec<&Array> = owned.iter().map(|p| unsafe { &**p }).collect();
+    let out = lua_try!(L, Array::concatenate(axis as usize, &refs));
+    unsafe { push_array(L, out) };
+    1
+}
+pub unsafe extern "C" fn l_stack(L: *mut lua_State) -> c_int {
+    let axis = unsafe { luaL_checkinteger(L, 1) };
+    if axis < 0 {
+        return super::ud::lua_error_msg(L, "stack axis must be >= 0");
+    }
+    let top = unsafe { lua_gettop(L) };
+    if top < 3 {
+        return super::ud::lua_error_msg(L, "stack(axis, a, b, ...) needs arrays");
+    }
+    let mut owned = Vec::new();
+    for i in 2..=top {
+        let a = unsafe { &*check_array(L, i) };
+        owned.push(&a.array as *const _);
+    }
+    let refs: Vec<&Array> = owned.iter().map(|p| unsafe { &**p }).collect();
+    let out = lua_try!(L, Array::stack(axis as usize, &refs));
+    unsafe { push_array(L, out) };
+    1
+}
 /// Module open: push library table.
 pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
     unsafe {
         if luaL_newmetatable(L, ARRAY_MT.as_ptr()) != 0 {
             lua_newtable(L);
-            let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 12] = [
+            let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 27] = [
                 (c"shape", a_shape),
                 (c"rank", a_rank),
                 (c"get", a_get),
@@ -445,6 +602,21 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
                 (c"reshape", a_reshape),
                 (c"transpose", a_transpose),
                 (c"fill", a_fill),
+                (c"abs", a_abs),
+                (c"sqrt", a_sqrt),
+                (c"exp", a_exp),
+                (c"log", a_log),
+                (c"log1p", a_log1p),
+                (c"sign", a_sign),
+                (c"power", a_power),
+                (c"clip", a_clip),
+                (c"isnan", a_isnan),
+                (c"isfinite", a_isfinite),
+                (c"cumsum", a_cumsum),
+                (c"argmin", a_argmin),
+                (c"argmax", a_argmax),
+                (c"var", a_var),
+                (c"std", a_std),
             ];
             for (name, f) in methods {
                 lua_pushcfunction(L, Some(f));
@@ -472,13 +644,16 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
         lua_pop(L, 1);
 
         lua_newtable(L);
-        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 19] = [
+        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 22] = [
             (c"zeros", l_zeros),
             (c"ones", l_ones),
             (c"full", l_full),
             (c"arange", l_arange),
             (c"array", l_array),
             (c"eye", l_eye),
+            (c"where", l_where),
+            (c"concatenate", l_concatenate),
+            (c"stack", l_stack),
             (c"matmul", l_matmul),
             (c"matmul_at", l_matmul_at),
             (c"normal_eq", l_normal_eq),
