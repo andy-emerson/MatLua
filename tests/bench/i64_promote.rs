@@ -55,14 +55,21 @@ fn dense(n: usize) -> ArrayI64 {
 }
 
 fn spd_i64(n: usize) -> ArrayI64 {
-    // A^T A + n*I style integer SPD-ish for cholesky after promote
-    let a = dense(n);
-    let at = a.transpose().unwrap();
-    let g = i64_ops::matmul(&at, &a).unwrap();
-    // g + n*I
-    let mut s = g;
+    // Small-entry integer Gram matrix so AᵀA does **not** wrap at n=1024
+    // (large `dense()` products wrap → non-SPD after f64 promote → cholesky fails).
+    let mut data = Vec::with_capacity(n * n);
     for i in 0..n {
-        let v = s.get(&[i, i]).unwrap().wrapping_add(n as i64);
+        for j in 0..n {
+            data.push(((i + 2 * j) % 7) as i64);
+        }
+    }
+    let a = ArrayI64::from_shape_vec(vec![n, n], data).unwrap();
+    let at = a.transpose().unwrap();
+    let mut s = i64_ops::matmul(&at, &a).unwrap();
+    // s + (n+1)·I  → strictly diagonally dominant / SPD over reals
+    let bump = (n as i64) + 1;
+    for i in 0..n {
+        let v = s.get(&[i, i]).unwrap().wrapping_add(bump);
         s.set(&[i, i], v).unwrap();
     }
     s
@@ -112,10 +119,17 @@ for i = 1, n do
 end
 V = ml.zeros_i64(n)
 for i = 1, n do V:set(i, (i-1)*3+1) end
-local At = A:transpose()
-S = ml.matmul(At, A)
+-- Small-entry Gram + diagonal (match Rust spd_i64); avoid wrap → non-SPD
+local G = ml.zeros_i64(n, n)
 for i = 1, n do
-  S:set(i, i, S:get(i, i) + n)
+  for j = 1, n do
+    G:set(i, j, (i - 1 + 2 * (j - 1)) % 7)
+  end
+end
+local Gt = G:transpose()
+S = ml.matmul(Gt, G)
+for i = 1, n do
+  S:set(i, i, S:get(i, i) + n + 1)
 end
 rhs = V
 "#

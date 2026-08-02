@@ -62,7 +62,10 @@ def main() -> None:
     for n in sizes:
         a = dense(n)
         af = a.astype(np.float64)
-        s = (a.T @ a) + n * np.eye(n, dtype=np.int64)
+        # Match Rust spd_i64: small-entry Gram + (n+1)I (no wrap at n=1024)
+        ii, jj = np.indices((n, n))
+        g0 = ((ii + 2 * jj) % 7).astype(np.int64)
+        s = (g0.T @ g0) + (n + 1) * np.eye(n, dtype=np.int64)
         sf = s.astype(np.float64)
         v = (np.arange(n, dtype=np.int64) * 3 + 1).astype(np.float64)
         it, wrm = budget(n, False)
