@@ -110,6 +110,14 @@ pub unsafe extern "C" fn l_matmul_at(L: *mut lua_State) -> c_int {
     1
 }
 
+pub unsafe extern "C" fn l_matmul_bt(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let b = unsafe { &*check_array(L, 2) };
+    let c = lua_try!(L, linalg::matmul_bt(&a.array, &b.array));
+    unsafe { push_array(L, c) };
+    1
+}
+
 pub unsafe extern "C" fn l_normal_eq(L: *mut lua_State) -> c_int {
     let x = unsafe { &*check_array(L, 1) };
     let y = unsafe { &*check_array(L, 2) };
@@ -884,7 +892,7 @@ pub unsafe extern "C" fn a_argsort(L: *mut lua_State) -> c_int {
     for x in &mut data {
         *x += 1.0;
     }
-    let out = Array::from_shape_vec(vec![data.len()], data).unwrap();
+    let out = lua_try!(L, Array::from_shape_vec(vec![data.len()], data));
     unsafe { push_array(L, out) };
     1
 }
@@ -896,7 +904,7 @@ pub unsafe extern "C" fn a_take(L: *mut lua_State) -> c_int {
     for x in &mut zero {
         *x -= 1.0;
     }
-    let z = Array::from_shape_vec(vec![zero.len()], zero).unwrap();
+    let z = lua_try!(L, Array::from_shape_vec(vec![zero.len()], zero));
     let out = lua_try!(L, a.array.take(&z));
     unsafe { push_array(L, out) };
     1
@@ -1032,7 +1040,7 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
         lua_pop(L, 1);
 
         lua_newtable(L);
-        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 27] = [
+        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 28] = [
             (c"zeros", l_zeros),
             (c"ones", l_ones),
             (c"full", l_full),
@@ -1049,6 +1057,7 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
             (c"corrcoef", l_corrcoef),
             (c"matmul", l_matmul),
             (c"matmul_at", l_matmul_at),
+            (c"matmul_bt", l_matmul_bt),
             (c"normal_eq", l_normal_eq),
             (c"solve", l_solve),
             (c"lstsq", l_lstsq),

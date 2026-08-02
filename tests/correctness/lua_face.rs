@@ -59,6 +59,17 @@ assert(#long == #short)
 for i = 1, #long do
   assert(math.abs(long:get(i) - short:get(i)) < 1e-9)
 end
+-- matmul_bt: A @ Bᵀ
+local A = ml.array({{1,2,3},{4,5,6}})
+local B = ml.array({{0.5,1.5,2.5},{3.5,4.5,5.5}})
+local bt = ml.matmul_bt(A, B)
+local long_bt = ml.matmul(A, B:transpose())
+assert(bt:rank() == 2)
+for i = 1, 2 do
+  for j = 1, 2 do
+    assert(math.abs(bt:get(i,j) - long_bt:get(i,j)) < 1e-12)
+  end
+end
 local b1 = ml.normal_eq(X, y)
 local b2 = ml.solve(ml.matmul(X:transpose(), X), ml.matmul(X:transpose(), y))
 for i = 1, #b1 do
