@@ -117,7 +117,7 @@ Closed decisions and milestones: [DESIGN.md](DESIGN.md).
 **M0–M6 are on `main`** (see [DESIGN.md](DESIGN.md) §7.1). The tree is a **v0.1
 candidate**: a host can embed MatLua and scripts can do ordinary dense array and
 linear-algebra work end-to-end. Crate version remains **`0.0.1`** until a formal
-`0.1.0` cut. **M7 Done. M7.b Done** (quant pack + host view entry). Next **M7.c** optimize or embed/TallyDB milestones.
+`0.1.0` cut. **M7 Done. M7.b Done** (quant pack + host view entry). Next **M7.c** (optimize). Embed/TallyDB letter work is **M8–M12** (see DESIGN §7.1.1).
 
 **Performance:** fair three-way microbench (NumPy · MatLua Rust · MatLua Lua) lives
 under [`tests/`](tests/README.md). Run `python3 tests/bench/compare_fair.py`.
