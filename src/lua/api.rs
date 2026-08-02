@@ -5,7 +5,7 @@
 use std::os::raw::c_int;
 use std::ptr;
 
-use crate::array::Array;
+use crate::array::{Array, ArrayI64};
 use crate::linalg;
 
 use super::ffi::*;
@@ -595,6 +595,88 @@ pub unsafe extern "C" fn a_quantile(L: *mut lua_State) -> c_int {
     }
     let v = lua_try!(L, a.array.quantile(q));
     unsafe { lua_pushnumber(L, v) };
+    1
+}
+
+
+pub unsafe extern "C" fn a_nonzero(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let idx = a.array.nonzero();
+    // 1-based for Lua
+    let mut d = idx.as_slice().to_vec();
+    for x in &mut d {
+        *x += 1;
+    }
+    let o = lua_try!(L, ArrayI64::from_shape_vec(vec![d.len()], d));
+    unsafe { push_array_i64(L, o) };
+    1
+}
+
+pub unsafe extern "C" fn a_compress(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    let mask = unsafe { &*check_array(L, 2) };
+    let o = lua_try!(L, a.array.compress(&mask.array));
+    unsafe { push_array(L, o) };
+    1
+}
+
+pub unsafe extern "C" fn a_put(L: *mut lua_State) -> c_int {
+    let a = unsafe { &mut *check_array(L, 1) };
+    let idx_ud = unsafe { check_array_i64(L, 2) };
+    let vals = unsafe { &*check_array(L, 3) };
+    // convert 1-based indices from Lua to 0-based
+    let idx_arr = unsafe { &(*idx_ud).array };
+    let mut z = idx_arr.as_slice().to_vec();
+    for x in &mut z {
+        if *x <= 0 {
+            return super::ud::lua_error_msg(L, "put indices must be >= 1");
+        }
+        *x -= 1;
+    }
+    let idx0 = lua_try!(L, ArrayI64::from_shape_vec(vec![z.len()], z));
+    lua_try!(L, a.array.put(&idx0, &vals.array));
+    0
+}
+
+pub unsafe extern "C" fn a_put_mask(L: *mut lua_State) -> c_int {
+    let a = unsafe { &mut *check_array(L, 1) };
+    let mask = unsafe { &*check_array(L, 2) };
+    if unsafe { lua_type(L, 3) } == LUA_TNUMBER {
+        let v = unsafe { luaL_checknumber(L, 3) };
+        let vals = lua_try!(L, Array::full(vec![1], v));
+        lua_try!(L, a.array.put_mask(&mask.array, &vals));
+    } else {
+        let vals = unsafe { &*check_array(L, 3) };
+        lua_try!(L, a.array.put_mask(&mask.array, &vals.array));
+    }
+    0
+}
+
+pub unsafe extern "C" fn a_take(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array(L, 1) };
+    // accept f64 or i64 indices; 1-based
+    if unsafe { is_i64(L, 2) } {
+        let idx = unsafe { &*check_array_i64(L, 2) };
+        let mut z = idx.array.as_slice().to_vec();
+        for x in &mut z {
+            if *x <= 0 {
+                return super::ud::lua_error_msg(L, "take indices must be >= 1");
+            }
+            *x -= 1;
+        }
+        let idx0 = lua_try!(L, ArrayI64::from_shape_vec(vec![z.len()], z));
+        let o = lua_try!(L, a.array.take_i64(&idx0));
+        unsafe { push_array(L, o) };
+        return 1;
+    }
+    let idx = unsafe { &*check_array(L, 2) };
+    let mut z = idx.array.as_slice().to_vec();
+    for x in &mut z {
+        *x -= 1.0;
+    }
+    let idx0 = lua_try!(L, Array::from_shape_vec(vec![z.len()], z));
+    let o = lua_try!(L, a.array.take(&idx0));
+    unsafe { push_array(L, o) };
     1
 }
 
@@ -1285,19 +1367,6 @@ pub unsafe extern "C" fn a_argsort(L: *mut lua_State) -> c_int {
     unsafe { push_array(L, out) };
     1
 }
-pub unsafe extern "C" fn a_take(L: *mut lua_State) -> c_int {
-    let a = unsafe { &*check_array(L, 1) };
-    let idx_ud = unsafe { &*check_array(L, 2) };
-    // Lua indices are 1-based: convert to 0-based for Rust take
-    let mut zero = idx_ud.array.as_slice().to_vec();
-    for x in &mut zero {
-        *x -= 1.0;
-    }
-    let z = lua_try!(L, Array::from_shape_vec(vec![zero.len()], zero));
-    let out = lua_try!(L, a.array.take(&z));
-    unsafe { push_array(L, out) };
-    1
-}
 pub unsafe extern "C" fn a_diagonal(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
     let d = lua_try!(L, a.array.diagonal());
@@ -1350,7 +1419,7 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
     unsafe {
         if luaL_newmetatable(L, ARRAY_MT.as_ptr()) != 0 {
             lua_newtable(L);
-            let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 53] = [
+            let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 57] = [
             (c"shape", a_shape),
             (c"rank", a_rank),
             (c"get", a_get),
@@ -1404,6 +1473,10 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
             (c"trace", a_trace),
             (c"median", a_median),
             (c"quantile", a_quantile),
+            (c"nonzero", a_nonzero),
+            (c"compress", a_compress),
+            (c"put", a_put),
+            (c"put_mask", a_put_mask),
         ];
             for (name, f) in methods {
                 lua_pushcfunction(L, Some(f));

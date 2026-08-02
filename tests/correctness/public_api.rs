@@ -288,3 +288,30 @@ fn m7b_random_reproducible() {
     let c = choice(&pop, 5).unwrap();
     assert_eq!(c.len(), 5);
 }
+
+#[test]
+fn m7b_indexing() {
+    use matlua::array::{Array, ArrayI64};
+    let a = Array::from_shape_slice(vec![5], &[0., 1., 0., 3., 4.]).unwrap();
+    let nz = a.nonzero();
+    assert_eq!(nz.as_slice(), &[1, 3, 4]);
+    let mask = Array::from_shape_slice(vec![5], &[0., 1., 0., 1., 0.]).unwrap();
+    let c = a.compress(&mask).unwrap();
+    assert_eq!(c.as_slice(), &[1., 3.]);
+    let mut b = Array::zeros(vec![4]).unwrap();
+    let idx = ArrayI64::from_shape_slice(vec![2], &[1, 3]).unwrap();
+    let vals = Array::from_shape_slice(vec![2], &[10., 20.]).unwrap();
+    b.put(&idx, &vals).unwrap();
+    assert_eq!(b.as_slice(), &[0., 10., 0., 20.]);
+    let mut d = Array::from_shape_slice(vec![3], &[1., 2., 3.]).unwrap();
+    d.put_mask(
+        &Array::from_shape_slice(vec![3], &[1., 0., 1.]).unwrap(),
+        &Array::from_shape_slice(vec![1], &[9.]).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(d.as_slice(), &[9., 2., 9.]);
+    let t = a.take_i64(&ArrayI64::from_shape_slice(vec![2], &[1, 3]).unwrap()).unwrap();
+    assert_eq!(t.as_slice(), &[1., 3.]);
+    let i = ArrayI64::from_shape_slice(vec![4], &[0, 5, 0, 7]).unwrap();
+    assert_eq!(i.nonzero().as_slice(), &[1, 3]);
+}

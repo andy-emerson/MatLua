@@ -689,6 +689,89 @@ impl ArrayI64 {
         Ok(Self::from_parts(Shape::from_len(n), data))
     }
 
+    /// Flat 0-based indices of nonzero elements.
+    pub fn nonzero(&self) -> ArrayI64 {
+        let mut idx = Vec::new();
+        for (i, &v) in self.as_slice().iter().enumerate() {
+            if v != 0 {
+                idx.push(i as i64);
+            }
+        }
+        let n = idx.len();
+        Self::from_parts(Shape::from_len(n), idx)
+    }
+
+    /// Select rank-1 elements where mask is nonzero.
+    pub fn compress(&self, mask: &ArrayI64) -> Result<ArrayI64> {
+        if self.rank() != 1 || mask.rank() != 1 {
+            return Err(Error::Shape("compress requires rank-1 array and mask".into()));
+        }
+        if self.len() != mask.len() {
+            return Err(Error::Shape("compress length mismatch".into()));
+        }
+        let mut out = Vec::new();
+        for i in 0..self.len() {
+            if mask.as_slice()[i] != 0 {
+                out.push(self.as_slice()[i]);
+            }
+        }
+        let n = out.len();
+        Ok(Self::from_parts(Shape::from_len(n), out))
+    }
+
+    /// Scatter values at 0-based indices.
+    pub fn put(&mut self, indices: &ArrayI64, values: &ArrayI64) -> Result<()> {
+        if self.rank() != 1 || indices.rank() != 1 || values.rank() != 1 {
+            return Err(Error::Shape("put requires rank-1 dest, indices, values".into()));
+        }
+        if indices.len() != values.len() {
+            return Err(Error::Shape("put indices/values length mismatch".into()));
+        }
+        let n = self.len();
+        let dst = self.as_mut_slice();
+        for k in 0..indices.len() {
+            let i = indices.as_slice()[k];
+            if i < 0 {
+                return Err(Error::Index(format!("put index {i} invalid")));
+            }
+            let i = i as usize;
+            if i >= n {
+                return Err(Error::Index(format!("put index {i} out of range")));
+            }
+            dst[i] = values.as_slice()[k];
+        }
+        Ok(())
+    }
+
+    /// Assign where mask nonzero.
+    pub fn put_mask(&mut self, mask: &ArrayI64, values: &ArrayI64) -> Result<()> {
+        if self.rank() != 1 || mask.rank() != 1 || values.rank() != 1 {
+            return Err(Error::Shape("put_mask requires rank-1 args".into()));
+        }
+        if self.len() != mask.len() {
+            return Err(Error::Shape("put_mask length mismatch".into()));
+        }
+        let count = mask.as_slice().iter().filter(|&&x| x != 0).count();
+        let val = values.as_slice();
+        if val.len() != 1 && val.len() != count {
+            return Err(Error::Shape(format!(
+                "put_mask values len {} != true count {count} (or 1)",
+                val.len()
+            )));
+        }
+        let dst = self.as_mut_slice();
+        let m = mask.as_slice();
+        let mut t = 0usize;
+        for i in 0..dst.len() {
+            if m[i] != 0 {
+                dst[i] = if val.len() == 1 { val[0] } else { val[t] };
+                t += 1;
+            }
+        }
+        Ok(())
+    }
+
+
     /// `slice` (see `f64` [`Array`] counterpart).
     pub fn slice(&self, start: usize, stop: usize) -> Result<ArrayI64> {
         if self.rank() != 1 {

@@ -1250,6 +1250,130 @@ impl Array {
         Ok(Self::from_parts(Shape::from_len(indices.len()), data))
     }
 
+
+    /// Flat 0-based indices of nonzero elements (row-major). Returns [`ArrayI64`].
+    pub fn nonzero(&self) -> super::ArrayI64 {
+        let src = self.as_slice();
+        let mut idx = Vec::new();
+        for (i, &v) in src.iter().enumerate() {
+            if v != 0.0 && !v.is_nan() {
+                idx.push(i as i64);
+            }
+        }
+        // NaN treated as "not selected" (not nonzero in the numeric sense used here)
+        let n = idx.len();
+        super::ArrayI64::from_parts(Shape::from_len(n), idx)
+    }
+
+    /// Gather rank-1 elements by 0-based [`ArrayI64`] indices.
+    pub fn take_i64(&self, indices: &super::ArrayI64) -> Result<Array> {
+        if self.rank() != 1 {
+            return Err(Error::Shape("take requires rank-1 source".into()));
+        }
+        if indices.rank() != 1 {
+            return Err(Error::Shape("take indices must be rank-1".into()));
+        }
+        let src = self.as_slice();
+        let n = src.len();
+        let mut data = pool::take_uninit(indices.len());
+        for (k, &i) in indices.as_slice().iter().enumerate() {
+            if i < 0 {
+                return Err(Error::Index(format!("take index {i} invalid")));
+            }
+            let i = i as usize;
+            if i >= n {
+                return Err(Error::Index(format!("take index {i} out of range for len {n}")));
+            }
+            data[k] = src[i];
+        }
+        Ok(Self::from_parts(Shape::from_len(indices.len()), data))
+    }
+
+    /// Select rank-1 elements where `mask` is nonzero (same length).
+    pub fn compress(&self, mask: &Array) -> Result<Array> {
+        if self.rank() != 1 || mask.rank() != 1 {
+            return Err(Error::Shape("compress requires rank-1 array and mask".into()));
+        }
+        if self.len() != mask.len() {
+            return Err(Error::Shape(format!(
+                "compress length mismatch: {} vs {}",
+                self.len(),
+                mask.len()
+            )));
+        }
+        let src = self.as_slice();
+        let m = mask.as_slice();
+        let mut out = Vec::new();
+        for i in 0..src.len() {
+            if m[i] != 0.0 && !m[i].is_nan() {
+                out.push(src[i]);
+            }
+        }
+        let n = out.len();
+        Ok(Self::from_parts(Shape::from_len(n), out))
+    }
+
+    /// Scatter `values` into `self` at 0-based `indices` (rank-1 all). Lengths of
+    /// `indices` and `values` must match.
+    pub fn put(&mut self, indices: &super::ArrayI64, values: &Array) -> Result<()> {
+        if self.rank() != 1 {
+            return Err(Error::Shape("put requires rank-1 destination".into()));
+        }
+        if indices.rank() != 1 || values.rank() != 1 {
+            return Err(Error::Shape("put indices and values must be rank-1".into()));
+        }
+        if indices.len() != values.len() {
+            return Err(Error::Shape("put indices and values length mismatch".into()));
+        }
+        let n = self.len();
+        let dst = self.as_mut_slice();
+        let idx = indices.as_slice();
+        let val = values.as_slice();
+        for k in 0..idx.len() {
+            let i = idx[k];
+            if i < 0 {
+                return Err(Error::Index(format!("put index {i} invalid")));
+            }
+            let i = i as usize;
+            if i >= n {
+                return Err(Error::Index(format!("put index {i} out of range for len {n}")));
+            }
+            dst[i] = val[k];
+        }
+        Ok(())
+    }
+
+    /// Assign from rank-1 `values` (or broadcast one scalar array len 1) where mask nonzero.
+    pub fn put_mask(&mut self, mask: &Array, values: &Array) -> Result<()> {
+        if self.rank() != 1 || mask.rank() != 1 {
+            return Err(Error::Shape("put_mask requires rank-1 dest and mask".into()));
+        }
+        if self.len() != mask.len() {
+            return Err(Error::Shape("put_mask length mismatch with mask".into()));
+        }
+        let m = mask.as_slice();
+        let count = m.iter().filter(|&&x| x != 0.0 && !x.is_nan()).count();
+        let val = values.as_slice();
+        if values.rank() != 1 {
+            return Err(Error::Shape("put_mask values must be rank-1".into()));
+        }
+        if val.len() != 1 && val.len() != count {
+            return Err(Error::Shape(format!(
+                "put_mask values len {} != mask true count {count} (or 1 for scalar)",
+                val.len()
+            )));
+        }
+        let dst = self.as_mut_slice();
+        let mut t = 0usize;
+        for i in 0..dst.len() {
+            if m[i] != 0.0 && !m[i].is_nan() {
+                dst[i] = if val.len() == 1 { val[0] } else { val[t] };
+                t += 1;
+            }
+        }
+        Ok(())
+    }
+
     /// Outer product of two rank-1 arrays → rank-2 `(len(a), len(b))`.
     pub fn outer(a: &Array, b: &Array) -> Result<Array> {
         if a.rank() != 1 || b.rank() != 1 {

@@ -289,6 +289,13 @@ Names match the `lua` feature on `main`. Tutorial samples live in
 - **`integers`:** `i64` arrays, half-open `[low, high)`.
 - **`choice`:** sample with replacement from rank-1 (`f64` or `i64`).
 
+### 3.21 M7.b indexing
+
+- **`nonzero`**: flat 0-based indices as `ArrayI64` (Lua: 1-based).
+- **`compress(mask)`**: rank-1 boolean-style select (nonzero mask entries).
+- **`put` / `put_mask`**: scatter by indices or mask (in-place).
+- **`take` / `take_i64`**: gather; Lua `take` accepts f64 or i64 index arrays (1-based).
+
 ### 4.1 Module functions
 
 **`f64`:** `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`), `array`, `eye`, `where`,
@@ -380,7 +387,7 @@ explicit boundaries (zero-copy views in, owned results out).
 | **M6** | Tier-2 quant sugar: `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis reductions (rank-2), `any`/`all` | **Done** |
 | **v0.1** tag | Explicit release cut | **Deferred** |
 | **M7** | **`i64` surface (correctness):** shared array grammar + integer-path LA (wrapping) + **i64-unique** + views + gcd/lcm/divmod/bitcount + **`from_i64` solvers** (i64 in → f64 out). | **Done** |
-| **M7.b** | **Quant leave-late pack:** (1) LA diagnostics **done** → (2) median/quantile **done** → (3) random **done** → (4) indexing → (5) `out=` #21 → (6) host Lua views. | **In progress** |
+| **M7.b** | **Quant leave-late pack:** (1)–(3) **done** → (4) indexing **done** → (5) `out=` #21 → (6) host Lua views. | **In progress** |
 | **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once correctness bars for M7/M7.b hold | **Planned** (after M7.b or when Human gates perf) |
 | **M8** | **Lua host-buffer / view face** — may **fold into M7.b** host zero-copy; kept as explicit embed slice until then | Planned |
 | **M9** | **Small-window pool** — freelist for *n* ≪ 256 | Planned |

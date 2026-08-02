@@ -45,6 +45,7 @@ work on arrays (and array ↔ number). Matrix product is always explicit:
 | Area | Surface |
 |------|---------|
 | **Masks / compare** | `where`; `eq`/`ne`/`lt`/`le`/`gt`/`ge` (0/1); `isnan` / `isfinite` |
+| **Indexing** | `nonzero`, `compress`, `put`, `put_mask`, `take` (i64 or f64 indices) |
 | **Broadcast / views** | elementwise broadcast; `broadcast_to`; `slice`/`rows`/`row`/`col` (1-based half-open on face) |
 | **NaN reductions** | `nansum`, `nanmean`, `nanmin`, `nanmax`, `nanvar`, `nanstd` |
 | **Tier-2** | `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis on `sum`/`mean`/…, `any`/`all` |

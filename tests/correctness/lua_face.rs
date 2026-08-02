@@ -454,3 +454,27 @@ assert(#ch == 4)
     )
     .unwrap();
 }
+
+#[test]
+fn m7b_indexing_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local a = ml.array({0, 1, 0, 3, 4})
+local nz = a:nonzero()
+assert(nz:dtype() == "i64" and nz:get(1) == 2)
+local c = a:compress(ml.array({0,1,0,1,0}))
+assert(#c == 2 and c:get(1) == 1 and c:get(2) == 3)
+local b = ml.zeros(4)
+b:put(ml.array_i64({2, 4}), ml.array({10, 20}))
+assert(b:get(2) == 10 and b:get(4) == 20)
+b:put_mask(ml.array({1,0,1,0}), 7)
+assert(b:get(1) == 7 and b:get(3) == 7)
+local t = a:take(ml.array_i64({2, 4}))
+assert(t:get(1) == 1 and t:get(2) == 3)
+"#,
+    )
+    .unwrap();
+}
