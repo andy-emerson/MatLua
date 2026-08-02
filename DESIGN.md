@@ -236,13 +236,15 @@ Names match the `lua` feature on `main`. Tutorial samples live in
 
 ### 4.1 Module functions
 
-`zeros`, `ones`, `full`, `arange` (`start, stop[, step]`), `array`, `eye`,
+`zeros`, `ones`, `full`, `arange` (`start, stop[, step]`), `array`, `eye`, `where`,
 `matmul`, `matmul_at` (AᵀB; large same-buffer AᵀA may materialize Aᵀ once), `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd`
 
 ### 4.2 Array methods and metamethods
 
 Methods: `shape`, `rank`, `get`, `set`, `sum`, `mean`, `min`, `max`, `copy`,
-`reshape`, `transpose`, `fill`  
+`reshape`, `transpose`, `fill`, `abs`, `sqrt`, `exp`, `log`, `log1p`, `sign`,
+`power`, `clip`, `isnan`, `isfinite`, `cumsum`, `argmin`, `argmax`, `var`, `std`  
+Module also: `where`  
 Metamethods: `__add`, `__sub`, `__mul`, `__div`, `__unm`, `__len`, `__tostring`, `__gc`
 
 ### 4.3 NumPy contrast (capability, not syntax parity)
