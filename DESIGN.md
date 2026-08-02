@@ -47,6 +47,20 @@ MatLua** until the problem is genuinely outside that domain (sparse, ML stacks,
 plotting, full SciPy-class ecosystems, …). Leaving should be clean (Arrow
 interchange) but unnecessary for day-to-day matrix work.
 
+### 1.3 Dual audience (principle)
+
+Build what **both** a **Lua** desk author and a **NumPy**-literate user would
+expect for dense arrays and dense LA.
+
+| Clause | Rule |
+|--------|------|
+| Dual expectation | Behavior and vocabulary should not surprise either audience on ordinary desk work. |
+| Conflict | **Lua face wins** (1-based indices, `*` elementwise, explicit `matmul`, Lua-shaped methods). |
+| Performance floor | Lua-first must not force designs that cannot stay **competitive with NumPy** on bulk `f64` work (fair three-way: product is Lua; wall-time bar is NumPy). |
+
+**Scope:** dense arrays, dense LA, host contracts — not full SciPy, not TallyDB windows/SQL.  
+**Reopen when:** a Lua-idiomatic API systematically exceeds ~2× NumPy on medium+ bulk ops with no shorter path, or a NumPy-shaped API is unusable on the Lua face.
+
 ---
 
 ## 2. Scope
@@ -151,7 +165,7 @@ Arrays are **not** plain Lua tables at runtime.
 - Metamethods: elementwise `+`, `-`, `*`, `/`, unary `-` (array–array or array–number).
 - **Matrix multiplication:** module function `ml.matmul(a, b)` only (not `*`, no `@`).
 - **Transpose:** `ml.transpose(a)` and method `a:transpose()`.
-- Other LA: `matmul_at`, `normal_eq`, `solve`, `dot`, `norm`, `cholesky`, `qr`, `svd`.
+- Other LA: `matmul_at`, `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `dot`, `norm`, `cholesky`, `qr`, `svd`.
 
 Rationale: Lua has a single `*`; naming matmul avoids silent confusion.
 
@@ -213,6 +227,13 @@ over materializing `transpose` then `matmul`. Same numerics as the long
 composition. Large same-buffer `AᵀA` (`k ≥ 512`) may materialize `Aᵀ` once
 internally. Measurement: `tests/bench/compare_compose.py`.
 
+### 3.15 Broadcast, compares, views, NaN policy (M5)
+
+- **Broadcast:** NumPy right-align rules for elementwise ops and `broadcast_to`. Practical focus rank ≤ 2; higher ranks supported by the same algorithm.
+- **Compares:** `eq`/`ne`/`lt`/`le`/`gt`/`ge` return **0/1** dense `f64` masks (no separate bool dtype). IEEE: NaN comparisons are false.
+- **Ufuncs:** IEEE **propagate** NaN. Skipping NaN uses explicit `nan*` reductions.
+- **Views:** rank-1 `slice`, rank-2 `rows`/`row` are zero-copy when contiguous; `col` **copies** (row-major). Lua face uses **1-based half-open** ranges for `slice`/`rows` (stop exclusive).
+
 ---
 
 ## 4. Lua face (frozen names)
@@ -222,13 +243,16 @@ Names match the `lua` feature on `main`. Tutorial samples live in
 
 ### 4.1 Module functions
 
-`zeros`, `ones`, `full`, `arange` (`start, stop[, step]`), `array`, `eye`,
-`matmul`, `matmul_at` (AᵀB; large same-buffer AᵀA may materialize Aᵀ once), `normal_eq`, `solve`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd`
+`zeros`, `ones`, `full`, `arange` (`start, stop[, step]`), `array`, `eye`, `where`,
+`matmul`, `matmul_at` (AᵀB; large same-buffer AᵀA may materialize Aᵀ once), `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `transpose`, `dot`, `norm`, `cholesky`, `qr`, `svd`
 
 ### 4.2 Array methods and metamethods
 
-Methods: `shape`, `rank`, `get`, `set`, `sum`, `mean`, `min`, `max`, `copy`,
-`reshape`, `transpose`, `fill`  
+Methods: `shape`, `rank`, `get`, `set`, `sum`, `mean`, `min`, `max`, `nansum`,
+`nanmean`, `nanmin`, `nanmax`, `nanvar`, `nanstd`, `copy`, `reshape`, `transpose`,
+`fill`, ufuncs, compares (`eq`/`ne`/`lt`/`le`/`gt`/`ge`), `slice`/`rows`/`row`/`col`,
+`cumsum`, `argmin`, `argmax`, `var`, `std`  
+Module also: `where`, `concatenate`, `stack`, `broadcast_to`  
 Metamethods: `__add`, `__sub`, `__mul`, `__div`, `__unm`, `__len`, `__tostring`, `__gc`
 
 ### 4.3 NumPy contrast (capability, not syntax parity)
@@ -300,9 +324,10 @@ explicit boundaries (zero-copy views in, owned results out).
 | **M2** | Dense LA via faer: matmul, solve, decompositions | **Done** |
 | **M3** | Lua face: register into host state; bulk ops; 1-based API | **Done** |
 | **v0.1** | M1–M3 good enough that a host embeds MatLua and scripts do ordinary dense work without leaving for NumPy | **Candidate** (not version-tagged; crate still `0.0.1`) |
+| **M4a** | Job-A LA pack: `lstsq`, `eigh`, `pinv` (NumPy-shaped names; faer-backed; not aliases of `normal_eq`) | **In progress** |
+| **M5** | Tier-1 leave-late array ops: ufuncs, compares/masks, practical broadcast, views/slices, `std`/`var`/`argmin`/`argmax`, `cumsum`, `concatenate`/`stack`; NaN: IEEE propagate + named `nan*` where needed | **Planned** |
 
-Feature follow-ups (not the performance program): richer indexing/views from Lua,
-broadcasting policy, host buffer handles in Lua, docs.rs polish, more reductions.
+Feature follow-ups beyond M5: axis reductions, `cov`/`corrcoef`, `argsort`, host `out=`, leaner Arrow, TallyDB cutover (other repo).
 
 ### 7.2 Performance program (P0–P6)
 

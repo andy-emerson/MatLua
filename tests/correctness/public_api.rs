@@ -108,3 +108,21 @@ fn matmul_at_gram_matches_transpose_path() {
         assert!((a - b).abs() < 1e-10, "{a} vs {b}");
     }
 }
+
+#[test]
+fn lstsq_eigh_pinv_smoke() {
+    let x = Array::from_shape_slice(vec![4, 2], &[1., 0., 1., 1., 1., 2., 1., 3.]).unwrap();
+    let y = Array::from_shape_slice(vec![4], &[1., 3., 5., 7.]).unwrap();
+    let b = linalg::lstsq(&x, &y).unwrap();
+    assert_eq!(b.rank(), 1);
+    assert_eq!(b.len(), 2);
+
+    let s = Array::from_shape_slice(vec![2, 2], &[2., 0.5, 0.5, 1.]).unwrap();
+    let (w, v) = linalg::eigh(&s).unwrap();
+    assert_eq!(w.len(), 2);
+    assert_eq!(v.dims(), &[2, 2]);
+    assert!(w.get(&[0]).unwrap() <= w.get(&[1]).unwrap());
+
+    let p = linalg::pinv(&x).unwrap();
+    assert_eq!(p.dims(), &[2, 4]);
+}

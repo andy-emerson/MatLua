@@ -18,7 +18,7 @@
 mod convert;
 
 use faer::linalg::matmul::matmul as faer_matmul;
-use faer::linalg::solvers::Solve;
+use faer::linalg::solvers::{Solve, SolveLstsq};
 use faer::{get_global_parallelism, Accum, MatMut, Par, Side};
 
 use crate::array::kernels;
@@ -262,6 +262,82 @@ pub fn solve(a: &Array, b: &Array) -> Result<Array> {
     matmul_result(data, bn, bk, prefer_vec)
 }
 
+/// Least squares: minimize `‖a x − b‖₂` (overdetermined / square).
+///
+/// - `a`: rank-2 `(m, n)` with **`m ≥ n`**
+/// - `b`: rank-1 `(m,)` or rank-2 `(m, k)`
+/// - returns coefficients rank-1 or `(n, k)` matching `b`'s style
+///
+/// Uses faer column-pivoted QR least squares. Not an alias of [`normal_eq`]
+/// (prefer this for multi-factor / noisy systems). Underdetermined `m < n`
+/// is rejected — use [`pinv`] and matmul for that shape class.
+pub fn lstsq(a: &Array, b: &Array) -> Result<Array> {
+    if a.rank() != 2 {
+        return Err(Error::shape("lstsq expects rank-2 coefficient matrix"));
+    }
+    let (m, n) = array_as_matrix_dims(a)?;
+    if m < n {
+        return Err(Error::shape(format!(
+            "lstsq requires m >= n (got {m}×{n}); use pinv for underdetermined systems"
+        )));
+    }
+    let (bm, bk) = array_as_matrix_dims(b)?;
+    if bm != m {
+        return Err(Error::shape(format!(
+            "lstsq rhs rows {bm} != matrix rows {m}"
+        )));
+    }
+    let am = array_as_mat_ref(a)?;
+    let bm_ref = array_as_mat_ref(b)?;
+    let qr = am.col_piv_qr();
+    let x = qr.solve_lstsq(bm_ref);
+    mat_to_array(&x, b.rank() == 1 && bk == 1)
+}
+
+/// Symmetric eigendecomposition: `a = v diag(w) vᵀ` (lower triangle of `a` used).
+///
+/// Returns `(w, v)` where `w` is rank-1 eigenvalues in **nondecreasing** order
+/// and `v` is rank-2 eigenvectors as columns (NumPy `eigh` shape style).
+pub fn eigh(a: &Array) -> Result<(Array, Array)> {
+    if a.rank() != 2 {
+        return Err(Error::shape("eigh requires a rank-2 matrix"));
+    }
+    let (n, m) = array_as_matrix_dims(a)?;
+    if n != m {
+        return Err(Error::shape("eigh requires a square matrix"));
+    }
+    let am = array_as_mat_ref(a)?;
+    let evd = am
+        .self_adjoint_eigen(Side::Lower)
+        .map_err(|e| Error::linalg(format!("eigh failed: {e:?}")))?;
+    let v = matref_to_array(evd.U(), false)?;
+    let s_diag = evd.S();
+    let dim = s_diag.dim();
+    let col = s_diag.column_vector();
+    let mut w = crate::array::pool_take_uninit(dim);
+    for i in 0..dim {
+        w[i] = col[i];
+    }
+    let w = Array::from_parts(Shape::from_len(dim), w);
+    Ok((w, v))
+}
+
+/// Moore–Penrose pseudoinverse via full SVD (faer).
+///
+/// Shape: `(m, n) → (n, m)`. Suitable for rank-deficient and underdetermined
+/// systems; for tall full-rank least squares prefer [`lstsq`].
+pub fn pinv(a: &Array) -> Result<Array> {
+    if a.rank() != 2 {
+        return Err(Error::shape("pinv requires a rank-2 matrix"));
+    }
+    let am = array_as_mat_ref(a)?;
+    let svd = am
+        .svd()
+        .map_err(|e| Error::linalg(format!("pinv svd failed: {e:?}")))?;
+    let p = svd.pseudoinverse();
+    mat_to_array(&p, false)
+}
+
 /// Cholesky factor `L` of a symmetric positive-definite matrix (`A = L Lᵀ`).
 ///
 /// Uses the lower triangle of `a`. Returns lower-triangular `L` as rank-2.
@@ -441,6 +517,57 @@ mod tests {
         assert!(s.get(&[0]).unwrap() >= s.get(&[1]).unwrap());
         assert!((s.get(&[0]).unwrap() - 3.0).abs() < 1e-8);
         assert!((s.get(&[1]).unwrap() - 2.0).abs() < 1e-8);
+    }
+
+
+    #[test]
+    fn lstsq_overdetermined_matches_normal_eq_full_rank() {
+        // X 4×2, y 4 — full column rank
+        let x = Array::from_shape_slice(
+            vec![4, 2],
+            &[1., 0., 1., 1., 1., 2., 1., 3.],
+        )
+        .unwrap();
+        let y = Array::from_shape_slice(vec![4], &[1., 2., 3., 4.]).unwrap();
+        let beta = lstsq(&x, &y).unwrap();
+        let beta_ne = normal_eq(&x, &y).unwrap();
+        assert_eq!(beta.rank(), 1);
+        for (a, b) in beta.as_slice().iter().zip(beta_ne.as_slice()) {
+            assert!((a - b).abs() < 1e-8, "{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn eigh_identity() {
+        let a = Array::eye(3).unwrap();
+        let (w, v) = eigh(&a).unwrap();
+        assert_eq!(w.rank(), 1);
+        assert_eq!(v.dims(), &[3, 3]);
+        for i in 0..3 {
+            assert!((w.get(&[i]).unwrap() - 1.0).abs() < 1e-10);
+        }
+        // V should be orthogonal: VᵀV ≈ I
+        let vt = transpose(&v).unwrap();
+        let g = matmul(&vt, &v).unwrap();
+        for i in 0..3 {
+            for j in 0..3 {
+                let e = if i == j { 1.0 } else { 0.0 };
+                assert!((g.get(&[i, j]).unwrap() - e).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn pinv_tall_left_inverse_product() {
+        // Full column rank 3×2 → pinv is 2×3, pinv @ A ≈ I₂
+        let a = Array::from_shape_slice(vec![3, 2], &[1., 0., 0., 1., 1., 1.]).unwrap();
+        let p = pinv(&a).unwrap();
+        assert_eq!(p.dims(), &[2, 3]);
+        let i = matmul(&p, &a).unwrap();
+        assert!((i.get(&[0, 0]).unwrap() - 1.0).abs() < 1e-8);
+        assert!((i.get(&[1, 1]).unwrap() - 1.0).abs() < 1e-8);
+        assert!(i.get(&[0, 1]).unwrap().abs() < 1e-8);
+        assert!(i.get(&[1, 0]).unwrap().abs() < 1e-8);
     }
 
     #[test]
