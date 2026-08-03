@@ -119,23 +119,20 @@ const AVX512: GemmParams = GemmParams {
 };
 
 /// Select the blocking profile for this CPU (cached after first call).
+///
+/// Uses [`crate::array::isa::avx512_fast`], not raw CPUID: presence of the
+/// instructions does not mean they are fast *now* (dynamic 512-bit
+/// downclocking — see the micro-calibration notes in `array::isa`). The
+/// verdict implies executability, so the AVX-512 kernel's safety gate holds.
 #[inline]
 fn gemm_params() -> GemmParams {
     #[cfg(target_arch = "x86_64")]
     {
-        use std::sync::OnceLock;
-        static CHOSEN: OnceLock<GemmParams> = OnceLock::new();
-        *CHOSEN.get_or_init(|| {
-            if std::arch::is_x86_feature_detected!("avx512f")
-                && std::arch::is_x86_feature_detected!("avx512dq")
-                && std::arch::is_x86_feature_detected!("avx512bw")
-                && std::arch::is_x86_feature_detected!("avx512vl")
-            {
-                AVX512
-            } else {
-                PORTABLE
-            }
-        })
+        if crate::array::isa::avx512_fast() {
+            AVX512
+        } else {
+            PORTABLE
+        }
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -786,7 +783,7 @@ unsafe fn sum_sq_wrap_seq_avx512(s: &[i64]) -> i64 {
 #[inline]
 fn sum_sq_wrap(s: &[i64]) -> i64 {
     #[cfg(target_arch = "x86_64")]
-    if crate::array::isa::avx512() {
+    if crate::array::isa::avx512_fast() {
         // SAFETY: features verified by isa::avx512().
         return unsafe { sum_sq_wrap_seq_avx512(s) };
     }

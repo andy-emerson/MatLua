@@ -25,7 +25,7 @@ macro_rules! isa_binary_f64 {
             debug_assert_eq!(a.len(), b.len());
             debug_assert_eq!(a.len(), out.len());
             #[cfg(target_arch = "x86_64")]
-            if crate::array::isa::avx512() {
+            if crate::array::isa::avx512_fast() {
                 // SAFETY: features verified by isa::avx512().
                 unsafe { $avx(a, b, out) };
                 return;
@@ -51,7 +51,7 @@ macro_rules! isa_scalar_f64 {
         pub(crate) fn $name(a: &[f64], s: f64, out: &mut [f64]) {
             debug_assert_eq!(a.len(), out.len());
             #[cfg(target_arch = "x86_64")]
-            if crate::array::isa::avx512() {
+            if crate::array::isa::avx512_fast() {
                 // SAFETY: features verified by isa::avx512().
                 unsafe { $avx(a, s, out) };
                 return;
@@ -228,7 +228,7 @@ unsafe fn sum_sq_seq_avx512(a: &[f64]) -> f64 {
 #[inline]
 fn sum_sq_dispatch(a: &[f64]) -> f64 {
     #[cfg(target_arch = "x86_64")]
-    if crate::array::isa::avx512() {
+    if crate::array::isa::avx512_fast() {
         // SAFETY: features verified by isa::avx512().
         return unsafe { sum_sq_seq_avx512(a) };
     }

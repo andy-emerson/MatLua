@@ -73,7 +73,7 @@ macro_rules! isa_binary_i64 {
         #[inline]
         pub(crate) fn $name(a: &[i64], b: &[i64], out: &mut [i64]) {
             #[cfg(target_arch = "x86_64")]
-            if crate::array::isa::avx512() {
+            if crate::array::isa::avx512_fast() {
                 // SAFETY: features verified by isa::avx512().
                 unsafe { $avx(a, b, out) };
                 return;
@@ -124,7 +124,7 @@ macro_rules! isa_scalar_i64 {
         #[inline]
         pub(crate) fn $name(a: &[i64], s: i64, out: &mut [i64]) {
             #[cfg(target_arch = "x86_64")]
-            if crate::array::isa::avx512() {
+            if crate::array::isa::avx512_fast() {
                 // SAFETY: features verified by isa::avx512().
                 unsafe { $avx(a, s, out) };
                 return;
