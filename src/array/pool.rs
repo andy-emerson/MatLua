@@ -3,6 +3,7 @@
 //! Repeated same-size constructs (common in Lua scripts and microbenches) reuse
 //! capacity instead of returning pages to the OS on every userdata `__gc`.
 
+use std::alloc::{alloc_zeroed, handle_alloc_error, Layout};
 use std::cell::RefCell;
 
 const MIN_POOL_CAP: usize = 256;
@@ -28,9 +29,27 @@ pub(crate) fn take_filled(len: usize, fill: f64) -> Vec<f64> {
 }
 
 /// Zero-filled buffer of length `len`.
+///
+/// Fresh buffers use `alloc_zeroed` (OS demand-zero pages — same cost model as
+/// `numpy.zeros`). Pooled buffers may be dirty and are write-filled.
 #[inline]
 pub(crate) fn take_zeroed(len: usize) -> Vec<f64> {
-    take_filled(len, 0.0)
+    if len == 0 {
+        return Vec::new();
+    }
+    // Prefer a fresh zeroed allocation over recycling + fill: NumPy zeros does
+    // not touch pages; write-filling 4096² is an order-of-magnitude tax.
+    let layout = match Layout::array::<f64>(len) {
+        Ok(l) => l,
+        Err(_) => panic!("zeros length overflow"),
+    };
+    unsafe {
+        let ptr = alloc_zeroed(layout) as *mut f64;
+        if ptr.is_null() {
+            handle_alloc_error(layout);
+        }
+        Vec::from_raw_parts(ptr, len, len)
+    }
 }
 
 /// Length `len`, contents uninitialized — caller must write every element.

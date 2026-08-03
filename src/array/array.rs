@@ -228,17 +228,21 @@ impl Array {
         let n = n_f as usize;
         let mut data = pool::take_uninit(n);
         let mut x = start;
-        let mut written = 0usize;
-        for i in 0..n {
-            if (step > 0.0 && x >= stop) || (step < 0.0 && x <= stop) {
-                break;
-            }
+        let mut i = 0usize;
+        while i + 4 <= n {
             data[i] = x;
-            written = i + 1;
-            x += step;
+            data[i + 1] = x + step;
+            data[i + 2] = x + step * 2.0;
+            data[i + 3] = x + step * 3.0;
+            x += step * 4.0;
+            i += 4;
         }
-        data.truncate(written);
-        Ok(Self::from_parts(Shape::from_len(data.len()), data))
+        while i < n {
+            data[i] = x;
+            x += step;
+            i += 1;
+        }
+        Ok(Self::from_parts(Shape::from_len(n), data))
     }
 
     /// Read one element at a multi-index (0-based).

@@ -70,7 +70,7 @@ def build_f64(data: dict) -> tuple[str, str]:
         r_np = (ru_ms / np_ms) if np_ms and ru_ms and np_ms > 0 else None
         l_np = (lu_ms / np_ms) if np_ms and lu_ms and np_ms > 0 else None
         l_r = (lu_ms / ru_ms) if ru_ms and lu_ms and ru_ms > 0 else None
-        rel_rows.append([op, str(n), "1.00x", fmt_x(r_np), fmt_x(l_np), fmt_x(l_r)])
+        rel_rows.append([op, str(n), ("1.00x" if np_ms is not None else "—"), fmt_x(r_np), fmt_x(l_np), fmt_x(l_r)])
     abs_t = md_table(
         ["op", "n", "NumPy (ms)", "MatLua Rust (ms)", "MatLua Lua (ms)"],
         abs_rows,
@@ -104,7 +104,7 @@ def build_i64(data: dict) -> tuple[str, str]:
         r_np = (ru_ms / np_ms) if np_ms and ru_ms and np_ms > 0 else None
         l_np = (lu_ms / np_ms) if np_ms and lu_ms and np_ms > 0 else None
         l_r = (lu_ms / ru_ms) if ru_ms and lu_ms and ru_ms > 0 else None
-        rel_rows.append([op, str(n), "1.00x", fmt_x(r_np), fmt_x(l_np), fmt_x(l_r)])
+        rel_rows.append([op, str(n), ("1.00x" if np_ms is not None else "—"), fmt_x(r_np), fmt_x(l_np), fmt_x(l_r)])
     abs_t = md_table(
         ["op", "n", "NumPy int64 (ms)", "MatLua Rust i64 (ms)", "MatLua Lua i64 (ms)"],
         abs_rows,
@@ -130,7 +130,7 @@ def build_promote(data: dict) -> tuple[str, str]:
         r_np = (ru_ms / np_ms) if np_ms and ru_ms and np_ms > 0 else None
         l_np = (lu_ms / np_ms) if np_ms and lu_ms and np_ms > 0 else None
         l_r = (lu_ms / ru_ms) if ru_ms and lu_ms and ru_ms > 0 else None
-        rel_rows.append([op, str(n), "1.00x", fmt_x(r_np), fmt_x(l_np), fmt_x(l_r)])
+        rel_rows.append([op, str(n), ("1.00x" if np_ms is not None else "—"), fmt_x(r_np), fmt_x(l_np), fmt_x(l_r)])
     abs_t = md_table(
         ["op", "n", "NumPy (ms)", "MatLua Rust (ms)", "MatLua Lua (ms)"],
         abs_rows,

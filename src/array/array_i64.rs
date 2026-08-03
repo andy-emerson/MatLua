@@ -251,19 +251,24 @@ impl ArrayI64 {
             let st = (-step) as i128;
             ((span + st - 1) / st) as usize
         };
+        // Exact length already computed; fill with ILP (wrapping step).
         let mut data = pool::take_uninit(n);
         let mut x = start;
-        let mut written = 0usize;
-        for i in 0..n {
-            if (step > 0 && x >= stop) || (step < 0 && x <= stop) {
-                break;
-            }
+        let mut i = 0usize;
+        while i + 4 <= n {
             data[i] = x;
-            written = i + 1;
-            x = x.wrapping_add(step);
+            data[i + 1] = x.wrapping_add(step);
+            data[i + 2] = x.wrapping_add(step.wrapping_mul(2));
+            data[i + 3] = x.wrapping_add(step.wrapping_mul(3));
+            x = x.wrapping_add(step.wrapping_mul(4));
+            i += 4;
         }
-        data.truncate(written);
-        Ok(Self::from_parts(Shape::from_len(data.len()), data))
+        while i < n {
+            data[i] = x;
+            x = x.wrapping_add(step);
+            i += 1;
+        }
+        Ok(Self::from_parts(Shape::from_len(n), data))
     }
 
     /// `get` (see `f64` [`Array`] counterpart).
