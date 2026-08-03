@@ -56,8 +56,6 @@ fn time_lua(lua: &Lua, setup: &str, body: &str, iters: usize, warm: usize) -> f6
         samples.push(t0.elapsed().as_secs_f64() * 1e3);
         let _ = lua.call_global("__bench_gc");
     }
-    // free setup globals
-    let _ = lua.do_string("A=nil;B=nil;V=nil;W=nil;S=nil;rhs=nil;T=nil;collectgarbage(\"collect\")");
     median(&samples)
 }
 
@@ -116,17 +114,6 @@ fn budget(n: usize, heavy: bool) -> (usize, usize) {
 
 fn emit(face: &str, op: &str, n: usize, ms: f64) {
     println!("{face}\t{op}\t{n}\t{ms:.6}");
-}
-
-fn lua_build_inputs(n: usize) -> String {
-    format!(
-        r#"
-local n = {n}
-A = ml.arange_i64(0, n * n):reshape(n, n)
-B = ml.full_i64(n, n, 3)
-V = ml.arange_i64(0, n)
-"#
-    )
 }
 
 fn bench_rust(sizes: &[usize]) {
@@ -218,18 +205,23 @@ fn bench_lua(sizes: &[usize]) {
     for &n in sizes {
         let (it, wrm) = budget(n, false);
         let (ith, wrmh) = budget(n, true);
-        let ab = format!(
-            "A=ml.full_i64({n},{n},1); B=ml.full_i64({n},{n},3); collectgarbage(\"collect\")"
-        );
-        let a_only = format!("A=ml.full_i64({n},{n},1); collectgarbage(\"collect\")");
-        let v_only = format!("V=ml.arange_i64(0,{n}); collectgarbage(\"collect\")");
+        // Identical inputs by construction: globals are copies of the exact
+        // arrays the Rust face benches (previously constant matrices made
+        // e.g. isin degenerate to a single hot key on the Lua face).
+        lua.set_global_array_i64("A", &dense(n)).unwrap();
+        lua.set_global_array_i64("B", &dense2(n)).unwrap();
+        lua.set_global_array_i64("V", &vec_n(n)).unwrap();
+        lua.do_string("T = A:copy(); collectgarbage(\"collect\")").unwrap();
+        let ab = "";
+        let a_only = "";
+        let v_only = "";
 
         emit("lua", "zeros", n, time_lua(&lua, "", &format!("return ml.zeros_i64({n},{n})"), it, wrm));
         emit("lua", "ones", n, time_lua(&lua, "", &format!("return ml.ones_i64({n},{n})"), it, wrm));
         emit("lua", "full", n, time_lua(&lua, "", &format!("return ml.full_i64({n},{n},7)"), it, wrm));
         emit("lua", "eye", n, time_lua(&lua, "", &format!("return ml.eye_i64({n})"), it, wrm));
         emit("lua", "arange", n, time_lua(&lua, "", &format!("return ml.arange_i64(0,{n})"), it, wrm));
-        emit("lua", "copy", n, time_lua(&lua, &a_only, "return A:copy()", it, wrm));
+        emit("lua", "copy", n, time_lua(&lua, a_only, "return A:copy()", it, wrm));
         if n % 2 == 0 {
             emit(
                 "lua",
@@ -244,33 +236,25 @@ fn bench_lua(sizes: &[usize]) {
                 ),
             );
         }
-        emit("lua", "fill", n, time_lua(&lua, &(a_only.clone() + "\nT=A:copy()\n"), "T:fill(3)", it, wrm));
-        emit("lua", "elem_add", n, time_lua(&lua, &ab, "return A + B", it, wrm));
-        emit("lua", "elem_sub", n, time_lua(&lua, &ab, "return A - B", it, wrm));
-        emit("lua", "elem_mul", n, time_lua(&lua, &ab, "return A * B", it, wrm));
-        emit("lua", "elem_div", n, time_lua(&lua, &ab, "return A / B", it, wrm));
-        emit("lua", "sum", n, time_lua(&lua, &a_only, "return A:sum()", it, wrm));
-        emit("lua", "min", n, time_lua(&lua, &a_only, "return A:min()", it, wrm));
-        emit("lua", "max", n, time_lua(&lua, &a_only, "return A:max()", it, wrm));
-        emit("lua", "transpose", n, time_lua(&lua, &a_only, "return A:transpose()", it, wrm));
-        emit("lua", "dot", n, time_lua(&lua, &v_only, "return ml.dot(V, V)", it, wrm));
-        emit("lua", "matmul", n, time_lua(&lua, &ab, "return ml.matmul(A, B)", ith, wrmh));
-        emit("lua", "matmul_at", n, time_lua(&lua, &ab, "return ml.matmul_at(A, B)", ith, wrmh));
-        emit("lua", "matmul_bt", n, time_lua(&lua, &ab, "return ml.matmul_bt(A, B)", ith, wrmh));
-        emit("lua", "unique", n, time_lua(&lua, &v_only, "return V:unique()", it, wrm));
-        emit(
-            "lua",
-            "isin",
-            n,
-            time_lua(
-                &lua,
-                &format!(
-                    "A=ml.full_i64({n},{n},1); V=ml.arange_i64(0,{n}); collectgarbage(\"collect\")"
-                ),
-                "return A:isin(V)",
-                it,
-                wrm,
-            ),
+        emit("lua", "fill", n, time_lua(&lua, "", "T:fill(3)", it, wrm));
+        emit("lua", "elem_add", n, time_lua(&lua, ab, "return A + B", it, wrm));
+        emit("lua", "elem_sub", n, time_lua(&lua, ab, "return A - B", it, wrm));
+        emit("lua", "elem_mul", n, time_lua(&lua, ab, "return A * B", it, wrm));
+        emit("lua", "elem_div", n, time_lua(&lua, ab, "return A / B", it, wrm));
+        emit("lua", "sum", n, time_lua(&lua, a_only, "return A:sum()", it, wrm));
+        emit("lua", "min", n, time_lua(&lua, a_only, "return A:min()", it, wrm));
+        emit("lua", "max", n, time_lua(&lua, a_only, "return A:max()", it, wrm));
+        emit("lua", "transpose", n, time_lua(&lua, a_only, "return A:transpose()", it, wrm));
+        emit("lua", "dot", n, time_lua(&lua, v_only, "return ml.dot(V, V)", it, wrm));
+        emit("lua", "matmul", n, time_lua(&lua, ab, "return ml.matmul(A, B)", ith, wrmh));
+        emit("lua", "matmul_at", n, time_lua(&lua, ab, "return ml.matmul_at(A, B)", ith, wrmh));
+        emit("lua", "matmul_bt", n, time_lua(&lua, ab, "return ml.matmul_bt(A, B)", ith, wrmh));
+        emit("lua", "unique", n, time_lua(&lua, v_only, "return V:unique()", it, wrm));
+        emit("lua", "isin", n, time_lua(&lua, "", "return A:isin(V)", it, wrm));
+
+        // Free this size's globals before the next.
+        let _ = lua.do_string(
+            "A=nil;B=nil;V=nil;T=nil;collectgarbage(\"collect\")",
         );
     }
 }

@@ -130,14 +130,6 @@ fn main() {
         let col = Array::from_shape_vec(vec![m, 1], (0..m).map(|i| i as f64).collect()).unwrap();
         let iters = if m * n > 500_000 { 15 } else { 40 };
 
-        // long: force materialize path by using a method that still goes through
-        // owned_from_kernel fallback — compare broadcast_to + add_slices manually
-        let long_ms = time_ms(iters, 3, || {
-            let left = a.broadcast_to(vec![m, n]).unwrap();
-            let right = row.broadcast_to(vec![m, n]).unwrap();
-            black_box(left.add(&right).unwrap()); // same shape after materialize
-        });
-        // Wait: after both materialize, add is same-shape. Cost includes two broadcasts.
         // short is a.add(&row) fused
         let short_ms = time_ms(iters, 3, || {
             black_box(a.add(black_box(&row)).unwrap());
@@ -162,7 +154,6 @@ fn main() {
             "elem_add_col\t{m}x{n}\t{long_col:.4}\t{short_col:.4}\t{:.3}",
             short_col / long_col
         );
-        let _ = long_ms;
     }
 
     // --- corrcoef inherits cov; spot time ---

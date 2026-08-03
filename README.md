@@ -77,7 +77,7 @@ The vendored interpreter is for MatLua’s own tests and simple tools.
 ```text
 cargo test
 cargo test --features lua
-python3 tests/bench/compare_fair.py   # fair perf table (release)
+python3 tests/bench/compare_tables.py --write-readme tests/README.md  # result tables
 ```
 
 ## Host sketch (Rust)

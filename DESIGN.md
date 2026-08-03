@@ -635,7 +635,7 @@ NumPy comparison is the **gate**, not the driver of every change.
 Order: **P0 → P1 → P2 → P3 → P4 → P5 → P6** (P6 = close matmul residual).
 
 Harness and latest table: [`tests/README.md`](tests/README.md) and
-`python3 tests/bench/compare_fair.py`. Open perf work: GitHub Issues (one
+`python3 tests/bench/compare_tables.py`. Open perf work: GitHub Issues (one
 function per issue); close the issue and update this file when the Human is
 satisfied with that function’s performance.
 
