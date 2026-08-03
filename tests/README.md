@@ -11,6 +11,8 @@ Sizes: **64, 256, 1024, 4096**.
 
 Each cell is the **median** of several timed single calls after a short warmup (not one-shot). Setup sits outside the clock. Relative tables use **NumPy = 1.00x**.
 
+**i64 matmul reference:** NumPy **float64 BLAS** on the same integer-valued inputs (not `int64@int64`, which has no BLAS and is not a product bar). MatLua still computes **exact wrapping i64**.
+
 Gaps: **NumPy int64 matmul at n=4096** unmeasured (host kills the process before finish; ~n³ from n=1024 implies multi-minute). Relative cells are **—** when that face has no sample.
 
 
@@ -253,6 +255,8 @@ python3 tests/bench/compare_tables.py --write-readme tests/README.md
 
 ### Table C — i64 absolute (ms)
 
+Matmul NumPy column is **f64 BLAS** on integer-valued data (see Measurement).
+
 | op | n | NumPy int64 (ms) | MatLua Rust i64 (ms) | MatLua Lua i64 (ms) |
 | --- | ---: | ---: | ---: | ---: |
 | arange | 64 | 0.000522 | 0.000139 | 0.000245 |
@@ -299,10 +303,10 @@ python3 tests/bench/compare_tables.py --write-readme tests/README.md
 | isin | 256 | 0.112235 | 0.066263 | 0.077829 |
 | isin | 1024 | 1.7329 | 1.1382 | 1.3859 |
 | isin | 4096 | — | 72.231 | 24.993 |
-| matmul | 64 | 0.174682 | 0.107255 | 0.105360 |
-| matmul | 256 | 15.619 | 3.1650 | 3.1419 |
-| matmul | 1024 | 4786.271 | 202.370 | 203.293 |
-| matmul | 4096 | — | 14105.147 | 14195.818 |
+| matmul | 64 | 0.011347 | 0.107255 | 0.105360 |
+| matmul | 256 | 0.547779 | 3.1650 | 3.1419 |
+| matmul | 1024 | 17.277 | 202.370 | 203.293 |
+| matmul | 4096 | 1064.391 | 14105.147 | 14195.818 |
 | max | 64 | 0.002095 | 0.000945 | 0.001110 |
 | max | 256 | 0.008296 | 0.014399 | 0.014579 |
 | max | 1024 | 0.348046 | 0.438277 | 0.446773 |
@@ -384,10 +388,10 @@ python3 tests/bench/compare_tables.py --write-readme tests/README.md
 | isin | 256 | 1.00x | 0.59x | 0.69x | 1.17x |
 | isin | 1024 | 1.00x | 0.66x | 0.80x | 1.22x |
 | isin | 4096 | — | — | — | 0.35x |
-| matmul | 64 | 1.00x | 0.61x | 0.60x | 0.98x |
-| matmul | 256 | 1.00x | 0.20x | 0.20x | 0.99x |
-| matmul | 1024 | 1.00x | 0.04x | 0.04x | 1.00x |
-| matmul | 4096 | — | — | — | 1.01x |
+| matmul | 64 | 1.00x | 9.45x | 9.29x | 0.98x |
+| matmul | 256 | 1.00x | 5.78x | 5.74x | 0.99x |
+| matmul | 1024 | 1.00x | 11.71x | 11.77x | 1.00x |
+| matmul | 4096 | 1.00x | 13.25x | 13.34x | 1.01x |
 | max | 64 | 1.00x | 0.45x | 0.53x | 1.17x |
 | max | 256 | 1.00x | 1.74x | 1.76x | 1.01x |
 | max | 1024 | 1.00x | 1.26x | 1.28x | 1.02x |

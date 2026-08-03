@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""NumPy int64 twin for expanded i64_surface."""
+"""NumPy twin for i64_surface.
+
+Most ops: NumPy **int64** (same dtype).
+
+**matmul** is special: NumPy has int64 arrays but **no integer BLAS**
+(OpenBLAS/MKL are float-only; see numpy#14556). int64@int64 is a slow
+fallback and is **not** a product performance bar. Matmul reference is
+therefore **float64 BLAS** on the **same integer-valued** data (e.g. 3.0),
+i.e. the ceiling a package like BLAS.wasm competes with. Exact wrapping
+i64 product remains MatLua's job; the ratio is "how far from BLAS GEMM".
+"""
 
 from __future__ import annotations
 
@@ -98,9 +108,10 @@ def main() -> None:
         emit("max", n, time_ms(it, wrm, lambda: int(a.max())))
         emit("transpose", n, time_ms(it, wrm, lambda: a.T.copy()))
         emit("dot", n, time_ms(it, wrm, lambda: int(v @ v)))
-        if n < 4096:
-            emit("matmul", n, time_ms(ith, wrmh, lambda: a @ b))
-        # n=4096: NumPy int64 GEMM does not finish in a practical wall budget on this host
+        # BLAS reference: f64 with integer-valued entries (not int64@int64 fallback).
+        af = a.astype(np.float64, copy=False)
+        bf = b.astype(np.float64, copy=False)
+        emit("matmul", n, time_ms(ith, wrmh, lambda: af @ bf))
         emit("unique", n, time_ms(it, wrm, lambda: np.unique(v)))
         emit("isin", n, time_ms(it, wrm, lambda: np.isin(a, v)))
 

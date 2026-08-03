@@ -166,6 +166,8 @@ def main() -> None:
 
 ### Table C — i64 absolute (ms)
 
+Matmul NumPy column is **f64 BLAS** on integer-valued data (see Measurement).
+
 {i_abs}
 
 ### Table D — i64 relative (NumPy = 1.00x)

@@ -55,7 +55,6 @@ numpy	min	64	0.002044
 numpy	max	64	0.002095
 numpy	transpose	64	0.002866
 numpy	dot	64	0.001136
-numpy	matmul	64	0.174682
 numpy	unique	64	0.003772
 numpy	isin	64	0.021690
 rust	zeros	256	0.002121
@@ -195,7 +194,6 @@ numpy	min	256	0.008500
 numpy	max	256	0.008296
 numpy	transpose	256	0.052162
 numpy	dot	256	0.001116
-numpy	matmul	256	15.619174
 numpy	unique	256	0.004443
 numpy	isin	256	0.112235
 numpy	zeros	1024	0.356946
@@ -215,6 +213,9 @@ numpy	min	1024	0.353699
 numpy	max	1024	0.348046
 numpy	transpose	1024	5.651162
 numpy	dot	1024	0.001549
-numpy	matmul	1024	4786.271477
 numpy	unique	1024	0.010193
 numpy	isin	1024	1.732935
+numpy	matmul	64	0.011347
+numpy	matmul	256	0.547779
+numpy	matmul	1024	17.276740
+numpy	matmul	4096	1064.391397
