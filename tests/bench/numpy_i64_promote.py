@@ -69,20 +69,16 @@ def main() -> None:
         ith, wrmh = budget(n, True)
         emit("mean", n, time_ms(it, wrm, lambda: float(a.mean())))
         emit("std", n, time_ms(it, wrm, lambda: float(a.std(ddof=0))))
-        if n < 4096:
-            emit("median", n, time_ms(it, wrm, lambda: float(np.median(a))))
-            emit("quantile", n, time_ms(it, wrm, lambda: float(np.quantile(a, 0.75))))
+        emit("median", n, time_ms(it, wrm, lambda: float(np.median(a))))
+        emit("quantile", n, time_ms(it, wrm, lambda: float(np.quantile(a, 0.75))))
         emit("norm", n, time_ms(it, wrm, lambda: float(np.linalg.norm(af))))
-        if n < 4096:
-            # SPD only needed for LA; skip Gram setup at n=4096
-            ii, jj = np.indices((n, n))
-            g0 = ((ii + 2 * jj) % 7).astype(np.int64)
-            s = (g0.T @ g0) + (n + 1) * np.eye(n, dtype=np.int64)
-            sf = s.astype(np.float64)
-            v = (np.arange(n, dtype=np.int64) * 3 + 1).astype(np.float64)
-            emit("solve", n, time_ms(ith, wrmh, lambda: np.linalg.solve(sf, v)))
-            emit("cholesky", n, time_ms(ith, wrmh, lambda: np.linalg.cholesky(sf)))
-            emit("qr", n, time_ms(ith, wrmh, lambda: np.linalg.qr(af)))
+        # cheap SPD (no Gram)
+        s = np.eye(n, dtype=np.float64) * (n + 1) + 0.01
+        v = (np.arange(n, dtype=np.float64) * 3 + 1)
+        emit("solve", n, time_ms(ith, wrmh, lambda: np.linalg.solve(s, v)))
+        emit("cholesky", n, time_ms(ith, wrmh, lambda: np.linalg.cholesky(s)))
+        emit("qr", n, time_ms(ith, wrmh, lambda: np.linalg.qr(af)))
+
 
 
 if __name__ == "__main__":

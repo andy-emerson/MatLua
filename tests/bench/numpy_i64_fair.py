@@ -100,7 +100,7 @@ def main() -> None:
         emit("dot", n, time_ms(it, wrm, lambda: int(v @ v)))
         if n < 4096:
             emit("matmul", n, time_ms(ith, wrmh, lambda: a @ b))
-        # n=4096 int64 matmul is multi-minute in NumPy; skip (Rust still measured)
+        # n=4096: NumPy int64 GEMM does not finish in a practical wall budget on this host
         emit("unique", n, time_ms(it, wrm, lambda: np.unique(v)))
         emit("isin", n, time_ms(it, wrm, lambda: np.isin(a, v)))
 
