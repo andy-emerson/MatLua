@@ -896,7 +896,7 @@ pub unsafe extern "C" fn a_max(L: *mut lua_State) -> c_int {
 
 pub unsafe extern "C" fn a_copy(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
-    unsafe { push_array(L, a.array.clone()) };
+    unsafe { push_array(L, a.array.copy()) };
     1
 }
 

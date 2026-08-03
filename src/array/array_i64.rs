@@ -124,10 +124,12 @@ impl Drop for ArrayI64 {
 }
 
 impl Clone for ArrayI64 {
+    /// Arc-share buffer. Deep copy: [`Self::copy`].
     fn clone(&self) -> Self {
-        let mut data = pool::take_uninit(self.len());
-        data.copy_from_slice(self.as_slice());
-        Self::from_parts(self.shape.clone(), data)
+        Self {
+            shape: self.shape.clone(),
+            data: Arc::clone(&self.data),
+        }
     }
 }
 
@@ -304,9 +306,11 @@ impl ArrayI64 {
         })
     }
 
-    /// `copy` (see `f64` [`Array`] counterpart).
+    /// Deep copy of values (unique buffer).
     pub fn copy(&self) -> Self {
-        self.clone()
+        let mut data = pool::take_uninit(self.len());
+        data.copy_from_slice(self.as_slice());
+        Self::from_parts(self.shape.clone(), data)
     }
 
     /// `eye` (see `f64` [`Array`] counterpart).

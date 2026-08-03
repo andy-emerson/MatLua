@@ -61,12 +61,13 @@ pub struct Array {
 }
 
 impl Clone for Array {
-    /// Deep copy of values (unique buffer). Prefer [`Self::reshape`] for
-    /// zero-copy shape changes that intentionally share storage.
+    /// Metadata + `Arc` share of the value buffer (NumPy-like view semantics).
+    /// Deep copy of values: [`Self::copy`].
     fn clone(&self) -> Self {
-        let mut data = pool::take_uninit(self.len());
-        data.copy_from_slice(self.as_slice());
-        Self::from_parts(self.shape.clone(), data)
+        Self {
+            shape: self.shape.clone(),
+            data: Arc::clone(&self.data),
+        }
     }
 }
 
@@ -142,8 +143,16 @@ impl Array {
 
     /// Deep copy of shape and values (unique buffer).
     #[inline]
+    pub fn copy(&self) -> Array {
+        let mut data = pool::take_uninit(self.len());
+        data.copy_from_slice(self.as_slice());
+        Self::from_parts(self.shape.clone(), data)
+    }
+
+    /// Deep copy of shape and values (unique buffer). Alias of [`Self::copy`].
+    #[inline]
     pub fn to_owned_array(&self) -> Array {
-        self.clone()
+        self.copy()
     }
 
     /// Build from shape and a flat row-major buffer.

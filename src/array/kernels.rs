@@ -201,44 +201,72 @@ pub(crate) fn sum_sq_slice(a: &[f64]) -> f64 {
     s
 }
 
-/// Sequential four-way min (IEEE `f64::min`, NaN-propagating).
+/// Sequential eight-way min (IEEE `f64::min`, NaN-propagating).
 #[inline]
 fn min_slice_seq(a: &[f64]) -> f64 {
     let mut m0 = a[0];
     let mut m1 = a[0];
     let mut m2 = a[0];
     let mut m3 = a[0];
-    let mut chunks = a[1..].chunks_exact(4);
+    let mut m4 = a[0];
+    let mut m5 = a[0];
+    let mut m6 = a[0];
+    let mut m7 = a[0];
+    let mut chunks = a[1..].chunks_exact(8);
     for c in chunks.by_ref() {
         m0 = m0.min(c[0]);
         m1 = m1.min(c[1]);
         m2 = m2.min(c[2]);
         m3 = m3.min(c[3]);
+        m4 = m4.min(c[4]);
+        m5 = m5.min(c[5]);
+        m6 = m6.min(c[6]);
+        m7 = m7.min(c[7]);
     }
     for &x in chunks.remainder() {
         m0 = m0.min(x);
     }
-    m0.min(m1).min(m2).min(m3)
+    m0.min(m1)
+        .min(m2)
+        .min(m3)
+        .min(m4)
+        .min(m5)
+        .min(m6)
+        .min(m7)
 }
 
-/// Sequential four-way max.
+/// Sequential eight-way max.
 #[inline]
 fn max_slice_seq(a: &[f64]) -> f64 {
     let mut m0 = a[0];
     let mut m1 = a[0];
     let mut m2 = a[0];
     let mut m3 = a[0];
-    let mut chunks = a[1..].chunks_exact(4);
+    let mut m4 = a[0];
+    let mut m5 = a[0];
+    let mut m6 = a[0];
+    let mut m7 = a[0];
+    let mut chunks = a[1..].chunks_exact(8);
     for c in chunks.by_ref() {
         m0 = m0.max(c[0]);
         m1 = m1.max(c[1]);
         m2 = m2.max(c[2]);
         m3 = m3.max(c[3]);
+        m4 = m4.max(c[4]);
+        m5 = m5.max(c[5]);
+        m6 = m6.max(c[6]);
+        m7 = m7.max(c[7]);
     }
     for &x in chunks.remainder() {
         m0 = m0.max(x);
     }
-    m0.max(m1).max(m2).max(m3)
+    m0.max(m1)
+        .max(m2)
+        .max(m3)
+        .max(m4)
+        .max(m5)
+        .max(m6)
+        .max(m7)
 }
 
 /// Min with four-way reduction; Rayon over chunks when large (NaN-propagating).
@@ -248,7 +276,7 @@ pub(crate) fn min_slice(a: &[f64]) -> Option<f64> {
         return None;
     }
     // ~256² elements: sequential; larger matrices benefit from parallel chunks.
-    if a.len() >= 131_072 {
+    if a.len() >= 262_144 {
         use rayon::prelude::*;
         const CS: usize = 4096;
         return a
@@ -265,7 +293,7 @@ pub(crate) fn max_slice(a: &[f64]) -> Option<f64> {
     if a.is_empty() {
         return None;
     }
-    if a.len() >= 131_072 {
+    if a.len() >= 262_144 {
         use rayon::prelude::*;
         const CS: usize = 4096;
         return a

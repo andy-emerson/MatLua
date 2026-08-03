@@ -28,17 +28,13 @@ pub(crate) fn take_filled(len: usize, fill: f64) -> Vec<f64> {
     v
 }
 
-/// Zero-filled buffer of length `len`.
-///
-/// Fresh buffers use `alloc_zeroed` (OS demand-zero pages — same cost model as
-/// `numpy.zeros`). Pooled buffers may be dirty and are write-filled.
+/// Zero-filled buffer of length `len` via `alloc_zeroed` (OS demand-zero pages).
+/// Matches NumPy `zeros` cost model: do not write-fill dirty recycle-pool memory.
 #[inline]
 pub(crate) fn take_zeroed(len: usize) -> Vec<f64> {
     if len == 0 {
         return Vec::new();
     }
-    // Prefer a fresh zeroed allocation over recycling + fill: NumPy zeros does
-    // not touch pages; write-filling 4096² is an order-of-magnitude tax.
     let layout = match Layout::array::<f64>(len) {
         Ok(l) => l,
         Err(_) => panic!("zeros length overflow"),
