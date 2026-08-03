@@ -350,12 +350,12 @@ unsafe fn bin_op(
     }
     if !a_ud.is_null() && unsafe { lua_type(L, 2) } == LUA_TNUMBER {
         let s = unsafe { luaL_checkinteger(L, 2) };
-        unsafe { push_array_i64(L, arr_scalar(&unsafe { &*a_ud }.array, s)) };
+        unsafe { push_array_i64(L, arr_scalar(&(*a_ud).array, s)) };
         return 1;
     }
     if commute_scalar && !b_ud.is_null() && unsafe { lua_type(L, 1) } == LUA_TNUMBER {
         let s = unsafe { luaL_checkinteger(L, 1) };
-        unsafe { push_array_i64(L, arr_scalar(&unsafe { &*b_ud }.array, s)) };
+        unsafe { push_array_i64(L, arr_scalar(&(*b_ud).array, s)) };
         return 1;
     }
     super::ud::lua_error_msg(L, "i64 op expects ArrayI64 and ArrayI64 or number")

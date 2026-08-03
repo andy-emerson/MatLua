@@ -23,7 +23,7 @@ pub mod from_i64;
 
 use faer::linalg::matmul::matmul as faer_matmul;
 use faer::linalg::solvers::{Solve, SolveLstsq};
-use faer::{get_global_parallelism, Accum, MatMut, MatRef, Par, Side};
+use faer::{get_global_parallelism, Accum, MatMut, Par, Side};
 
 use crate::array::kernels;
 use crate::array::{Array, Shape};
@@ -423,12 +423,13 @@ pub fn solve(a: &Array, b: &Array) -> Result<Array> {
             let prefer_vec = b.rank() == 1;
             return matmul_result(x, n, 1, prefer_vec);
         }
+        // Exact zero pivot: return both scratch buffers and take the faer path.
         crate::array::pool_recycle(lu);
-        // exact zero pivot → faer path below
+        crate::array::pool_recycle(x);
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let lu = am.partial_piv_lu();
     // Dest-pack: copy RHS into owned row-major buffer and solve in place
     // (avoids faer-owned Mat + second pack-out).
@@ -468,9 +469,9 @@ pub fn lstsq(a: &Array, b: &Array) -> Result<Array> {
             "lstsq rhs rows {bm} != matrix rows {m}"
         )));
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let bm_ref = array_as_mat_ref(b)?;
     let qr = am.col_piv_qr();
     let x = qr.solve_lstsq(bm_ref);
@@ -489,9 +490,9 @@ pub fn eigh(a: &Array) -> Result<(Array, Array)> {
     if n != m {
         return Err(Error::shape("eigh requires a square matrix"));
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let evd = am
         .self_adjoint_eigen(Side::Lower)
         .map_err(|e| Error::linalg(format!("eigh failed: {e:?}")))?;
@@ -515,9 +516,9 @@ pub fn pinv(a: &Array) -> Result<Array> {
     if a.rank() != 2 {
         return Err(Error::shape("pinv requires a rank-2 matrix"));
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let svd = am
         .svd()
         .map_err(|e| Error::linalg(format!("pinv svd failed: {e:?}")))?;
@@ -536,9 +537,9 @@ pub fn cholesky(a: &Array) -> Result<Array> {
     if a.rank() != 2 {
         return Err(Error::shape("cholesky requires a rank-2 matrix"));
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let llt = am
         .llt(Side::Lower)
         .map_err(|e| Error::linalg(format!("cholesky failed: {e:?}")))?;
@@ -552,9 +553,9 @@ pub fn qr(a: &Array) -> Result<(Array, Array)> {
     if a.rank() != 2 {
         return Err(Error::shape("qr requires a rank-2 matrix"));
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let qr = am.qr();
     let q = qr.compute_thin_Q();
     let r = qr.thin_R().to_owned();
@@ -567,9 +568,9 @@ pub fn svd(a: &Array) -> Result<(Array, Array, Array)> {
     if a.rank() != 2 {
         return Err(Error::shape("svd requires a rank-2 matrix"));
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let svd = am
         .thin_svd()
         .map_err(|e| Error::linalg(format!("svd failed: {e:?}")))?;
@@ -898,9 +899,9 @@ pub fn slogdet(a: &Array) -> Result<(f64, f64)> {
     if n == 0 {
         return Ok((1.0, 0.0)); // det of 0×0 is 1 by convention
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let lu = am.partial_piv_lu();
     let u = lu.U();
     let p = lu.P();
@@ -947,9 +948,9 @@ fn singular_values_vec(a: &Array) -> Result<Vec<f64>> {
     if a.rank() != 2 {
         return Err(Error::shape("expected rank-2 matrix"));
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let s = am
         .singular_values()
         .map_err(|e| Error::linalg(format!("singular_values failed: {e:?}")))?;
@@ -1010,9 +1011,9 @@ pub fn eigvals(a: &Array) -> Result<(Array, Array)> {
     if n != m {
         return Err(Error::shape("eigvals requires a square matrix"));
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let vals = am
         .eigenvalues()
         .map_err(|e| Error::linalg(format!("eigvals failed: {e:?}")))?;
@@ -1041,9 +1042,9 @@ pub fn eig(a: &Array) -> Result<(Array, Array, Array, Array)> {
     if n != m {
         return Err(Error::shape("eig requires a square matrix"));
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let evd = am
         .eigen()
         .map_err(|e| Error::linalg(format!("eig failed: {e:?}")))?;

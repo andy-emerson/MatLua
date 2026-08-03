@@ -115,6 +115,8 @@ impl Array {
     }
 
     /// `Arc` strong count for the value buffer (1 = uniquely owned payload).
+    /// Used by the Lua face for GC-debt accounting on large userdata.
+    #[cfg(feature = "lua")]
     #[inline]
     pub(crate) fn buffer_strong_count(&self) -> usize {
         Arc::strong_count(&self.data)

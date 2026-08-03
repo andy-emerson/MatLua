@@ -45,21 +45,40 @@ pub(crate) fn array_as_mat_ref(a: &Array) -> Result<MatRef<'_, f64>> {
 /// n=2048 vs row-major views. GEMM paths keep zero-copy views (packing
 /// already absorbs layout).
 ///
-/// Returns `(colmajor_buffer, nrows, ncols)`; view it with
-/// `MatRef::from_column_major_slice`. Recycle the buffer via
-/// [`crate::array::pool_recycle`] when the factorization's outputs have been
-/// packed out.
-pub(crate) fn array_to_colmajor(a: &Array) -> Result<(Vec<f64>, usize, usize)> {
-    let (nrows, ncols) = array_as_matrix_dims(a)?;
+/// The buffer comes from the thread-local pool and returns to it on drop, so
+/// repeated factorizations reuse capacity instead of churning the allocator.
+pub(crate) struct ColMajor {
+    buf: Vec<f64>,
+    rows: usize,
+    cols: usize,
+}
+
+impl ColMajor {
+    /// Zero-copy faer view over the column-major scratch copy.
+    #[inline]
+    pub(crate) fn view(&self) -> MatRef<'_, f64> {
+        MatRef::from_column_major_slice(&self.buf, self.rows, self.cols)
+    }
+}
+
+impl Drop for ColMajor {
+    fn drop(&mut self) {
+        crate::array::pool_recycle(std::mem::take(&mut self.buf));
+    }
+}
+
+/// Build a [`ColMajor`] scratch copy of `a` (see the type's documentation).
+pub(crate) fn array_to_colmajor(a: &Array) -> Result<ColMajor> {
+    let (rows, cols) = array_as_matrix_dims(a)?;
     let src = a.as_slice();
-    if src.len() != nrows.saturating_mul(ncols) {
+    if src.len() != rows.saturating_mul(cols) {
         return Err(Error::shape("internal layout length mismatch"));
     }
     let mut buf = crate::array::pool_take_uninit(src.len());
-    // dst[j*nrows + i] = src[i*ncols + j] — the shared blocked transpose
+    // dst[j*rows + i] = src[i*cols + j] — the shared blocked transpose
     // produces exactly the column-major image.
-    super::blocked_transpose(src, nrows, ncols, &mut buf);
-    Ok((buf, nrows, ncols))
+    super::blocked_transpose(src, rows, cols, &mut buf);
+    Ok(ColMajor { buf, rows, cols })
 }
 
 /// Copy a faer matrix view into a MatLua row-major [`Array`].

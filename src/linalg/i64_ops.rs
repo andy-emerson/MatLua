@@ -556,32 +556,13 @@ fn gemm_tiny(m: usize, k: usize, n: usize, a: Op, b: Op, data: &mut [i64]) {
 }
 
 /// Dispatch matrix GEMM (packed GEBP / tiny / parallel bands), untransposed.
-/// Strassen was measured through n=4096 on this class of host and never beat
-/// GEBP (S/G ≥ 1.0); removed to keep the path simple (WASM-friendly GEBP only).
+/// Rejected alternative (DESIGN §7.1.2): Strassen over rings was measured
+/// through n=4096 and never beat this GEBP path, so only the cubic kernel
+/// ships — which also keeps the path WASM-friendly.
 fn gemm_dispatch(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &mut [i64]) {
     let a = Op { data: aa, ld: an, trans: false };
     let b = Op { data: bb, ld: bn, trans: false };
     gemm_blocked(am, an, bn, a, b, data);
-}
-
-/// Force GEBP (no Strassen) — for crossover measurement only.
-#[doc(hidden)]
-pub fn matmul_gebp_only(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
-    let (am, an) = as_matrix_dims(a)?;
-    let (bm, bn) = as_matrix_dims(b)?;
-    if an != bm {
-        return Err(Error::shape(format!(
-            "matmul shape mismatch: ({am}, {an}) vs ({bm}, {bn})"
-        )));
-    }
-    let prefer_vec = b.rank() == 1 || (a.rank() == 1 && bn == 1);
-    let mut data = pool_i64::take_zeroed(am.saturating_mul(bn));
-    if b.rank() == 1 {
-        // fall back to matmul path
-        return matmul(a, b);
-    }
-    gemm_dispatch(am, an, bn, a.as_slice(), b.as_slice(), &mut data);
-    matmul_result(data, am, bn, prefer_vec)
 }
 
 /// Matrix product `a @ b` with wrapping `i64` accumulation.
