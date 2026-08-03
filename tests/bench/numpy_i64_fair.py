@@ -112,6 +112,9 @@ def main() -> None:
         af = a.astype(np.float64, copy=False)
         bf = b.astype(np.float64, copy=False)
         emit("matmul", n, time_ms(ith, wrmh, lambda: af @ bf))
+        # Same f64-BLAS reference policy for the transposed products.
+        emit("matmul_at", n, time_ms(ith, wrmh, lambda: af.T @ bf))
+        emit("matmul_bt", n, time_ms(ith, wrmh, lambda: af @ bf.T))
         emit("unique", n, time_ms(it, wrm, lambda: np.unique(v)))
         emit("isin", n, time_ms(it, wrm, lambda: np.isin(a, v)))
 

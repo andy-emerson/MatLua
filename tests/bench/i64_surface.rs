@@ -186,6 +186,12 @@ fn bench_rust(sizes: &[usize]) {
         emit("rust", "matmul", n, time_ms(ith, wrmh, || {
             black_box(i64_ops::matmul(&a, &b).unwrap());
         }));
+        emit("rust", "matmul_at", n, time_ms(ith, wrmh, || {
+            black_box(i64_ops::matmul_at(&a, &b).unwrap());
+        }));
+        emit("rust", "matmul_bt", n, time_ms(ith, wrmh, || {
+            black_box(i64_ops::matmul_bt(&a, &b).unwrap());
+        }));
         emit("rust", "unique", n, time_ms(it, wrm, || {
             black_box(v.unique().unwrap());
         }));
@@ -239,6 +245,8 @@ fn bench_lua(sizes: &[usize]) {
         emit("lua", "transpose", n, time_lua(&lua, &a_only, "return A:transpose()", it, wrm));
         emit("lua", "dot", n, time_lua(&lua, &v_only, "return ml.dot(V, V)", it, wrm));
         emit("lua", "matmul", n, time_lua(&lua, &ab, "return ml.matmul(A, B)", ith, wrmh));
+        emit("lua", "matmul_at", n, time_lua(&lua, &ab, "return ml.matmul_at(A, B)", ith, wrmh));
+        emit("lua", "matmul_bt", n, time_lua(&lua, &ab, "return ml.matmul_bt(A, B)", ith, wrmh));
         emit("lua", "unique", n, time_lua(&lua, &v_only, "return V:unique()", it, wrm));
         emit(
             "lua",

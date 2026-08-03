@@ -88,21 +88,43 @@ const MR: usize = 4;
 /// Micro-kernel cols (nr). Analyzed + empirical: see block comment above.
 const NR: usize = 8;
 
-/// Pack A[i0..i0+m, k0..k0+k] into MR-row panels, **k-major inside each
-/// panel**: panel `ir` stores `buf[off + p*mr + i] = A[i0+ir+i, k0+p]`, so the
-/// micro-kernel loads the `mr` A values of one rank-1 update contiguously.
-/// Source rows are read contiguously (i outer, p inner); writes stride by
-/// `mr` (≤ 48 B, within a cache line).
+/// GEBP source operand: `data` is a stored row-major matrix with row stride
+/// `ld`; `trans` selects op(M) = Mᵀ. Logical dims (m×k for A, k×n for B) are
+/// supplied by the caller. Transposition costs nothing extra here — the pack
+/// layer already reorders elements, so `matmul_at` / `matmul_bt` share the
+/// whole GEBP path instead of using naive loops.
+#[derive(Clone, Copy)]
+struct Op<'a> {
+    data: &'a [i64],
+    ld: usize,
+    trans: bool,
+}
+
+/// Pack op(A)[i0..i0+m, k0..k0+k] into MR-row panels, **k-major inside each
+/// panel**: panel `ir` stores `buf[off + p*mr + i] = op(A)[i0+ir+i, k0+p]`, so
+/// the micro-kernel loads the `mr` A values of one rank-1 update contiguously.
+/// Untransposed: source rows read contiguously (i outer, p inner), writes
+/// stride by `mr` (≤ cache line). Transposed: p outer copies `mr` contiguous
+/// source elements per step.
 #[inline]
-fn pack_a_mr(aa: &[i64], an: usize, i0: usize, m: usize, k0: usize, k: usize, buf: &mut [i64]) {
+fn pack_a_mr(a: Op, i0: usize, m: usize, k0: usize, k: usize, buf: &mut [i64]) {
+    let (aa, ld) = (a.data, a.ld);
     let mut off = 0;
     let mut ir = 0;
     while ir < m {
         let mr = (m - ir).min(MR);
-        for i in 0..mr {
-            let src = &aa[(i0 + ir + i) * an + k0..(i0 + ir + i) * an + k0 + k];
+        if a.trans {
+            // op(A)[i, p] = A[p, i]: contiguous mr-wide read per p.
             for p in 0..k {
-                buf[off + p * mr + i] = src[p];
+                let src = &aa[(k0 + p) * ld + (i0 + ir)..(k0 + p) * ld + (i0 + ir) + mr];
+                buf[off + p * mr..off + p * mr + mr].copy_from_slice(src);
+            }
+        } else {
+            for i in 0..mr {
+                let src = &aa[(i0 + ir + i) * ld + k0..(i0 + ir + i) * ld + k0 + k];
+                for p in 0..k {
+                    buf[off + p * mr + i] = src[p];
+                }
             }
         }
         off += k * mr;
@@ -110,17 +132,29 @@ fn pack_a_mr(aa: &[i64], an: usize, i0: usize, m: usize, k0: usize, k: usize, bu
     }
 }
 
-/// Pack B[k0.., j0..] → **panel-major for NR micro-panels**: for each jr in 0..n
-/// step NR, store kc×nr' contiguous (matches micro-kernel B loads).
+/// Pack op(B)[k0.., j0..] → **panel-major for NR micro-panels**: for each jr
+/// in 0..n step NR, store kc×nr' contiguous (matches micro-kernel B loads).
+/// Untransposed: contiguous nr-wide read per p. Transposed: op(B)[p, j] =
+/// B[j, p], so each j reads a contiguous source row and scatters at stride nr.
 #[inline]
-fn pack_b_nr(bb: &[i64], bn: usize, k0: usize, k: usize, j0: usize, n: usize, buf: &mut [i64]) {
+fn pack_b_nr(b: Op, k0: usize, k: usize, j0: usize, n: usize, buf: &mut [i64]) {
+    let (bb, ld) = (b.data, b.ld);
     let mut off = 0;
     let mut jr = 0;
     while jr < n {
         let nr = (n - jr).min(NR);
-        for p in 0..k {
-            let src = &bb[(k0 + p) * bn + (j0 + jr)..(k0 + p) * bn + (j0 + jr) + nr];
-            buf[off + p * nr..off + p * nr + nr].copy_from_slice(src);
+        if b.trans {
+            for jj in 0..nr {
+                let src = &bb[(j0 + jr + jj) * ld + k0..(j0 + jr + jj) * ld + k0 + k];
+                for p in 0..k {
+                    buf[off + p * nr + jj] = src[p];
+                }
+            }
+        } else {
+            for p in 0..k {
+                let src = &bb[(k0 + p) * ld + (j0 + jr)..(k0 + p) * ld + (j0 + jr) + nr];
+                buf[off + p * nr..off + p * nr + nr].copy_from_slice(src);
+            }
         }
         off += k * nr;
         jr += nr;
@@ -196,9 +230,8 @@ fn micro_edge(
 /// micro-tiles against the shared read-only `b_pack`.
 #[allow(clippy::too_many_arguments)]
 fn gemm_row_band(
-    an: usize,
-    bn: usize,
-    aa: &[i64],
+    a: Op,
+    ldc: usize,
     b_pack: &[i64],
     i0: usize,
     mb: usize,
@@ -208,9 +241,9 @@ fn gemm_row_band(
     nb: usize,
     c_band: &mut [i64],
 ) {
-    debug_assert_eq!(c_band.len(), mb * bn);
+    debug_assert_eq!(c_band.len(), mb * ldc);
     let mut a_pack = pool_i64::take_uninit(mb * kb);
-    pack_a_mr(aa, an, i0, mb, k0, kb, &mut a_pack);
+    pack_a_mr(a, i0, mb, k0, kb, &mut a_pack);
 
     let mut jr = 0;
     let mut b_off = 0;
@@ -226,7 +259,7 @@ fn gemm_row_band(
                     &a_pack[a_off..a_off + kb * MR],
                     &b_pack[b_off..b_off + kb * NR],
                     c_band,
-                    bn,
+                    ldc,
                     ir,
                     j0 + jr,
                 );
@@ -238,7 +271,7 @@ fn gemm_row_band(
                     &a_pack[a_off..a_off + kb * mr],
                     &b_pack[b_off..b_off + kb * nr],
                     c_band,
-                    bn,
+                    ldc,
                     ir,
                     j0 + jr,
                     nr,
@@ -284,12 +317,12 @@ fn gemm_simple(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &m
 /// runtime `available_parallelism` ≥ 2 and there are ≥ 2 row bands to split —
 /// a work rule, not a host-tuned n table. Barrier count is
 /// ceil(bn/NC)·ceil(an/KC), negligible next to band work at these sizes.
-fn gemm_blocked(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &mut [i64]) {
-    let flops = (am as u64).saturating_mul(an as u64).saturating_mul(bn as u64);
+fn gemm_blocked(m: usize, k: usize, n: usize, a: Op, b: Op, data: &mut [i64]) {
+    let flops = (m as u64).saturating_mul(k as u64).saturating_mul(n as u64);
     // Tiny: no packing. Cutoff is empirical (M7.c bench host, 2026-07;
     // unverified elsewhere) — see DESIGN §3.26.
     if flops < (48u64 * 48 * 48) {
-        gemm_simple(am, an, bn, aa, bb, data);
+        gemm_tiny(m, k, n, a, b, data);
         return;
     }
 
@@ -297,18 +330,18 @@ fn gemm_blocked(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &
         .map(|n| n.get())
         .unwrap_or(1)
         .max(1);
-    let n_bands = am.div_ceil(MC);
+    let n_bands = m.div_ceil(MC);
     let want_par = nthreads >= 2 && n_bands >= 2;
 
-    let mut b_pack = pool_i64::take_uninit(KC * NC.min(bn));
+    let mut b_pack = pool_i64::take_uninit(KC * NC.min(n));
 
     let mut j0 = 0;
-    while j0 < bn {
-        let nb = (bn - j0).min(NC);
+    while j0 < n {
+        let nb = (n - j0).min(NC);
         let mut k0 = 0;
-        while k0 < an {
-            let kb = (an - k0).min(KC);
-            pack_b_nr(bb, bn, k0, kb, j0, nb, &mut b_pack[..kb * nb]);
+        while k0 < k {
+            let kb = (k - k0).min(KC);
+            pack_b_nr(b, k0, kb, j0, nb, &mut b_pack[..kb * nb]);
 
             if want_par {
                 use rayon::prelude::*;
@@ -316,25 +349,24 @@ fn gemm_blocked(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &
                 let mut bands = Vec::with_capacity(n_bands);
                 let mut i0 = 0;
                 let mut rest: &mut [i64] = &mut data[..];
-                while i0 < am {
-                    let mb = (am - i0).min(MC);
-                    let (chunk, tail) = rest.split_at_mut(mb * bn);
+                while i0 < m {
+                    let mb = (m - i0).min(MC);
+                    let (chunk, tail) = rest.split_at_mut(mb * n);
                     bands.push((i0, mb, chunk));
                     rest = tail;
                     i0 += mb;
                 }
                 let bp = &b_pack;
                 bands.into_par_iter().for_each(|(i0, mb, c_band)| {
-                    gemm_row_band(an, bn, aa, bp, i0, mb, k0, kb, j0, nb, c_band);
+                    gemm_row_band(a, n, bp, i0, mb, k0, kb, j0, nb, c_band);
                 });
             } else {
                 let mut i0 = 0;
-                while i0 < am {
-                    let mb = (am - i0).min(MC);
+                while i0 < m {
+                    let mb = (m - i0).min(MC);
                     gemm_row_band(
-                        an,
-                        bn,
-                        aa,
+                        a,
+                        n,
                         &b_pack,
                         i0,
                         mb,
@@ -342,7 +374,7 @@ fn gemm_blocked(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &
                         kb,
                         j0,
                         nb,
-                        &mut data[i0 * bn..(i0 + mb) * bn],
+                        &mut data[i0 * n..(i0 + mb) * n],
                     );
                     i0 += mb;
                 }
@@ -354,11 +386,67 @@ fn gemm_blocked(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &
     pool_i64::recycle(b_pack);
 }
 
-/// Dispatch matrix GEMM (packed GEBP / simple / parallel panels).
+/// Tiny-product fallback (no packing): dispatch on transposition. The
+/// untransposed arm is the unrolled ikj loop; the transposed arms are the
+/// cache-sensible naive orders (kpj for AᵀB, row-dot for ABᵀ).
+fn gemm_tiny(m: usize, k: usize, n: usize, a: Op, b: Op, data: &mut [i64]) {
+    match (a.trans, b.trans) {
+        (false, false) => gemm_simple(m, k, n, a.data, b.data, data),
+        (true, false) => {
+            // C[i, j] += A[p, i] * B[p, j], streaming rows of both.
+            for p in 0..k {
+                let a_row = &a.data[p * a.ld..p * a.ld + m];
+                let b_row = &b.data[p * b.ld..p * b.ld + n];
+                for i in 0..m {
+                    let api = a_row[i];
+                    if api == 0 {
+                        continue;
+                    }
+                    let c_row = &mut data[i * n..(i + 1) * n];
+                    for j in 0..n {
+                        c_row[j] = c_row[j].wrapping_add(api.wrapping_mul(b_row[j]));
+                    }
+                }
+            }
+        }
+        (false, true) => {
+            // C[i, j] += A[i, p] * B[j, p]: row-dot per output element.
+            for i in 0..m {
+                let a_row = &a.data[i * a.ld..i * a.ld + k];
+                for j in 0..n {
+                    let b_row = &b.data[j * b.ld..j * b.ld + k];
+                    let mut s: i64 = 0;
+                    for p in 0..k {
+                        s = s.wrapping_add(a_row[p].wrapping_mul(b_row[p]));
+                    }
+                    data[i * n + j] = data[i * n + j].wrapping_add(s);
+                }
+            }
+        }
+        (true, true) => {
+            // Not reachable from the public face; keep a correct fallback.
+            for i in 0..m {
+                for j in 0..n {
+                    let mut s: i64 = 0;
+                    for p in 0..k {
+                        s = s.wrapping_add(
+                            a.data[p * a.ld + i].wrapping_mul(b.data[j * b.ld + p]),
+                        );
+                    }
+                    data[i * n + j] = data[i * n + j].wrapping_add(s);
+                }
+            }
+        }
+    }
+}
+
+/// Dispatch matrix GEMM (packed GEBP / tiny / parallel bands), untransposed.
 /// Strassen was measured through n=4096 on this class of host and never beat
 /// GEBP (S/G ≥ 1.0); removed to keep the path simple (WASM-friendly GEBP only).
 fn gemm_dispatch(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &mut [i64]) {
-    gemm_blocked(am, an, bn, aa, bb, data);
+    let a = Op { data: aa, ld: an, trans: false };
+    let b = Op { data: bb, ld: bn, trans: false };
+    gemm_blocked(am, an, bn, a, b, data);
 }
 
 /// Force GEBP (no Strassen) — for crossover measurement only.
@@ -377,7 +465,7 @@ pub fn matmul_gebp_only(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
         // fall back to matmul path
         return matmul(a, b);
     }
-    gemm_blocked(am, an, bn, a.as_slice(), b.as_slice(), &mut data);
+    gemm_dispatch(am, an, bn, a.as_slice(), b.as_slice(), &mut data);
     matmul_result(data, am, bn, prefer_vec)
 }
 
@@ -468,27 +556,23 @@ pub fn matmul_at(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
     let aa = a.as_slice();
     let bb = b.as_slice();
     if b.rank() == 1 {
-        for i in 0..an {
-            let mut s: i64 = 0;
-            for k in 0..am {
-                s = s.wrapping_add(aa[k * an + i].wrapping_mul(bb[k]));
+        // Aᵀx = Σₖ x[k]·A[k, :] — stream A rows contiguously (axpy order),
+        // instead of a strided column dot per output element.
+        for kk in 0..am {
+            let bk = bb[kk];
+            if bk == 0 {
+                continue;
             }
-            data[i] = s;
+            let row = &aa[kk * an..(kk + 1) * an];
+            for i in 0..an {
+                data[i] = data[i].wrapping_add(bk.wrapping_mul(row[i]));
+            }
         }
     } else {
-        for k in 0..am {
-            let b_row = &bb[k * bn..(k + 1) * bn];
-            for i in 0..an {
-                let aki = aa[k * an + i];
-                if aki == 0 {
-                    continue;
-                }
-                let c_row = &mut data[i * bn..(i + 1) * bn];
-                for j in 0..bn {
-                    c_row[j] = c_row[j].wrapping_add(aki.wrapping_mul(b_row[j]));
-                }
-            }
-        }
+        // Full GEBP path; transposition is absorbed by the pack layer.
+        let a_op = Op { data: aa, ld: an, trans: true };
+        let b_op = Op { data: bb, ld: bn, trans: false };
+        gemm_blocked(an, am, bn, a_op, b_op, &mut data);
     }
     matmul_result(data, an, bn, prefer_vec)
 }
@@ -505,26 +589,10 @@ pub fn matmul_bt(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
     let mut data = pool_i64::take_zeroed(am.saturating_mul(bm));
     let aa = a.as_slice();
     let bb = b.as_slice();
-    for i in 0..am {
-        let a_row = &aa[i * an..(i + 1) * an];
-        for j in 0..bm {
-            let b_row = &bb[j * bn..(j + 1) * bn];
-            let mut s: i64 = 0;
-            let mut k = 0;
-            while k + 4 <= an {
-                s = s.wrapping_add(a_row[k].wrapping_mul(b_row[k]));
-                s = s.wrapping_add(a_row[k + 1].wrapping_mul(b_row[k + 1]));
-                s = s.wrapping_add(a_row[k + 2].wrapping_mul(b_row[k + 2]));
-                s = s.wrapping_add(a_row[k + 3].wrapping_mul(b_row[k + 3]));
-                k += 4;
-            }
-            while k < an {
-                s = s.wrapping_add(a_row[k].wrapping_mul(b_row[k]));
-                k += 1;
-            }
-            data[i * bm + j] = s;
-        }
-    }
+    // Full GEBP path; Bᵀ is absorbed by the pack layer.
+    let a_op = Op { data: aa, ld: an, trans: false };
+    let b_op = Op { data: bb, ld: bn, trans: true };
+    gemm_blocked(am, an, bm, a_op, b_op, &mut data);
     Ok(ArrayI64::from_parts(Shape::matrix(am, bm)?, data))
 }
 
@@ -685,6 +753,59 @@ mod tests {
             c.as_slice(),
             naive_matmul(m, k, n, a.as_slice(), b.as_slice()).as_slice()
         );
+    }
+
+    #[test]
+    fn matmul_at_gebp_matches_naive() {
+        // AᵀB with A (am×an): logical (an, am, bn) product; edges off all
+        // tile multiples; large enough for the packed (non-tiny) path.
+        let (am, an, bn) = (131usize, 67usize, 45usize);
+        let a = ArrayI64::from_shape_vec(vec![am, an], wrapheavy(am * an, 17)).unwrap();
+        let b = ArrayI64::from_shape_vec(vec![am, bn], wrapheavy(am * bn, 19)).unwrap();
+        let c = matmul_at(&a, &b).unwrap();
+        let (aa, bb) = (a.as_slice(), b.as_slice());
+        let mut r = vec![0i64; an * bn];
+        for p in 0..am {
+            for i in 0..an {
+                for j in 0..bn {
+                    r[i * bn + j] = r[i * bn + j]
+                        .wrapping_add(aa[p * an + i].wrapping_mul(bb[p * bn + j]));
+                }
+            }
+        }
+        assert_eq!(c.as_slice(), r.as_slice());
+        // Rank-1 axpy path.
+        let x = ArrayI64::from_shape_vec(vec![am], wrapheavy(am, 23)).unwrap();
+        let atx = matmul_at(&a, &x).unwrap();
+        let mut rv = vec![0i64; an];
+        for p in 0..am {
+            for i in 0..an {
+                rv[i] = rv[i].wrapping_add(aa[p * an + i].wrapping_mul(x.as_slice()[p]));
+            }
+        }
+        assert_eq!(atx.as_slice(), rv.as_slice());
+    }
+
+    #[test]
+    fn matmul_bt_gebp_matches_naive() {
+        // ABᵀ with shared k = 131 (> KC edge unaffected but non-multiple),
+        // parallel-band m on multi-core hosts (390 > 2·MC).
+        let (am, k, bm) = (390usize, 131usize, 53usize);
+        let a = ArrayI64::from_shape_vec(vec![am, k], wrapheavy(am * k, 29)).unwrap();
+        let b = ArrayI64::from_shape_vec(vec![bm, k], wrapheavy(bm * k, 31)).unwrap();
+        let c = matmul_bt(&a, &b).unwrap();
+        let (aa, bb) = (a.as_slice(), b.as_slice());
+        let mut r = vec![0i64; am * bm];
+        for i in 0..am {
+            for j in 0..bm {
+                let mut s = 0i64;
+                for p in 0..k {
+                    s = s.wrapping_add(aa[i * k + p].wrapping_mul(bb[j * k + p]));
+                }
+                r[i * bm + j] = s;
+            }
+        }
+        assert_eq!(c.as_slice(), r.as_slice());
     }
 
     #[test]
