@@ -72,3 +72,9 @@ name = "i64_promote"
 path = "tests/bench/i64_promote.rs"
 harness = false
 required-features = ["lua"]
+
+# Machine ceiling for exact wrapping i64 MACs (engineering yardstick, DESIGN §7.1.2)
+[[test]]
+name = "i64_roofline"
+path = "tests/bench/i64_roofline.rs"
+harness = false
