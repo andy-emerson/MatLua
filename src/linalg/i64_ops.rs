@@ -5,16 +5,21 @@
 //!
 //! # Matmul algorithm (M7.c)
 //!
-//! Research notes (GotoBLAS / BLIS GEBP; portable integer GEMM):
+//! Goto/BLIS GEBP over wrapping `i64` (constants per DESIGN §3.26 — see the
+//! derivation at their definitions below):
 //! - **Not** f64 promote + faer: breaks exactness past 2⁵³ and wrapping semantics.
-//! - NumPy `int64 @ int64` has **no BLAS backend** (OpenBLAS/MKL are float); it
-//!   falls off hard with n (cache). That is why fair NumPy times at n=4096 can
-//!   fail to finish on small hosts — not because MatLua is “missing” matmul.
-//! - MatLua uses **packing + mc×kc / kc×nc panels + mr×nr micro-kernel** (GEBP).
-//!   Micro-kernel is **8×8** wrapping `i64` muls (wider tile ⇒ more ops per load).
-//!   No AVX-512 `vpmullq` (not portable to WASM / older x86).
+//! - NumPy `int64 @ int64` has **no BLAS backend** (OpenBLAS/MKL are float); the
+//!   fair reference is f64 BLAS on integer-valued data (DESIGN §7.1.2), plus the
+//!   machine roofline from `tests/bench/i64_roofline.rs`.
+//! - Loop order is Goto: NC column panels → KC depth panels (pack B once) →
+//!   MC row panels (pack A once; parallel) → MR×NR register-tile micro-kernel.
+//! - The micro-kernel is a **flat-array accumulator tile** written so LLVM can
+//!   auto-vectorize it at whatever target features the build has: baseline
+//!   x86-64 emulates 64-bit lane products (SSE2 `pmuludq` decomposition);
+//!   AVX-512DQ builds get `vpmullq` — from the same portable source. No
+//!   intrinsics, no ISA-specific code paths.
 //! - Parallelism: split output row-panels when runtime `available_parallelism`
-//!   and total flops justify ≥1 panel per thread (work rule, not a fixed n table).
+//!   and panel count justify it (work rule, not a fixed n table).
 //! - Strassen over rings is valid but was slower than this base kernel through
 //!   n=4096 on measured hosts; kept off until the cubic kernel is stronger.
 
@@ -44,34 +49,64 @@ fn matmul_result(data: Vec<i64>, rows: usize, cols: usize, prefer_vec: bool) -> 
 
 // --- Packing GEMM (Goto/BLIS GEBP structure) ---------------------------------
 //
-// Algorithm (portable; no host-specific timing thresholds):
-// 1. Panel C by mc rows × nc cols (GEBP).
-// 2. Pack A (mc×kc) and B (kc×nc) so the micro-kernel sees unit-stride loads.
-// 3. Micro-kernel: mr×nr register tile (8×8) of rank-1 updates over k.
+// Loop order (Goto): j0 over NC column panels → k0 over KC depth panels,
+// packing B[k0.., j0..] once → i0 over MC row panels, packing A[i0.., k0..]
+// once (parallel across row panels, shared read-only B pack) → jr/ir
+// micro-tiles. With NC ≥ bn every element of A and B is packed exactly once
+// per product. The previous structure (row panels outermost, NC = 64)
+// re-packed B ×(am/MC) and A ×(bn/NC) — at n = 1024 that was ×16 redundant
+// packing traffic on both operands.
 //
-// Why not only 4×4: larger tiles raise arithmetic intensity (ops per load) —
-// standard BLIS/Goto design, independent of one machine’s cache sizes.
-// Why not AVX-512 vpmullq: not portable (WASM / older x86); we stay on
-// wrapping scalar i64 muls inside a wider software tile.
-// Panel sizes target L2-resident packs for 64-bit elements (literature defaults).
+// Constant provenance (DESIGN §3.26):
+// - MR×NR = 4×8 (analyzed + empirical): the accumulator tile is a flat array
+//   with fixed-trip inner loops — the shape LLVM's vectorizers handle — not
+//   named scalars, which pin codegen to scalar `imul`. Lane budget: 32
+//   accumulator lanes = 16 SSE2 xmm (the full file — operands borrow spill
+//   slots, hidden under the 5+-instruction emulated 64-bit lane product),
+//   8 AVX2 ymm, 4 AVX-512 zmm (fits everywhere wider). No single shape is
+//   optimal for every ISA. In-situ A/B on gemm n=1024 (empirical: shared
+//   4-vCPU cloud Xeon w/ AVX-512DQ, 2026-08 — re-check new host classes with
+//   tests/bench/i64_roofline.rs): 4×8 = 21.0 Gops at baseline codegen /
+//   22.9 at target-cpu=native; 6×16 = 11.3 / 26.2 (rejected: regresses the
+//   default build); previous named-scalar 8×8 + NC=64 structure = 17.3 / 22.1.
+// - KC = 256 (analyzed): the streamed B micro-panel is KC×NR×8 B = 16 KB,
+//   half of the smallest common L1d (32 KB), leaving room for the A stream
+//   and the C tile.
+// - MC = 128 (analyzed): the A pack is MC×KC×8 B = 256 KB, half of a
+//   conservative 512 KB L2; multiple of MR so full tiles fill each panel.
+// - NC = 1024 (analyzed): the B pack is KC×NC×8 B = 2 MB, a bounded
+//   L3-resident share; multiple of NR.
 
-/// Rows of A/C panel (mc).
-const MC: usize = 64;
-/// Cols of B/C panel (nc).
-const NC: usize = 64;
-/// Inner depth panel (kc).
-const KC: usize = 128;
-/// Micro-kernel rows (mr).
-const MR: usize = 8;
-/// Micro-kernel cols (nr).
+/// Rows of A/C panel (mc). Analyzed: see block comment above.
+const MC: usize = 128;
+/// Cols of B/C panel (nc). Analyzed: see block comment above.
+const NC: usize = 1024;
+/// Inner depth panel (kc). Analyzed: see block comment above.
+const KC: usize = 256;
+/// Micro-kernel rows (mr). Analyzed + empirical: see block comment above.
+const MR: usize = 4;
+/// Micro-kernel cols (nr). Analyzed + empirical: see block comment above.
 const NR: usize = 8;
 
-/// Pack A[i0.., k0..] row-major → row-major mc×kc (contiguous rows of A).
+/// Pack A[i0..i0+m, k0..k0+k] into MR-row panels, **k-major inside each
+/// panel**: panel `ir` stores `buf[off + p*mr + i] = A[i0+ir+i, k0+p]`, so the
+/// micro-kernel loads the `mr` A values of one rank-1 update contiguously.
+/// Source rows are read contiguously (i outer, p inner); writes stride by
+/// `mr` (≤ 48 B, within a cache line).
 #[inline]
-fn pack_a(aa: &[i64], an: usize, i0: usize, m: usize, k0: usize, k: usize, buf: &mut [i64]) {
-    for i in 0..m {
-        let src = &aa[(i0 + i) * an + k0..(i0 + i) * an + k0 + k];
-        buf[i * k..(i + 1) * k].copy_from_slice(src);
+fn pack_a_mr(aa: &[i64], an: usize, i0: usize, m: usize, k0: usize, k: usize, buf: &mut [i64]) {
+    let mut off = 0;
+    let mut ir = 0;
+    while ir < m {
+        let mr = (m - ir).min(MR);
+        for i in 0..mr {
+            let src = &aa[(i0 + ir + i) * an + k0..(i0 + ir + i) * an + k0 + k];
+            for p in 0..k {
+                buf[off + p * mr + i] = src[p];
+            }
+        }
+        off += k * mr;
+        ir += mr;
     }
 }
 
@@ -92,231 +127,42 @@ fn pack_b_nr(bb: &[i64], bn: usize, k0: usize, k: usize, j0: usize, n: usize, bu
     }
 }
 
-/// 8×8 wrapping micro-kernel: C[i..i+mr, j..j+nr] += A[i.., 0..k] * B_panel[0..k, 0..nr]
-/// A is row-major (mr rows × k); B is k×nr contiguous.
+/// MR×NR wrapping micro-kernel:
+/// `C[i0..i0+MR, j0..j0+NR] += A_panel[0..k, 0..MR] * B_panel[0..k, 0..NR]`.
+/// `a` is k-major (MR contiguous A values per p, from [`pack_a_mr`]); `b` is
+/// k×NR contiguous (from [`pack_b_nr`]).
+///
+/// Written as a flat accumulator array with fixed-trip inner loops — the shape
+/// LLVM auto-vectorizes at the build's target features (SSE2 `pmuludq`
+/// decomposition at baseline; `vpmullq` on AVX-512DQ builds) — deliberately
+/// not named scalar variables, which pin codegen to scalar `imul`.
 #[inline]
-fn micro_8x8(
+fn micro_tile(
     k: usize,
-    a: &[i64], // leading row stride = k; at least 8 rows
-    b: &[i64], // k × 8
+    a: &[i64], // k-major, MR per p
+    b: &[i64], // k × NR
     c: &mut [i64],
     ldc: usize,
     i0: usize,
     j0: usize,
 ) {
-    // Load 8×8 C tile into registers
-    let mut c00 = c[i0 * ldc + j0];
-    let mut c01 = c[i0 * ldc + j0 + 1];
-    let mut c02 = c[i0 * ldc + j0 + 2];
-    let mut c03 = c[i0 * ldc + j0 + 3];
-    let mut c04 = c[i0 * ldc + j0 + 4];
-    let mut c05 = c[i0 * ldc + j0 + 5];
-    let mut c06 = c[i0 * ldc + j0 + 6];
-    let mut c07 = c[i0 * ldc + j0 + 7];
-    let mut c10 = c[(i0 + 1) * ldc + j0];
-    let mut c11 = c[(i0 + 1) * ldc + j0 + 1];
-    let mut c12 = c[(i0 + 1) * ldc + j0 + 2];
-    let mut c13 = c[(i0 + 1) * ldc + j0 + 3];
-    let mut c14 = c[(i0 + 1) * ldc + j0 + 4];
-    let mut c15 = c[(i0 + 1) * ldc + j0 + 5];
-    let mut c16 = c[(i0 + 1) * ldc + j0 + 6];
-    let mut c17 = c[(i0 + 1) * ldc + j0 + 7];
-    let mut c20 = c[(i0 + 2) * ldc + j0];
-    let mut c21 = c[(i0 + 2) * ldc + j0 + 1];
-    let mut c22 = c[(i0 + 2) * ldc + j0 + 2];
-    let mut c23 = c[(i0 + 2) * ldc + j0 + 3];
-    let mut c24 = c[(i0 + 2) * ldc + j0 + 4];
-    let mut c25 = c[(i0 + 2) * ldc + j0 + 5];
-    let mut c26 = c[(i0 + 2) * ldc + j0 + 6];
-    let mut c27 = c[(i0 + 2) * ldc + j0 + 7];
-    let mut c30 = c[(i0 + 3) * ldc + j0];
-    let mut c31 = c[(i0 + 3) * ldc + j0 + 1];
-    let mut c32 = c[(i0 + 3) * ldc + j0 + 2];
-    let mut c33 = c[(i0 + 3) * ldc + j0 + 3];
-    let mut c34 = c[(i0 + 3) * ldc + j0 + 4];
-    let mut c35 = c[(i0 + 3) * ldc + j0 + 5];
-    let mut c36 = c[(i0 + 3) * ldc + j0 + 6];
-    let mut c37 = c[(i0 + 3) * ldc + j0 + 7];
-    let mut c40 = c[(i0 + 4) * ldc + j0];
-    let mut c41 = c[(i0 + 4) * ldc + j0 + 1];
-    let mut c42 = c[(i0 + 4) * ldc + j0 + 2];
-    let mut c43 = c[(i0 + 4) * ldc + j0 + 3];
-    let mut c44 = c[(i0 + 4) * ldc + j0 + 4];
-    let mut c45 = c[(i0 + 4) * ldc + j0 + 5];
-    let mut c46 = c[(i0 + 4) * ldc + j0 + 6];
-    let mut c47 = c[(i0 + 4) * ldc + j0 + 7];
-    let mut c50 = c[(i0 + 5) * ldc + j0];
-    let mut c51 = c[(i0 + 5) * ldc + j0 + 1];
-    let mut c52 = c[(i0 + 5) * ldc + j0 + 2];
-    let mut c53 = c[(i0 + 5) * ldc + j0 + 3];
-    let mut c54 = c[(i0 + 5) * ldc + j0 + 4];
-    let mut c55 = c[(i0 + 5) * ldc + j0 + 5];
-    let mut c56 = c[(i0 + 5) * ldc + j0 + 6];
-    let mut c57 = c[(i0 + 5) * ldc + j0 + 7];
-    let mut c60 = c[(i0 + 6) * ldc + j0];
-    let mut c61 = c[(i0 + 6) * ldc + j0 + 1];
-    let mut c62 = c[(i0 + 6) * ldc + j0 + 2];
-    let mut c63 = c[(i0 + 6) * ldc + j0 + 3];
-    let mut c64 = c[(i0 + 6) * ldc + j0 + 4];
-    let mut c65 = c[(i0 + 6) * ldc + j0 + 5];
-    let mut c66 = c[(i0 + 6) * ldc + j0 + 6];
-    let mut c67 = c[(i0 + 6) * ldc + j0 + 7];
-    let mut c70 = c[(i0 + 7) * ldc + j0];
-    let mut c71 = c[(i0 + 7) * ldc + j0 + 1];
-    let mut c72 = c[(i0 + 7) * ldc + j0 + 2];
-    let mut c73 = c[(i0 + 7) * ldc + j0 + 3];
-    let mut c74 = c[(i0 + 7) * ldc + j0 + 4];
-    let mut c75 = c[(i0 + 7) * ldc + j0 + 5];
-    let mut c76 = c[(i0 + 7) * ldc + j0 + 6];
-    let mut c77 = c[(i0 + 7) * ldc + j0 + 7];
-
+    let mut acc = [0i64; MR * NR];
     for p in 0..k {
-        let b0 = b[p * 8];
-        let b1 = b[p * 8 + 1];
-        let b2 = b[p * 8 + 2];
-        let b3 = b[p * 8 + 3];
-        let b4 = b[p * 8 + 4];
-        let b5 = b[p * 8 + 5];
-        let b6 = b[p * 8 + 6];
-        let b7 = b[p * 8 + 7];
-        let a0 = a[0 * k + p];
-        c00 = c00.wrapping_add(a0.wrapping_mul(b0));
-        c01 = c01.wrapping_add(a0.wrapping_mul(b1));
-        c02 = c02.wrapping_add(a0.wrapping_mul(b2));
-        c03 = c03.wrapping_add(a0.wrapping_mul(b3));
-        c04 = c04.wrapping_add(a0.wrapping_mul(b4));
-        c05 = c05.wrapping_add(a0.wrapping_mul(b5));
-        c06 = c06.wrapping_add(a0.wrapping_mul(b6));
-        c07 = c07.wrapping_add(a0.wrapping_mul(b7));
-        let a1 = a[1 * k + p];
-        c10 = c10.wrapping_add(a1.wrapping_mul(b0));
-        c11 = c11.wrapping_add(a1.wrapping_mul(b1));
-        c12 = c12.wrapping_add(a1.wrapping_mul(b2));
-        c13 = c13.wrapping_add(a1.wrapping_mul(b3));
-        c14 = c14.wrapping_add(a1.wrapping_mul(b4));
-        c15 = c15.wrapping_add(a1.wrapping_mul(b5));
-        c16 = c16.wrapping_add(a1.wrapping_mul(b6));
-        c17 = c17.wrapping_add(a1.wrapping_mul(b7));
-        let a2 = a[2 * k + p];
-        c20 = c20.wrapping_add(a2.wrapping_mul(b0));
-        c21 = c21.wrapping_add(a2.wrapping_mul(b1));
-        c22 = c22.wrapping_add(a2.wrapping_mul(b2));
-        c23 = c23.wrapping_add(a2.wrapping_mul(b3));
-        c24 = c24.wrapping_add(a2.wrapping_mul(b4));
-        c25 = c25.wrapping_add(a2.wrapping_mul(b5));
-        c26 = c26.wrapping_add(a2.wrapping_mul(b6));
-        c27 = c27.wrapping_add(a2.wrapping_mul(b7));
-        let a3 = a[3 * k + p];
-        c30 = c30.wrapping_add(a3.wrapping_mul(b0));
-        c31 = c31.wrapping_add(a3.wrapping_mul(b1));
-        c32 = c32.wrapping_add(a3.wrapping_mul(b2));
-        c33 = c33.wrapping_add(a3.wrapping_mul(b3));
-        c34 = c34.wrapping_add(a3.wrapping_mul(b4));
-        c35 = c35.wrapping_add(a3.wrapping_mul(b5));
-        c36 = c36.wrapping_add(a3.wrapping_mul(b6));
-        c37 = c37.wrapping_add(a3.wrapping_mul(b7));
-        let a4 = a[4 * k + p];
-        c40 = c40.wrapping_add(a4.wrapping_mul(b0));
-        c41 = c41.wrapping_add(a4.wrapping_mul(b1));
-        c42 = c42.wrapping_add(a4.wrapping_mul(b2));
-        c43 = c43.wrapping_add(a4.wrapping_mul(b3));
-        c44 = c44.wrapping_add(a4.wrapping_mul(b4));
-        c45 = c45.wrapping_add(a4.wrapping_mul(b5));
-        c46 = c46.wrapping_add(a4.wrapping_mul(b6));
-        c47 = c47.wrapping_add(a4.wrapping_mul(b7));
-        let a5 = a[5 * k + p];
-        c50 = c50.wrapping_add(a5.wrapping_mul(b0));
-        c51 = c51.wrapping_add(a5.wrapping_mul(b1));
-        c52 = c52.wrapping_add(a5.wrapping_mul(b2));
-        c53 = c53.wrapping_add(a5.wrapping_mul(b3));
-        c54 = c54.wrapping_add(a5.wrapping_mul(b4));
-        c55 = c55.wrapping_add(a5.wrapping_mul(b5));
-        c56 = c56.wrapping_add(a5.wrapping_mul(b6));
-        c57 = c57.wrapping_add(a5.wrapping_mul(b7));
-        let a6 = a[6 * k + p];
-        c60 = c60.wrapping_add(a6.wrapping_mul(b0));
-        c61 = c61.wrapping_add(a6.wrapping_mul(b1));
-        c62 = c62.wrapping_add(a6.wrapping_mul(b2));
-        c63 = c63.wrapping_add(a6.wrapping_mul(b3));
-        c64 = c64.wrapping_add(a6.wrapping_mul(b4));
-        c65 = c65.wrapping_add(a6.wrapping_mul(b5));
-        c66 = c66.wrapping_add(a6.wrapping_mul(b6));
-        c67 = c67.wrapping_add(a6.wrapping_mul(b7));
-        let a7 = a[7 * k + p];
-        c70 = c70.wrapping_add(a7.wrapping_mul(b0));
-        c71 = c71.wrapping_add(a7.wrapping_mul(b1));
-        c72 = c72.wrapping_add(a7.wrapping_mul(b2));
-        c73 = c73.wrapping_add(a7.wrapping_mul(b3));
-        c74 = c74.wrapping_add(a7.wrapping_mul(b4));
-        c75 = c75.wrapping_add(a7.wrapping_mul(b5));
-        c76 = c76.wrapping_add(a7.wrapping_mul(b6));
-        c77 = c77.wrapping_add(a7.wrapping_mul(b7));
+        let ap = &a[p * MR..p * MR + MR];
+        let bp = &b[p * NR..p * NR + NR];
+        for i in 0..MR {
+            let ai = ap[i];
+            for j in 0..NR {
+                acc[i * NR + j] = acc[i * NR + j].wrapping_add(ai.wrapping_mul(bp[j]));
+            }
+        }
     }
-
-    c[i0 * ldc + j0] = c00;
-    c[i0 * ldc + j0 + 1] = c01;
-    c[i0 * ldc + j0 + 2] = c02;
-    c[i0 * ldc + j0 + 3] = c03;
-    c[i0 * ldc + j0 + 4] = c04;
-    c[i0 * ldc + j0 + 5] = c05;
-    c[i0 * ldc + j0 + 6] = c06;
-    c[i0 * ldc + j0 + 7] = c07;
-    c[(i0 + 1) * ldc + j0] = c10;
-    c[(i0 + 1) * ldc + j0 + 1] = c11;
-    c[(i0 + 1) * ldc + j0 + 2] = c12;
-    c[(i0 + 1) * ldc + j0 + 3] = c13;
-    c[(i0 + 1) * ldc + j0 + 4] = c14;
-    c[(i0 + 1) * ldc + j0 + 5] = c15;
-    c[(i0 + 1) * ldc + j0 + 6] = c16;
-    c[(i0 + 1) * ldc + j0 + 7] = c17;
-    c[(i0 + 2) * ldc + j0] = c20;
-    c[(i0 + 2) * ldc + j0 + 1] = c21;
-    c[(i0 + 2) * ldc + j0 + 2] = c22;
-    c[(i0 + 2) * ldc + j0 + 3] = c23;
-    c[(i0 + 2) * ldc + j0 + 4] = c24;
-    c[(i0 + 2) * ldc + j0 + 5] = c25;
-    c[(i0 + 2) * ldc + j0 + 6] = c26;
-    c[(i0 + 2) * ldc + j0 + 7] = c27;
-    c[(i0 + 3) * ldc + j0] = c30;
-    c[(i0 + 3) * ldc + j0 + 1] = c31;
-    c[(i0 + 3) * ldc + j0 + 2] = c32;
-    c[(i0 + 3) * ldc + j0 + 3] = c33;
-    c[(i0 + 3) * ldc + j0 + 4] = c34;
-    c[(i0 + 3) * ldc + j0 + 5] = c35;
-    c[(i0 + 3) * ldc + j0 + 6] = c36;
-    c[(i0 + 3) * ldc + j0 + 7] = c37;
-    c[(i0 + 4) * ldc + j0] = c40;
-    c[(i0 + 4) * ldc + j0 + 1] = c41;
-    c[(i0 + 4) * ldc + j0 + 2] = c42;
-    c[(i0 + 4) * ldc + j0 + 3] = c43;
-    c[(i0 + 4) * ldc + j0 + 4] = c44;
-    c[(i0 + 4) * ldc + j0 + 5] = c45;
-    c[(i0 + 4) * ldc + j0 + 6] = c46;
-    c[(i0 + 4) * ldc + j0 + 7] = c47;
-    c[(i0 + 5) * ldc + j0] = c50;
-    c[(i0 + 5) * ldc + j0 + 1] = c51;
-    c[(i0 + 5) * ldc + j0 + 2] = c52;
-    c[(i0 + 5) * ldc + j0 + 3] = c53;
-    c[(i0 + 5) * ldc + j0 + 4] = c54;
-    c[(i0 + 5) * ldc + j0 + 5] = c55;
-    c[(i0 + 5) * ldc + j0 + 6] = c56;
-    c[(i0 + 5) * ldc + j0 + 7] = c57;
-    c[(i0 + 6) * ldc + j0] = c60;
-    c[(i0 + 6) * ldc + j0 + 1] = c61;
-    c[(i0 + 6) * ldc + j0 + 2] = c62;
-    c[(i0 + 6) * ldc + j0 + 3] = c63;
-    c[(i0 + 6) * ldc + j0 + 4] = c64;
-    c[(i0 + 6) * ldc + j0 + 5] = c65;
-    c[(i0 + 6) * ldc + j0 + 6] = c66;
-    c[(i0 + 6) * ldc + j0 + 7] = c67;
-    c[(i0 + 7) * ldc + j0] = c70;
-    c[(i0 + 7) * ldc + j0 + 1] = c71;
-    c[(i0 + 7) * ldc + j0 + 2] = c72;
-    c[(i0 + 7) * ldc + j0 + 3] = c73;
-    c[(i0 + 7) * ldc + j0 + 4] = c74;
-    c[(i0 + 7) * ldc + j0 + 5] = c75;
-    c[(i0 + 7) * ldc + j0 + 6] = c76;
-    c[(i0 + 7) * ldc + j0 + 7] = c77;
+    for i in 0..MR {
+        let row = (i0 + i) * ldc + j0;
+        for j in 0..NR {
+            c[row + j] = c[row + j].wrapping_add(acc[i * NR + j]);
+        }
+    }
 }
 
 /// Generic remainder micro-kernel (any m,n ≤ MR,NR not full tile).
@@ -333,82 +179,78 @@ fn micro_edge(
     j0: usize,
     b_nr: usize,
 ) {
+    // `a` is k-major (m values per p, from [`pack_a_mr`]).
     for ii in 0..m {
         for jj in 0..n {
             let mut s = c[(i0 + ii) * ldc + (j0 + jj)];
             for p in 0..k {
-                s = s.wrapping_add(a[ii * k + p].wrapping_mul(b[p * b_nr + jj]));
+                s = s.wrapping_add(a[p * m + ii].wrapping_mul(b[p * b_nr + jj]));
             }
             c[(i0 + ii) * ldc + (j0 + jj)] = s;
         }
     }
 }
 
-fn gemm_panel_rows(
-    _am: usize,
+/// One MC row-band of the GEBP inner product for a fixed (j0, k0) block:
+/// packs A[i0..i0+mb, k0..k0+kb] (thread-local, pooled) and walks jr/ir
+/// micro-tiles against the shared read-only `b_pack`.
+#[allow(clippy::too_many_arguments)]
+fn gemm_row_band(
     an: usize,
     bn: usize,
     aa: &[i64],
-    bb: &[i64],
+    b_pack: &[i64],
     i0: usize,
     mb: usize,
-    c_panel: &mut [i64],
+    k0: usize,
+    kb: usize,
+    j0: usize,
+    nb: usize,
+    c_band: &mut [i64],
 ) {
-    debug_assert_eq!(c_panel.len(), mb * bn);
-    // Pack buffers sized for full panels (reused across k/j loops).
-    let mut a_pack = vec![0i64; MC * KC];
-    let mut b_pack = vec![0i64; KC * NC];
+    debug_assert_eq!(c_band.len(), mb * bn);
+    let mut a_pack = pool_i64::take_uninit(mb * kb);
+    pack_a_mr(aa, an, i0, mb, k0, kb, &mut a_pack);
 
-    let mut j0 = 0;
-    while j0 < bn {
-        let nb = (bn - j0).min(NC);
-        let mut k0 = 0;
-        while k0 < an {
-            let kb = (an - k0).min(KC);
-            pack_a(aa, an, i0, mb, k0, kb, &mut a_pack[..mb * kb]);
-            pack_b_nr(bb, bn, k0, kb, j0, nb, &mut b_pack[..kb * nb]);
-
-            // Walk B micro-panels and A row tiles
-            let mut jr = 0;
-            let mut b_off = 0;
-            while jr < nb {
-                let nr = (nb - jr).min(NR);
-                let mut ir = 0;
-                while ir < mb {
-                    let mr = (mb - ir).min(MR);
-                    if mr == MR && nr == NR {
-                        micro_8x8(
-                            kb,
-                            &a_pack[ir * kb..],
-                            &b_pack[b_off..b_off + kb * NR],
-                            c_panel,
-                            bn,
-                            ir,
-                            j0 + jr,
-                        );
-                    } else {
-                        micro_edge(
-                            mr,
-                            nr,
-                            kb,
-                            &a_pack[ir * kb..(ir + mr) * kb],
-                            &b_pack[b_off..b_off + kb * nr],
-                            c_panel,
-                            bn,
-                            ir,
-                            j0 + jr,
-                            nr,
-                        );
-                    }
-                    ir += mr;
-                }
-                b_off += kb * nr;
-                jr += nr;
+    let mut jr = 0;
+    let mut b_off = 0;
+    while jr < nb {
+        let nr = (nb - jr).min(NR);
+        let mut ir = 0;
+        let mut a_off = 0;
+        while ir < mb {
+            let mr = (mb - ir).min(MR);
+            if mr == MR && nr == NR {
+                micro_tile(
+                    kb,
+                    &a_pack[a_off..a_off + kb * MR],
+                    &b_pack[b_off..b_off + kb * NR],
+                    c_band,
+                    bn,
+                    ir,
+                    j0 + jr,
+                );
+            } else {
+                micro_edge(
+                    mr,
+                    nr,
+                    kb,
+                    &a_pack[a_off..a_off + kb * mr],
+                    &b_pack[b_off..b_off + kb * nr],
+                    c_band,
+                    bn,
+                    ir,
+                    j0 + jr,
+                    nr,
+                );
             }
-            k0 += kb;
+            a_off += kb * mr;
+            ir += mr;
         }
-        j0 += nb;
+        b_off += kb * nr;
+        jr += nr;
     }
+    pool_i64::recycle(a_pack);
 }
 
 /// Simple ikj GEMM for tiny products (packing overhead not amortized).
@@ -437,12 +279,15 @@ fn gemm_simple(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &m
     }
 }
 
-/// Parallelize only when there are ≥2 row-panels **and** enough work that
-/// splitting is meaningful: `flops / nthreads` above one full panel product.
-/// Uses runtime `available_parallelism` (not a fixed n-threshold from one host).
+/// Goto-order blocked GEMM. Parallelism splits the MC row-band loop inside
+/// each (j0, k0) block (threads share the read-only B pack); it engages when
+/// runtime `available_parallelism` ≥ 2 and there are ≥ 2 row bands to split —
+/// a work rule, not a host-tuned n table. Barrier count is
+/// ceil(bn/NC)·ceil(an/KC), negligible next to band work at these sizes.
 fn gemm_blocked(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &mut [i64]) {
     let flops = (am as u64).saturating_mul(an as u64).saturating_mul(bn as u64);
-    // Tiny: no packing.
+    // Tiny: no packing. Cutoff is empirical (M7.c bench host, 2026-07;
+    // unverified elsewhere) — see DESIGN §3.26.
     if flops < (48u64 * 48 * 48) {
         gemm_simple(am, an, bn, aa, bb, data);
         return;
@@ -452,46 +297,61 @@ fn gemm_blocked(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &
         .map(|n| n.get())
         .unwrap_or(1)
         .max(1);
-    // One panel ≈ MC×an×bn ops; want ≥1 panel of work per thread to parallelize.
-    let panel_work = (MC as u64).saturating_mul(an as u64).saturating_mul(bn as u64);
-    let want_par = nthreads >= 2
-        && am >= MC * 2
-        && flops >= panel_work.saturating_mul(nthreads as u64);
+    let n_bands = am.div_ceil(MC);
+    let want_par = nthreads >= 2 && n_bands >= 2;
 
-    if want_par {
-        use rayon::prelude::*;
-        let mut panels = Vec::new();
-        let mut i0 = 0;
-        while i0 < am {
-            let mb = (am - i0).min(MC);
-            panels.push((i0, mb));
-            i0 += mb;
-        }
-        let mut slices: Vec<&mut [i64]> = Vec::with_capacity(panels.len());
-        let mut rest = data;
-        let mut prev_end = 0usize;
-        for &(i0, mb) in &panels {
-            debug_assert_eq!(i0, prev_end);
-            let (chunk, tail) = rest.split_at_mut(mb * bn);
-            slices.push(chunk);
-            rest = tail;
-            prev_end = i0 + mb;
-        }
-        slices
-            .into_par_iter()
-            .zip(panels.into_par_iter())
-            .for_each(|(c_panel, (i0, mb))| {
-                gemm_panel_rows(am, an, bn, aa, bb, i0, mb, c_panel);
-            });
-        return;
-    }
+    let mut b_pack = pool_i64::take_uninit(KC * NC.min(bn));
 
-    let mut i0 = 0;
-    while i0 < am {
-        let mb = (am - i0).min(MC);
-        gemm_panel_rows(am, an, bn, aa, bb, i0, mb, &mut data[i0 * bn..(i0 + mb) * bn]);
-        i0 += mb;
+    let mut j0 = 0;
+    while j0 < bn {
+        let nb = (bn - j0).min(NC);
+        let mut k0 = 0;
+        while k0 < an {
+            let kb = (an - k0).min(KC);
+            pack_b_nr(bb, bn, k0, kb, j0, nb, &mut b_pack[..kb * nb]);
+
+            if want_par {
+                use rayon::prelude::*;
+                // Carve C into disjoint row bands once per (j0, k0) block.
+                let mut bands = Vec::with_capacity(n_bands);
+                let mut i0 = 0;
+                let mut rest: &mut [i64] = &mut data[..];
+                while i0 < am {
+                    let mb = (am - i0).min(MC);
+                    let (chunk, tail) = rest.split_at_mut(mb * bn);
+                    bands.push((i0, mb, chunk));
+                    rest = tail;
+                    i0 += mb;
+                }
+                let bp = &b_pack;
+                bands.into_par_iter().for_each(|(i0, mb, c_band)| {
+                    gemm_row_band(an, bn, aa, bp, i0, mb, k0, kb, j0, nb, c_band);
+                });
+            } else {
+                let mut i0 = 0;
+                while i0 < am {
+                    let mb = (am - i0).min(MC);
+                    gemm_row_band(
+                        an,
+                        bn,
+                        aa,
+                        &b_pack,
+                        i0,
+                        mb,
+                        k0,
+                        kb,
+                        j0,
+                        nb,
+                        &mut data[i0 * bn..(i0 + mb) * bn],
+                    );
+                    i0 += mb;
+                }
+            }
+            k0 += kb;
+        }
+        j0 += nb;
     }
+    pool_i64::recycle(b_pack);
 }
 
 /// Dispatch matrix GEMM (packed GEBP / simple / parallel panels).
@@ -773,6 +633,58 @@ mod tests {
         let i = ArrayI64::eye(3).unwrap();
         let c = matmul(&a, &i).unwrap();
         assert_eq!(c.as_slice(), a.as_slice());
+    }
+
+    /// Reference ijk matmul (wrapping), for exactness checks of the packed path.
+    fn naive_matmul(m: usize, k: usize, n: usize, aa: &[i64], bb: &[i64]) -> Vec<i64> {
+        let mut r = vec![0i64; m * n];
+        for i in 0..m {
+            for p in 0..k {
+                let aip = aa[i * k + p];
+                for j in 0..n {
+                    r[i * n + j] = r[i * n + j].wrapping_add(aip.wrapping_mul(bb[p * n + j]));
+                }
+            }
+        }
+        r
+    }
+
+    fn wrapheavy(len: usize, seed: i64) -> Vec<i64> {
+        let mut v = Vec::with_capacity(len);
+        let mut x = seed;
+        for _ in 0..len {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            v.push(x);
+        }
+        v
+    }
+
+    #[test]
+    fn matmul_packed_matches_naive_rectangular_edges() {
+        // (m, k, n) chosen to exercise: MR/NR edge tiles (67 % 6, 45 % 16),
+        // multiple KC panels (k = 131 > 128), and wrap-heavy values.
+        let (m, k, n) = (67usize, 131usize, 45usize);
+        let a = ArrayI64::from_shape_vec(vec![m, k], wrapheavy(m * k, 3)).unwrap();
+        let b = ArrayI64::from_shape_vec(vec![k, n], wrapheavy(k * n, 7)).unwrap();
+        let c = matmul(&a, &b).unwrap();
+        assert_eq!(
+            c.as_slice(),
+            naive_matmul(m, k, n, a.as_slice(), b.as_slice()).as_slice()
+        );
+    }
+
+    #[test]
+    fn matmul_packed_matches_naive_parallel_bands() {
+        // m > 2*MC forces the parallel row-band path on multi-core hosts;
+        // k > KC forces accumulation across depth panels.
+        let (m, k, n) = (390usize, 130usize, 70usize);
+        let a = ArrayI64::from_shape_vec(vec![m, k], wrapheavy(m * k, 11)).unwrap();
+        let b = ArrayI64::from_shape_vec(vec![k, n], wrapheavy(k * n, 13)).unwrap();
+        let c = matmul(&a, &b).unwrap();
+        assert_eq!(
+            c.as_slice(),
+            naive_matmul(m, k, n, a.as_slice(), b.as_slice()).as_slice()
+        );
     }
 
     #[test]
