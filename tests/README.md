@@ -67,15 +67,18 @@ samples; ±10–20% run-to-run noise observed on this shared host.
 | vec_mac_f64 | 8.57 | 8.3–10.3 | ISA-physics context vs vec_mac_i64 |
 | tile_4x8_i64 | 6.13 | 6.79 | GEBP-shaped register tile, 1 thread |
 | tile_4x8_i64_par | 23.1 | 26.2 | aggregate, 4 threads |
-| gemm_1024 (shipped) | 17.3 (≈75% of tile_par) | 22.1 (≈84%) | `i64_ops::matmul`, parallel |
+| gemm_1024, pre-rework kernel | 17.3 (≈75% of tile_par) | 22.1 (≈84%) | named-scalar 8×8, NC=64 structure |
+| gemm_1024 (shipped) | 21.0 (≈88%) | 22.9 (≈88%) | Goto order + flat 4×8 tile (`i64_ops`) |
 
 Readings: (1) at **default** codegen (baseline x86-64, SSE2) the shipped GEMM
-already sits near the measured tile ceiling — kernel-shape headroom there is
-bounded; (2) enabling the wider ISA doubles the flat-loop i64 ceiling but the
-GEMM kernel captures little of it — its source shape does not autovectorize;
-(3) exact-i64 ceilings are the same order as a *streaming* f64 loop, while
-BLAS f64 GEMM reaches far higher through register-blocked FMA — a gap ISA
-physics guarantees for exact i64 below AVX-512DQ. Hosts that build with
+sits near the measured tile ceiling — remaining kernel-shape headroom there
+is bounded; (2) the wider ISA roughly doubles the flat-loop i64 ceiling
+(`vpmullq`); the reworked kernel autovectorizes from portable source, and a
+6×16 tile variant reached 26.2 Gops at native but was rejected for regressing
+the default build to 11.3 (recorded in `linalg/i64_ops.rs`); (3) exact-i64
+ceilings are the same order as a *streaming* f64 loop, while BLAS f64 GEMM
+reaches far higher through register-blocked FMA — a gap ISA physics
+guarantees for exact i64 below AVX-512DQ. Hosts that build with
 `-C target-cpu=native` (or `x86-64-v4`) get the higher ceiling at zero source
 cost.
 
