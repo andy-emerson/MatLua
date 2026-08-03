@@ -11,6 +11,37 @@ use super::shape::{broadcast_shapes, Shape};
 use super::Array;
 use crate::error::{Error, Result};
 
+/// Cache-blocked transpose with **destination-row streaming** (same idea as f64).
+fn blocked_transpose_i64(src: &[i64], rows: usize, cols: usize, dst: &mut [i64]) {
+    const BS: usize = 32;
+    let mut j0 = 0;
+    while j0 < cols {
+        let j1 = (j0 + BS).min(cols);
+        let mut i0 = 0;
+        while i0 < rows {
+            let i1 = (i0 + BS).min(rows);
+            for j in j0..j1 {
+                let dst_row = j * rows;
+                let mut i = i0;
+                while i + 4 <= i1 {
+                    dst[dst_row + i] = src[i * cols + j];
+                    dst[dst_row + i + 1] = src[(i + 1) * cols + j];
+                    dst[dst_row + i + 2] = src[(i + 2) * cols + j];
+                    dst[dst_row + i + 3] = src[(i + 3) * cols + j];
+                    i += 4;
+                }
+                while i < i1 {
+                    dst[dst_row + i] = src[i * cols + j];
+                    i += 1;
+                }
+            }
+            i0 = i1;
+        }
+        j0 = j1;
+    }
+}
+
+
 fn gcd_i64(a: i64, b: i64) -> i64 {
     let mut a = a.unsigned_abs();
     let mut b = b.unsigned_abs();
@@ -93,10 +124,12 @@ impl Drop for ArrayI64 {
 }
 
 impl Clone for ArrayI64 {
+    /// Arc-share buffer. Deep copy: [`Self::copy`].
     fn clone(&self) -> Self {
-        let mut data = pool::take_uninit(self.len());
-        data.copy_from_slice(self.as_slice());
-        Self::from_parts(self.shape.clone(), data)
+        Self {
+            shape: self.shape.clone(),
+            data: Arc::clone(&self.data),
+        }
     }
 }
 
@@ -220,19 +253,24 @@ impl ArrayI64 {
             let st = (-step) as i128;
             ((span + st - 1) / st) as usize
         };
+        // Exact length already computed; fill with ILP (wrapping step).
         let mut data = pool::take_uninit(n);
         let mut x = start;
-        let mut written = 0usize;
-        for i in 0..n {
-            if (step > 0 && x >= stop) || (step < 0 && x <= stop) {
-                break;
-            }
+        let mut i = 0usize;
+        while i + 4 <= n {
             data[i] = x;
-            written = i + 1;
-            x = x.wrapping_add(step);
+            data[i + 1] = x.wrapping_add(step);
+            data[i + 2] = x.wrapping_add(step.wrapping_mul(2));
+            data[i + 3] = x.wrapping_add(step.wrapping_mul(3));
+            x = x.wrapping_add(step.wrapping_mul(4));
+            i += 4;
         }
-        data.truncate(written);
-        Ok(Self::from_parts(Shape::from_len(data.len()), data))
+        while i < n {
+            data[i] = x;
+            x = x.wrapping_add(step);
+            i += 1;
+        }
+        Ok(Self::from_parts(Shape::from_len(n), data))
     }
 
     /// `get` (see `f64` [`Array`] counterpart).
@@ -268,9 +306,11 @@ impl ArrayI64 {
         })
     }
 
-    /// `copy` (see `f64` [`Array`] counterpart).
+    /// Deep copy of values (unique buffer).
     pub fn copy(&self) -> Self {
-        self.clone()
+        let mut data = pool::take_uninit(self.len());
+        data.copy_from_slice(self.as_slice());
+        Self::from_parts(self.shape.clone(), data)
     }
 
     /// `eye` (see `f64` [`Array`] counterpart).
@@ -508,6 +548,12 @@ impl ArrayI64 {
     pub fn neg_out(&self, out: &mut ArrayI64) -> Result<()> {
         self.same_shape(out)?;
         kernels::neg_slice(self.as_slice(), out.as_mut_slice());
+        Ok(())
+    }
+    /// `out = abs(self)`.
+    pub fn abs_out(&self, out: &mut ArrayI64) -> Result<()> {
+        self.same_shape(out)?;
+        kernels::abs_slice(self.as_slice(), out.as_mut_slice());
         Ok(())
     }
 
@@ -860,6 +906,7 @@ impl ArrayI64 {
     }
 
     /// `transpose` (see `f64` [`Array`] counterpart).
+    /// Transpose rank-1 → `(1,n)` row matrix; rank-2 uses blocked out-of-place transpose.
     pub fn transpose(&self) -> Result<ArrayI64> {
         match self.rank() {
             1 => {
@@ -870,20 +917,16 @@ impl ArrayI64 {
             }
             2 => {
                 let (rows, cols) = (self.dims()[0], self.dims()[1]);
-                let src = self.as_slice();
                 let mut data = pool::take_uninit(rows * cols);
-                for i in 0..rows {
-                    for j in 0..cols {
-                        data[j * rows + i] = src[i * cols + j];
-                    }
-                }
+                blocked_transpose_i64(self.as_slice(), rows, cols, &mut data);
                 Ok(Self::from_parts(Shape::matrix(cols, rows)?, data))
             }
             r => Err(Error::Shape(format!(
-                "transpose expects rank 1 or 2, got {r}"
+                "transpose expects rank 1 or 2, got rank {r}"
             ))),
         }
     }
+
 
     /// `diagonal` (see `f64` [`Array`] counterpart).
     pub fn diagonal(&self) -> Result<ArrayI64> {
@@ -1003,6 +1046,95 @@ impl ArrayI64 {
         v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         Ok(super::kernels::quantile_sorted(&v, q).unwrap())
     }
+
+    /// Several quantiles as rank-1 `f64` (same semantics as [`Array::quantiles`](super::Array::quantiles)).
+    pub fn quantiles(&self, qs: &[f64]) -> Result<Array> {
+        for &q in qs {
+            if !(0.0..=1.0).contains(&q) || !q.is_finite() {
+                return Err(Error::Shape(format!("quantile q must be in [0, 1], got {q}")));
+            }
+        }
+        if self.is_empty() {
+            return Err(Error::Shape("quantiles of empty array".into()));
+        }
+        let mut v: Vec<f64> = self.as_slice().iter().map(|&x| x as f64).collect();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut data = super::pool::take_uninit(qs.len());
+        for (i, &q) in qs.iter().enumerate() {
+            data[i] = super::kernels::quantile_sorted(&v, q).unwrap();
+        }
+        Ok(Array::from_parts(Shape::from_len(qs.len()), data))
+    }
+
+    /// Median along axis for rank-2 → rank-1 `f64`.
+    pub fn median_axis(&self, axis: usize) -> Result<Array> {
+        let (m, n) = self.rank2_dims()?;
+        let src = self.as_slice();
+        match axis {
+            0 => {
+                let mut data = super::pool::take_uninit(n);
+                let mut col = vec![0.0f64; m];
+                for j in 0..n {
+                    for i in 0..m {
+                        col[i] = src[i * n + j] as f64;
+                    }
+                    data[j] = super::kernels::median_slice(&col).ok_or_else(|| {
+                        Error::Shape("median_axis of empty".into())
+                    })?;
+                }
+                Ok(Array::from_parts(Shape::from_len(n), data))
+            }
+            1 => {
+                let mut data = super::pool::take_uninit(m);
+                for i in 0..m {
+                    let row: Vec<f64> = src[i * n..(i + 1) * n].iter().map(|&x| x as f64).collect();
+                    data[i] = super::kernels::median_slice(&row).ok_or_else(|| {
+                        Error::Shape("median_axis of empty".into())
+                    })?;
+                }
+                Ok(Array::from_parts(Shape::from_len(m), data))
+            }
+            _ => Err(Error::Shape(format!("axis {axis} out of range for rank-2"))),
+        }
+    }
+
+    /// Quantile along axis for rank-2 → rank-1 `f64`.
+    pub fn quantile_axis(&self, axis: usize, q: f64) -> Result<Array> {
+        if !(0.0..=1.0).contains(&q) || !q.is_finite() {
+            return Err(Error::Shape(format!("quantile q must be in [0, 1], got {q}")));
+        }
+        let (m, n) = self.rank2_dims()?;
+        let src = self.as_slice();
+        match axis {
+            0 => {
+                let mut data = super::pool::take_uninit(n);
+                let mut col = vec![0.0f64; m];
+                for j in 0..n {
+                    for i in 0..m {
+                        col[i] = src[i * n + j] as f64;
+                    }
+                    col.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    data[j] = super::kernels::quantile_sorted(&col, q).ok_or_else(|| {
+                        Error::Shape("quantile_axis of empty".into())
+                    })?;
+                }
+                Ok(Array::from_parts(Shape::from_len(n), data))
+            }
+            1 => {
+                let mut data = super::pool::take_uninit(m);
+                for i in 0..m {
+                    let mut row: Vec<f64> = src[i * n..(i + 1) * n].iter().map(|&x| x as f64).collect();
+                    row.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    data[i] = super::kernels::quantile_sorted(&row, q).ok_or_else(|| {
+                        Error::Shape("quantile_axis of empty".into())
+                    })?;
+                }
+                Ok(Array::from_parts(Shape::from_len(m), data))
+            }
+            _ => Err(Error::Shape(format!("axis {axis} out of range for rank-2"))),
+        }
+    }
+
 
 
     /// Concatenate along `axis` (rank 1–2).
@@ -1371,15 +1503,81 @@ impl ArrayI64 {
     }
 
     /// Membership test: for each element of `self`, 1 if in `test_elements` (rank-1), else 0.
+    ///
+    /// Algorithm (research-backed hybrid, NumPy-style tradeoffs):
+    /// - empty test → all zeros;
+    /// - **bitset** when values fit a dense non-negative (or shifted) range ≤ ~2M slots
+    ///   (sequential bit tests beat hash for dense integer domains);
+    /// - else **sort unique + binary_search** (better than `HashSet` for large `self`
+    ///   and modest test sets: no hash, sorted cache line, one sort of |test|);
+    /// - tiny test sets (|test| ≤ 8): linear scan after sort of test only.
+    ///
+    /// Output is still `i64` 0/1 (no bool dtype); NumPy writes 1-byte bools — ratios
+    /// need not hit 1.0× purely from bandwidth.
     pub fn isin(&self, test_elements: &ArrayI64) -> Result<ArrayI64> {
         if test_elements.rank() != 1 {
             return Err(Error::Shape("isin test_elements must be rank-1".into()));
         }
-        let set: std::collections::BTreeSet<i64> =
-            test_elements.as_slice().iter().copied().collect();
+        let te = test_elements.as_slice();
+        let src = self.as_slice();
         let mut data = pool::take_uninit(self.len());
-        for (i, &x) in self.as_slice().iter().enumerate() {
-            data[i] = if set.contains(&x) { 1 } else { 0 };
+        if te.is_empty() {
+            data.fill(0);
+            return Ok(Self::from_parts(self.shape.clone(), data));
+        }
+        if src.is_empty() {
+            return Ok(Self::from_parts(self.shape.clone(), data));
+        }
+
+        let mut tmin = te[0];
+        let mut tmax = te[0];
+        for &x in &te[1..] {
+            tmin = tmin.min(x);
+            tmax = tmax.max(x);
+        }
+        // Bitset if span is modest (2M bits ≈ 256 KiB).
+        const BITSET_MAX: i128 = 2_000_000;
+        let span = (tmax as i128) - (tmin as i128) + 1;
+        if span > 0 && span <= BITSET_MAX {
+            let nbits = span as usize;
+            let mut bits = vec![0u64; (nbits + 63) / 64];
+            for &x in te {
+                let i = (x as i128 - tmin as i128) as usize;
+                bits[i / 64] |= 1u64 << (i % 64);
+            }
+            for i in 0..src.len() {
+                let x = src[i];
+                if (x as i128) < tmin as i128 || (x as i128) > tmax as i128 {
+                    data[i] = 0;
+                } else {
+                    let j = (x as i128 - tmin as i128) as usize;
+                    data[i] = if (bits[j / 64] >> (j % 64)) & 1 == 1 {
+                        1
+                    } else {
+                        0
+                    };
+                }
+            }
+            return Ok(Self::from_parts(self.shape.clone(), data));
+        }
+
+        // Sort unique test keys; binary search (or linear if tiny).
+        let mut keys = te.to_vec();
+        keys.sort_unstable();
+        keys.dedup();
+        if keys.len() <= 8 {
+            for i in 0..src.len() {
+                let x = src[i];
+                data[i] = if keys.iter().any(|&k| k == x) { 1 } else { 0 };
+            }
+        } else {
+            for i in 0..src.len() {
+                data[i] = if keys.binary_search(&src[i]).is_ok() {
+                    1
+                } else {
+                    0
+                };
+            }
         }
         Ok(Self::from_parts(self.shape.clone(), data))
     }
@@ -1438,9 +1636,24 @@ impl ArrayI64 {
         if values.rank() != 1 {
             return Err(Error::Shape("searchsorted values must be rank-1".into()));
         }
+        if self.rank() != 1 {
+            return Err(Error::Shape("searchsorted requires rank-1".into()));
+        }
+        let a = self.as_slice();
+        // Validate monotonicity once (not per query).
+        for w in a.windows(2) {
+            if w[0] > w[1] {
+                return Err(Error::Shape("searchsorted requires non-decreasing array".into()));
+            }
+        }
         let mut data = pool::take_uninit(values.len());
         for (i, &v) in values.as_slice().iter().enumerate() {
-            data[i] = self.searchsorted(v, side_right)? as i64;
+            let r = if side_right {
+                a.partition_point(|&x| x <= v)
+            } else {
+                a.partition_point(|&x| x < v)
+            };
+            data[i] = r as i64;
         }
         Ok(Self::from_parts(Shape::from_len(values.len()), data))
     }

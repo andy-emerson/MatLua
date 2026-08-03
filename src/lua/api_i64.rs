@@ -227,6 +227,14 @@ pub unsafe extern "C" fn a_i64_copy(L: *mut lua_State) -> c_int {
     unsafe { push_array_i64(L, a.array.copy()) };
     1
 }
+
+pub unsafe extern "C" fn a_i64_reshape_inplace(L: *mut lua_State) -> c_int {
+    let a = unsafe { &mut *check_array_i64(L, 1) };
+    let shape = lua_try!(L, unsafe { shape_from_args(L, 2) });
+    lua_try!(L, a.array.reshape_inplace(shape));
+    unsafe { lua_pushvalue(L, 1) }; // return self for chaining
+    1
+}
 pub unsafe extern "C" fn a_i64_reshape(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array_i64(L, 1) };
     let shape = lua_try!(L, unsafe { shape_from_args(L, 2) });
@@ -867,6 +875,52 @@ pub unsafe extern "C" fn a_i64_put_mask(L: *mut lua_State) -> c_int {
 }
 
 
+
+pub unsafe extern "C" fn a_i64_median_axis(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let axis = unsafe { luaL_checkinteger(L, 2) };
+    if axis < 1 {
+        return super::ud::lua_error_msg(L, "axis must be >= 1");
+    }
+    let o = lua_try!(L, a.array.median_axis((axis - 1) as usize));
+    unsafe { super::ud::push_array(L, o) };
+    1
+}
+pub unsafe extern "C" fn a_i64_quantile_axis(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let q = unsafe { luaL_checknumber(L, 2) };
+    let axis = unsafe { luaL_checkinteger(L, 3) };
+    if axis < 1 {
+        return super::ud::lua_error_msg(L, "axis must be >= 1");
+    }
+    let o = lua_try!(L, a.array.quantile_axis((axis - 1) as usize, q));
+    unsafe { super::ud::push_array(L, o) };
+    1
+}
+pub unsafe extern "C" fn a_i64_sub_out(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let b = unsafe { &*check_array_i64(L, 2) };
+    let o = unsafe { &mut *check_array_i64(L, 3) };
+    lua_try!(L, a.array.sub_out(&b.array, &mut o.array));
+    unsafe { lua_pushvalue(L, 3) };
+    1
+}
+pub unsafe extern "C" fn a_i64_div_out(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let b = unsafe { &*check_array_i64(L, 2) };
+    let o = unsafe { &mut *check_array_i64(L, 3) };
+    lua_try!(L, a.array.div_out(&b.array, &mut o.array));
+    unsafe { lua_pushvalue(L, 3) };
+    1
+}
+pub unsafe extern "C" fn a_i64_abs_out(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let o = unsafe { &mut *check_array_i64(L, 2) };
+    lua_try!(L, a.array.abs_out(&mut o.array));
+    unsafe { lua_pushvalue(L, 2) };
+    1
+}
+
 pub unsafe extern "C" fn a_i64_add_out(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array_i64(L, 1) };
     let b = unsafe { &*check_array_i64(L, 2) };
@@ -897,7 +951,7 @@ pub unsafe fn install_metatable(L: *mut lua_State) {
         luaL_newmetatable(L, ARRAY_I64_MT.as_ptr());
         lua_pushvalue(L, -1);
         lua_setfield(L, -2, c"__index".as_ptr());
-        let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 76] = [
+        let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 82] = [
             (c"__gc", a_i64_gc),
             (c"__len", a_i64_len),
             (c"__tostring", a_i64_tostring),
@@ -917,6 +971,7 @@ pub unsafe fn install_metatable(L: *mut lua_State) {
             (c"max", a_i64_max),
             (c"copy", a_i64_copy),
             (c"reshape", a_i64_reshape),
+            (c"reshape_inplace", a_i64_reshape_inplace),
             (c"fill", a_i64_fill),
             (c"abs", a_i64_abs),
             (c"sign", a_i64_sign),
@@ -974,6 +1029,11 @@ pub unsafe fn install_metatable(L: *mut lua_State) {
             (c"add_out", a_i64_add_out),
             (c"mul_out", a_i64_mul_out),
             (c"neg_out", a_i64_neg_out),
+            (c"median_axis", a_i64_median_axis),
+            (c"quantile_axis", a_i64_quantile_axis),
+            (c"sub_out", a_i64_sub_out),
+            (c"div_out", a_i64_div_out),
+            (c"abs_out", a_i64_abs_out),
         ];
         for (name, f) in methods {
             lua_pushcfunction(L, Some(f));

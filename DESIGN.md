@@ -254,7 +254,7 @@ Names match the `lua` feature on `main`. Tutorial samples live in
 
 - **`ArrayI64`**: owned row-major `i64`, same shape/rank model as `f64` [`Array`].
 - **Introduction order:** `f64` first, then `i64` (not a permanent “LA is only f64” hierarchy).
-- **Integer LA path:** `matmul` / `matmul_at` / `matmul_bt` / `dot` / `transpose` / `eye` on `ArrayI64` via `linalg::i64_ops` (wrapping `i64` accumulators; not faer). Integer×integer→integer in \(\mathbb{Z}\); fixed-width may wrap.
+- **Integer LA path:** `matmul` / `matmul_at` / `matmul_bt` / `dot` / `transpose` / `eye` on `ArrayI64` via `linalg::i64_ops` (wrapping `i64` accumulators; not faer). Integer×integer→integer in \(\mathbb{Z}\); fixed-width may wrap. **Performance:** plan A keeps exact i64; fair tables compare matmul to **NumPy f64 BLAS on integer-valued data** (§7.1.2), not `int64@int64`.
 - **Real LA on integer inputs (NumPy-style):** `linalg::from_i64::{solve,lstsq,normal_eq,pinv,eigh,cholesky,qr,svd}` promote with `to_f64` and return **`f64` arrays**. Lua `ml.solve` / `eigh` / … accept `ArrayI64` the same way. Not exact rational solve; values \(>2^{53}\) lose integer exactness.
 - **Still not pure-`i64` codomain:** those ops never return `ArrayI64` (math is real-valued).
 - **Stats that are real-valued:** `mean` / `var` / `std` (+ axis) take `i64` and return `f64`.
@@ -312,6 +312,23 @@ Embedders (TallyDB) push engine columns without a second interpreter:
 | `lua::push_array_copy_f64` / `push_array_copy_i64` | Safe **copy** into owned `ml.array` / `ml.array_i64`. |
 
 Views are not yet accepted by `linalg` (owned `&Array` only) — TallyDB letter §5 notes copies are fine for current windows; view-aware LA is a later optimization.
+
+### 3.25 M7.b i64 quant-pack parity
+
+Quant pack applies to **both** dtypes. Deliberate promote-only paths are named; silent holes are bugs.
+
+| Capability | `f64` | `i64` | Notes |
+|------------|-------|-------|--------|
+| `median` / `quantile` / **`quantiles`** | yes | yes → **f64** | even median averages |
+| **`median_axis` / `quantile_axis`** | yes | yes → **f64** | rank-2 |
+| Random ints / `choice` | floats + `integers`/`choice` | `integers` / `choice_i64` | |
+| Indexing put/compress/nonzero/take | yes | yes | |
+| Elementwise `*_out` | add/sub/mul/div/neg/abs | same | Lua face mirrors |
+| **`matmul_out`** | yes | yes (wrapping) | dual Lua `ml.matmul_out` |
+| LA diagnostics / solvers | native f64 | **`from_i64` → f64** | agreed promote-out |
+| Host `push_view_*` / copy | f64 + i64 | f64 + i64 | |
+
+**M7.b residual (closed on `feat-m7c-optimize`):** axis order-stats, fuller i64 `out=` on Lua, i64 `matmul_out`.
 
 ### 3.24 TallyDB requirements letter (alignment)
 
@@ -421,17 +438,17 @@ explicit boundaries (zero-copy views in, owned results out).
 | **M6** | Tier-2 quant sugar: `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis reductions (rank-2), `any`/`all` | **Done** |
 | **v0.1** tag | Explicit release cut | **Deferred** |
 | **M7** | **`i64` surface (correctness):** shared array grammar + integer-path LA (wrapping) + **i64-unique** + views + gcd/lcm/divmod/bitcount + **`from_i64` solvers** (i64 in → f64 out). | **Done** |
-| **M7.b** | **Quant leave-late pack:** LA diagnostics, median/quantile, random, indexing, partial `out=` (#21), host view entry (`push_view_*` / `push_array_copy_*`). | **Done** |
-| **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once M7/M7.b correctness holds | **Planned** (next product branch after merge) |
+| **M7.b** | **Quant leave-late pack** (f64 + **i64 parity**, §3.25): diagnostics, order stats, random, indexing, partial `out=` (#21), host views. | **Done** (i64 residual closed on M7.c branch) |
+| **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once M7/M7.b correctness holds | **In progress** — not closed; see **§7.1.2** (plan A: exact i64 GEMM; accurate numbers first) |
 | **M8** | **Host integration depth** (TallyDB letter §5–§6 + view face): see **§7.1.1** | **Planned** |
 | **M9** | **Small-window pool** — freelist for *n* ≪ 256 (TallyDB hot path; letter pressure) | **Planned** |
 | **M10** | **Embed-safe Lua boundary** — letter **§1.1–§1.3** (feature-split face, longjmp/`Drop`, no panic across C) | **Planned** |
 | **M11** | **CI + embed hygiene** — letter **§7** (APICHECK, ASan) + no `DLOPEN` embed profile, Miri-clean `take_uninit` | **Planned** |
 | **M12** | **Arrow C Data Interface + `arrow-lite`** — letter **§3**; cutover when shared lite v0.1 ships | **Gated** |
 
-**Priority after M7.b merge:** **M7.c** (optimize) on its own branch, then or in parallel the embed track **M8→M11**, then **M12**. Further dtypes (`f32`, complex, …) after this arc unless a new need appears.
+**Priority:** Finish **M7.c** (exact i64 GEMM focus after measurement completeness — §7.1.2) → embed **M8–M11** → **M12**. Further dtypes (`f32`, complex, …) after this arc unless a new need appears.
 
-**Also tracked:** GitHub **#21** full `out=` surface (beyond M7.b partial); TallyDB engine cutover (other repo).
+**Also tracked:** GitHub **#21** full `out=` surface (beyond M7.b partial) — **deferred past M7.c** (partial `*_out` stays); TallyDB engine cutover (other repo).
 
 **TallyDB readiness bar:** M7 `i64` + M7.b host entry + **M8–M11** embed safety/pool/CI + **M12** C ABI / lite layout. Copies into owned arrays remain acceptable for current window sizes (letter §5).
 
@@ -475,6 +492,73 @@ M7.b delivered **host entry** (`push_view_f64`/`i64`, `push_array_copy_*`) as re
 3. Optional: `linalg` accepting views / `ArrayView` to cut allocs on small windows when measured.
 4. Alignment helpers so TallyDB can present **one** array type to scripts (conversions or direct userdata accept — design at M8 kickoff, MatLua-led).
 5. Does **not** replace M10 safety or M12 Arrow C ABI.
+
+### 7.1.2 M7.c optimization program (**in progress — not closed**)
+
+**Goal:** whole-surface performance (f64 + i64) without breaking correctness
+contracts. **M7.c is not finished** when this branch merges; further M7.c work
+continues under a new approach led by the Human after PR merge.
+
+#### Decisions closed (this arc)
+
+| Decision | Ruling |
+|----------|--------|
+| Exact **i64** matmul | **Plan A:** keep **wrapping exact i64** matmul as the product path. Do **not** silently promote large GEMM to f64. |
+| Performance bar / thresholds | **Not set yet.** Get **accurate, complete** measurements first; choose competitiveness targets only with enough BLAS context. |
+| Matmul yardstick (tables) | **NumPy float64 BLAS** on the **same integer-valued** inputs (e.g. 3.0), **not** `int64@int64`. NumPy has i64 dtype but **no integer BLAS** ([numpy#14556](https://github.com/numpy/numpy/issues/14556)); int64@int64 is a slow fallback and hid a real gap. MatLua still reports **exact wrapping i64** times. |
+| Optimization discipline | Prefer **algorithms and design** (packing, sharing, demand-zero alloc, correct face paths). Do **not** sell host-specific size cutoffs as “opts.” Parallelism may use **work ÷ threads**, not a fixed `n` table from one box. |
+
+#### Measurement contract (`tests/`)
+
+- Sizes: **64, 256, 1024, 4096** (where practical).
+- Faces: NumPy · MatLua Rust · MatLua Lua; medians after warmup.
+- Tables A–B f64; C–D pure i64; E–F i64→f64 promote-out.
+- **i64 matmul NumPy column** = f64 BLAS on integer-valued data (see `numpy_i64_fair.py`).
+- Refresh: commands in [`tests/README.md`](tests/README.md). **Do not invent cells.**
+
+#### Landed work (waves, summarized)
+
+Correctness surface for M7/M7.b is on `main` / this branch. Optimization waves
+landed on this arc include (non-exhaustive):
+
+- f64: faer GEMM/solvers; path-length composites; Arc-share `Clone` (deep copy =
+  `copy()`); `alloc_zeroed` for `zeros`; elementwise / reduction ILP; blocked
+  transpose; Lua GC-debt accounting on large userdata.
+- i64: packing **GEBP** (mc/kc/nc panels, NR pack of B, **8×8** wrapping
+  micro-kernel); 4-wide elementwise; hybrid `isin`; promote-out LA via
+  `from_i64`.
+- Harness: full three-way tables including n=4096; Lua bulk setup for large n.
+
+**Honest residual (as of last rebench on this branch):** exact i64 matmul is on
+the order of **~10–13×** slower than NumPy **f64 BLAS** (integer-valued) at
+n=1024–4096 (~10 Gops portable GEBP vs ~120+ Gops BLAS). f64 matmul is already
+near NumPy f64. That i64 GEMM gap is the **central open M7.c product problem**
+under plan A — not “make tables pretty vs int64@int64.”
+
+#### Explicitly rejected / demoted
+
+- Using **NumPy int64@int64** as the matmul success bar.
+- **Strassen** as default: measured slower than GEBP through n=4096 on class of
+  host used for tables; may revisit only after base cubic kernel is stronger.
+- **Host-tuned** Rayon cutoffs on reductions sold as algorithmic wins.
+- Silent **f64 promote** for i64 matmul to chase BLAS times.
+
+#### Open M7.c work (after this merge)
+
+1. **Accurate complete numbers** — keep harness truthful; fill gaps only with
+   real runs; no performance targets until measurement context is enough.
+2. **Exact i64 GEMM (plan A)** — Human-directed next approach; Agent implements
+   on the agreed plan only. Candidates later (not commitments): stronger pack /
+   micro-kernel, portable SIMD where ISA allows i64 mul, optional ISA paths —
+   always measured against the BLAS f64 integer-valued reference **and** exactness
+   tests.
+3. Residual face/kernel items only as they show up in honest tables (not as an
+   excuse to re-open threshold games).
+
+#### What “done” for M7.c is *not* yet
+
+M7.c is **not** closed by merging this branch. Closure requires Human sign-off
+after the exact-i64-GEMM approach and measurement story are satisfactory.
 
 #### What remains explicitly *not* TallyDB-owned
 
@@ -563,10 +647,12 @@ Lua face (1-based) including `*_i64` and dual-dtype `solve`/`matmul`, M4a–M6, 
 
 Package version is **`0.0.1`**. Call **v0.1** when the human tags a release;
 until then treat the tree as a **v0.1 candidate** per §7.1. **M7** and **M7.b** are **Done**.
-**Next:** **M7.c** (optimize, new branch after merge), then embed track **M8–M11** and **M12**
+**Next:** Merge current M7.c measurement/kernel work when Human PRs; **M7.c continues**
+(exact i64 GEMM, plan A, §7.1.2) under the Human’s next approach. Then embed
+**M8–M11** and **M12**.
 (Arrow C Data / arrow-lite) per §7.1 / §7.1.1 (TallyDB letter agreements).
 
-Open work: §7.1 M7.c–M12, GitHub **#21** (`out=` full surface), measured tables in
+Open work: **M7.c not closed** (§7.1.2), then M8–M12; GitHub **#21** (`out=` full surface); measured tables in
 [`tests/README.md`](tests/README.md) — not as a living log in this file.
 
 Update this document when rulings or the frozen public face change — not on

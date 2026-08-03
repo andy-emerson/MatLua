@@ -1,5 +1,6 @@
 //! Thread-local recycle pool for owned `i64` buffers (correctness first; same policy as f64).
 
+use std::alloc::{alloc_zeroed, handle_alloc_error, Layout};
 use std::cell::RefCell;
 
 const MIN_POOL_CAP: usize = 256;
@@ -22,9 +23,23 @@ pub(crate) fn take_filled(len: usize, fill: i64) -> Vec<i64> {
     v
 }
 
+/// Zero-filled via OS demand-zero pages (see f64 [`crate::array::pool::take_zeroed`]).
 #[inline]
 pub(crate) fn take_zeroed(len: usize) -> Vec<i64> {
-    take_filled(len, 0)
+    if len == 0 {
+        return Vec::new();
+    }
+    let layout = match Layout::array::<i64>(len) {
+        Ok(l) => l,
+        Err(_) => panic!("zeros length overflow"),
+    };
+    unsafe {
+        let ptr = alloc_zeroed(layout) as *mut i64;
+        if ptr.is_null() {
+            handle_alloc_error(layout);
+        }
+        Vec::from_raw_parts(ptr, len, len)
+    }
 }
 
 /// Caller must write every element before reading.

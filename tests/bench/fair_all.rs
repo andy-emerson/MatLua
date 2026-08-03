@@ -3,8 +3,8 @@
 //! Same generation rule for inputs; wall-clock median; setup outside timer.
 //!
 //! ```text
-//! cargo test --release --features lua --test fair_all -- --run --sizes 64,256,1024
-//! python3 tests/bench/numpy_fair.py --sizes 64,256,1024
+//! cargo test --release --features lua --test fair_all -- --run --sizes 64,256,1024,4096
+//! python3 tests/bench/numpy_fair.py --sizes 64,256,1024,4096
 //! python3 tests/bench/compare_fair.py
 //! ```
 
@@ -72,6 +72,18 @@ fn vec2_n(n: usize) -> Array {
 }
 
 fn spd_n(n: usize) -> Array {
+    // Avoid O(n³) Gram setup at huge n: diagonally dominant SPD is enough for solve/chol.
+    if n >= 1024 {
+        let mut data = vec![0.0_f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let v = 0.01 * ((i + 2 * j) % 7) as f64;
+                data[i * n + j] = v;
+            }
+            data[i * n + i] += (n as f64) + 1.0;
+        }
+        return Array::from_shape_vec(vec![n, n], data).unwrap();
+    }
     let a = dense_n(n);
     let at = linalg::transpose(&a).unwrap();
     Array::add(&linalg::matmul(&at, &a).unwrap(), &Array::eye(n).unwrap()).unwrap()
@@ -83,13 +95,17 @@ fn emit(face: &str, op: &str, n: usize, ms: f64) {
 
 fn budget(n: usize, heavy: bool) -> (usize, usize) {
     if heavy {
-        if n >= 1024 {
+        if n >= 4096 {
+            (1, 0)
+        } else if n >= 1024 {
             (3, 1)
         } else if n >= 256 {
             (6, 2)
         } else {
             (15, 3)
         }
+    } else if n >= 4096 {
+        (2, 1)
     } else if n >= 1024 {
         (8, 2)
     } else if n >= 256 {
@@ -125,7 +141,7 @@ fn bench_rust(sizes: &[usize]) {
             let _ = Array::arange(0.0, n as f64).unwrap();
         }));
         emit("rust", "copy", n, time_ms(it, wrm, || {
-            let _ = a.clone();
+            let _ = a.copy();
         }));
         // reshape n×n → (n/2)×(2n) when n even
         if n % 2 == 0 {
@@ -135,7 +151,7 @@ fn bench_rust(sizes: &[usize]) {
             }));
         }
         emit("rust", "fill", n, {
-            let mut t = a.clone();
+            let mut t = a.copy();
             time_ms(it, wrm, || {
                 t.fill(3.0);
             })
@@ -198,54 +214,40 @@ fn bench_rust(sizes: &[usize]) {
 
 fn time_lua(lua: &Lua, setup: &str, body: &str, iters: usize, warm: usize) -> f64 {
     lua.do_string(&format!(
-        "{setup}\nfunction __bench_op()\n{body}\nend\n"
+        "{setup}\nfunction __bench_op()\n{body}\nend\nfunction __bench_gc()\ncollectgarbage(\"collect\")\nend\n"
     ))
     .unwrap();
     for _ in 0..warm {
         lua.call_global("__bench_op").unwrap();
+        let _ = lua.call_global("__bench_gc");
     }
     let mut samples = Vec::with_capacity(iters);
     for _ in 0..iters {
         let t0 = Instant::now();
         lua.call_global("__bench_op").unwrap();
         samples.push(t0.elapsed().as_secs_f64() * 1e3);
+        let _ = lua.call_global("__bench_gc");
     }
+    // free setup globals
+    let _ = lua.do_string("A=nil;B=nil;V=nil;W=nil;S=nil;rhs=nil;T=nil;collectgarbage(\"collect\")");
     median(&samples)
 }
 
 /// Build globals A,B,V,W,S,rhs with same numeric rules as Rust helpers.
 fn lua_build_inputs(n: usize) -> String {
+    // Bulk constructors only (no O(n²) :set loops) so n=4096 is feasible.
     format!(
         r#"
 local n = {n}
-A = ml.zeros(n, n)
-local x = 0.001
+A = ml.arange(0, n * n):reshape(n, n)
+B = ml.full(n, n, 1.5)
+V = ml.arange(0, n)
+W = ml.arange(1, n + 1)
+S = ml.full(n, n, 0.01)
 for i = 1, n do
-  for j = 1, n do
-    A:set(i, j, x)
-    x = x + 0.000017
-  end
+  S:set(i, i, n + 1)
 end
-B = ml.zeros(n, n)
-x = 0.002
-for i = 1, n do
-  for j = 1, n do
-    B:set(i, j, x)
-    x = x + 0.000013
-  end
-end
-V = ml.zeros(n)
-W = ml.zeros(n)
-for i = 1, n do
-  V:set(i, 0.5 + (i - 1) * 0.01)
-  W:set(i, 0.25 + (i - 1) * 0.007)
-end
-local At = A:transpose()
-S = ml.matmul(At, A) + ml.eye(n)
-rhs = ml.zeros(n)
-for i = 1, n do
-  rhs:set(i, 0.5 + (i - 1) * 0.01)
-end
+rhs = V
 "#
     )
 }
@@ -255,45 +257,29 @@ fn bench_lua(sizes: &[usize]) {
     lua.do_string(r#"ml = require "matlua""#).unwrap();
 
     for &n in sizes {
-        let build = lua_build_inputs(n);
         let (it, wrm) = budget(n, false);
+        let (ith, wrmh) = budget(n, true);
+        let ab = format!(
+            "A=ml.full({n},{n},1.0); B=ml.full({n},{n},1.5); collectgarbage(\"collect\")"
+        );
+        let a_only = format!("A=ml.full({n},{n},1.0); collectgarbage(\"collect\")");
+        let v_only = format!("V=ml.arange(0,{n}); collectgarbage(\"collect\")");
+        let vw = format!(
+            "V=ml.arange(0,{n}); W=ml.arange(1,{n}+1); collectgarbage(\"collect\")"
+        );
+        let spd = format!(
+            "S=ml.full({n},{n},0.01); for i=1,{n} do S:set(i,i,{n}+1) end; rhs=ml.arange(0,{n}); collectgarbage(\"collect\")"
+        );
+        let ab_mat = format!(
+            "A=ml.full({n},{n},1.0); B=ml.full({n},{n},1.5); collectgarbage(\"collect\")"
+        );
 
-        emit(
-            "lua",
-            "zeros",
-            n,
-            time_lua(&lua, "", &format!("return ml.zeros({n}, {n})"), it, wrm),
-        );
-        emit(
-            "lua",
-            "ones",
-            n,
-            time_lua(&lua, "", &format!("return ml.ones({n}, {n})"), it, wrm),
-        );
-        emit(
-            "lua",
-            "full",
-            n,
-            time_lua(&lua, "", &format!("return ml.full({n}, {n}, 1.5)"), it, wrm),
-        );
-        emit(
-            "lua",
-            "eye",
-            n,
-            time_lua(&lua, "", &format!("return ml.eye({n})"), it, wrm),
-        );
-        emit(
-            "lua",
-            "arange",
-            n,
-            time_lua(&lua, "", &format!("return ml.arange(0, {n})"), it, wrm),
-        );
-        emit(
-            "lua",
-            "copy",
-            n,
-            time_lua(&lua, &build, "return A:copy()", it, wrm),
-        );
+        emit("lua", "zeros", n, time_lua(&lua, "", &format!("return ml.zeros({n},{n})"), it, wrm));
+        emit("lua", "ones", n, time_lua(&lua, "", &format!("return ml.ones({n},{n})"), it, wrm));
+        emit("lua", "full", n, time_lua(&lua, "", &format!("return ml.full({n},{n},1.5)"), it, wrm));
+        emit("lua", "eye", n, time_lua(&lua, "", &format!("return ml.eye({n})"), it, wrm));
+        emit("lua", "arange", n, time_lua(&lua, "", &format!("return ml.arange(0,{n})"), it, wrm));
+        emit("lua", "copy", n, time_lua(&lua, &a_only, "return A:copy()", it, wrm));
         if n % 2 == 0 {
             emit(
                 "lua",
@@ -301,133 +287,35 @@ fn bench_lua(sizes: &[usize]) {
                 n,
                 time_lua(
                     &lua,
-                    &build,
-                    &format!("return A:reshape({hr}, {wr})", hr = n / 2, wr = n * 2),
+                    &a_only,
+                    &format!("return A:reshape({hr},{wr})", hr = n / 2, wr = n * 2),
                     it,
                     wrm,
                 ),
             );
         }
-        // In-place fill: clone once in setup, fill in timed body only.
-        emit(
-            "lua",
-            "fill",
-            n,
-            time_lua(
-                &lua,
-                &(build.clone() + "T = A:copy()
-"),
-                "T:fill(3.0)",
-                it,
-                wrm,
-            ),
-        );
-        emit(
-            "lua",
-            "elem_add",
-            n,
-            time_lua(&lua, &build, "return A + B", it, wrm),
-        );
-        emit(
-            "lua",
-            "elem_sub",
-            n,
-            time_lua(&lua, &build, "return A - B", it, wrm),
-        );
-        emit(
-            "lua",
-            "elem_mul",
-            n,
-            time_lua(&lua, &build, "return A * B", it, wrm),
-        );
-        emit(
-            "lua",
-            "elem_div",
-            n,
-            time_lua(&lua, &build, "return A / B", it, wrm),
-        );
-        emit(
-            "lua",
-            "elem_add_scalar",
-            n,
-            time_lua(&lua, &build, "return A + 2.5", it, wrm),
-        );
-        emit(
-            "lua",
-            "sum",
-            n,
-            time_lua(&lua, &build, "return A:sum()", it, wrm),
-        );
-        emit(
-            "lua",
-            "mean",
-            n,
-            time_lua(&lua, &build, "return A:mean()", it, wrm),
-        );
-        emit(
-            "lua",
-            "min",
-            n,
-            time_lua(&lua, &build, "return A:min()", it, wrm),
-        );
-        emit(
-            "lua",
-            "max",
-            n,
-            time_lua(&lua, &build, "return A:max()", it, wrm),
-        );
-        emit(
-            "lua",
-            "transpose",
-            n,
-            time_lua(&lua, &build, "return A:transpose()", it, wrm),
-        );
-        emit(
-            "lua",
-            "dot",
-            n,
-            time_lua(&lua, &build, "return ml.dot(V, W)", it, wrm),
-        );
-        emit(
-            "lua",
-            "norm",
-            n,
-            time_lua(&lua, &build, "return ml.norm(A)", it, wrm),
-        );
-
-        let (it, wrm) = budget(n, true);
-        emit(
-            "lua",
-            "matmul",
-            n,
-            time_lua(&lua, &build, "return ml.matmul(A, B)", it, wrm),
-        );
-        emit(
-            "lua",
-            "solve",
-            n,
-            time_lua(&lua, &build, "return ml.solve(S, rhs)", it, wrm),
-        );
-        emit(
-            "lua",
-            "cholesky",
-            n,
-            time_lua(&lua, &build, "return ml.cholesky(S)", it, wrm),
-        );
-        emit(
-            "lua",
-            "qr",
-            n,
-            time_lua(&lua, &build, "return ml.qr(A)", it, wrm),
-        );
-        emit(
-            "lua",
-            "svd",
-            n,
-            time_lua(&lua, &build, "return ml.svd(A)", it, wrm),
-        );
+        emit("lua", "fill", n, time_lua(&lua, &(a_only.clone() + "\nT=A:copy()\n"), "T:fill(3.0)", it, wrm));
+        emit("lua", "elem_add", n, time_lua(&lua, &ab, "return A + B", it, wrm));
+        emit("lua", "elem_sub", n, time_lua(&lua, &ab, "return A - B", it, wrm));
+        emit("lua", "elem_mul", n, time_lua(&lua, &ab, "return A * B", it, wrm));
+        emit("lua", "elem_div", n, time_lua(&lua, &ab, "return A / B", it, wrm));
+        emit("lua", "elem_add_scalar", n, time_lua(&lua, &a_only, "return A + 2.5", it, wrm));
+        emit("lua", "sum", n, time_lua(&lua, &a_only, "return A:sum()", it, wrm));
+        emit("lua", "mean", n, time_lua(&lua, &a_only, "return A:mean()", it, wrm));
+        emit("lua", "min", n, time_lua(&lua, &a_only, "return A:min()", it, wrm));
+        emit("lua", "max", n, time_lua(&lua, &a_only, "return A:max()", it, wrm));
+        emit("lua", "transpose", n, time_lua(&lua, &a_only, "return A:transpose()", it, wrm));
+        emit("lua", "dot", n, time_lua(&lua, &vw, "return ml.dot(V, W)", it, wrm));
+        emit("lua", "norm", n, time_lua(&lua, &a_only, "return ml.norm(A)", it, wrm));
+        emit("lua", "matmul", n, time_lua(&lua, &ab_mat, "return ml.matmul(A, B)", ith, wrmh));
+        emit("lua", "solve", n, time_lua(&lua, &spd, "return ml.solve(S, rhs)", ith, wrmh));
+        emit("lua", "cholesky", n, time_lua(&lua, &spd, "return ml.cholesky(S)", ith, wrmh));
+        emit("lua", "qr", n, time_lua(&lua, &a_only, "return ml.qr(A)", ith, wrmh));
+        emit("lua", "svd", n, time_lua(&lua, &a_only, "return ml.svd(A)", ith, wrmh));
     }
+
 }
+
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -439,9 +327,9 @@ fn main() {
     let sizes: Vec<usize> = if let Some(i) = args.iter().position(|a| a == "--sizes") {
         args.get(i + 1)
             .map(|s| s.split(',').filter_map(|p| p.parse().ok()).collect())
-            .unwrap_or_else(|| vec![64, 256, 1024])
+            .unwrap_or_else(|| vec![64, 256, 1024, 4096])
     } else {
-        vec![64, 256, 1024]
+        vec![64, 256, 1024, 4096]
     };
 
     eprintln!("# Fair full-surface bench (release, wall clock). sizes={sizes:?}");

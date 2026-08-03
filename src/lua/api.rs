@@ -730,6 +730,18 @@ pub unsafe extern "C" fn a_abs_out(L: *mut lua_State) -> c_int {
 }
 
 pub unsafe extern "C" fn l_matmul_out(L: *mut lua_State) -> c_int {
+    // i64 × i64 → i64 out
+    let ta = unsafe { test_array_i64(L, 1) };
+    let tb = unsafe { test_array_i64(L, 2) };
+    let to = unsafe { test_array_i64(L, 3) };
+    if !ta.is_null() && !tb.is_null() && !to.is_null() {
+        lua_try!(
+            L,
+            linalg::i64_ops::matmul_out(&(*ta).array, &(*tb).array, &mut (*to).array)
+        );
+        unsafe { lua_pushvalue(L, 3) };
+        return 1;
+    }
     let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
     let b = lua_try!(L, unsafe { arg_as_f64(L, 2) });
     let o = unsafe { &mut *check_array(L, 3) };
@@ -884,7 +896,7 @@ pub unsafe extern "C" fn a_max(L: *mut lua_State) -> c_int {
 
 pub unsafe extern "C" fn a_copy(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
-    unsafe { push_array(L, a.array.clone()) };
+    unsafe { push_array(L, a.array.copy()) };
     1
 }
 

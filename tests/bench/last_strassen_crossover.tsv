@@ -1,0 +1,8 @@
+# Final Strassen vs GEBP (then removed). 2-core host. S/G never < 0.97.
+n	gebp_ms	strassen_ms	ratio	winner
+256	3.238	4.872	1.505	gebp
+512	25.813	31.355	1.215	gebp
+1024	206.641	236.257	1.143	gebp
+2048	1678.791	1781.591	1.061	gebp
+4096	13724.404	13904.889	1.013	tie/gebp
+# Decision: remove Strassen; packed GEBP only.

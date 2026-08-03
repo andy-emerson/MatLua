@@ -201,80 +201,85 @@ pub(crate) fn sum_sq_slice(a: &[f64]) -> f64 {
     s
 }
 
-/// Min with pairwise reduction (returns None if empty).
+/// Min over a non-empty slice (IEEE `f64::min`, NaN-propagating).
+///
+/// Eight independent accumulators (ILP / auto-vectorization). No host-specific
+/// size thresholds. Parallel reduction is deliberately **not** used: for this
+/// reduction the cross-over is machine-dependent and we refuse to tune it per box.
+#[inline]
+fn min_slice_seq(a: &[f64]) -> f64 {
+    let mut m0 = a[0];
+    let mut m1 = a[0];
+    let mut m2 = a[0];
+    let mut m3 = a[0];
+    let mut m4 = a[0];
+    let mut m5 = a[0];
+    let mut m6 = a[0];
+    let mut m7 = a[0];
+    let mut chunks = a[1..].chunks_exact(8);
+    for c in chunks.by_ref() {
+        m0 = m0.min(c[0]);
+        m1 = m1.min(c[1]);
+        m2 = m2.min(c[2]);
+        m3 = m3.min(c[3]);
+        m4 = m4.min(c[4]);
+        m5 = m5.min(c[5]);
+        m6 = m6.min(c[6]);
+        m7 = m7.min(c[7]);
+    }
+    for &x in chunks.remainder() {
+        m0 = m0.min(x);
+    }
+    m0.min(m1).min(m2).min(m3).min(m4).min(m5).min(m6).min(m7)
+}
+
+#[inline]
+fn max_slice_seq(a: &[f64]) -> f64 {
+    let mut m0 = a[0];
+    let mut m1 = a[0];
+    let mut m2 = a[0];
+    let mut m3 = a[0];
+    let mut m4 = a[0];
+    let mut m5 = a[0];
+    let mut m6 = a[0];
+    let mut m7 = a[0];
+    let mut chunks = a[1..].chunks_exact(8);
+    for c in chunks.by_ref() {
+        m0 = m0.max(c[0]);
+        m1 = m1.max(c[1]);
+        m2 = m2.max(c[2]);
+        m3 = m3.max(c[3]);
+        m4 = m4.max(c[4]);
+        m5 = m5.max(c[5]);
+        m6 = m6.max(c[6]);
+        m7 = m7.max(c[7]);
+    }
+    for &x in chunks.remainder() {
+        m0 = m0.max(x);
+    }
+    m0.max(m1).max(m2).max(m3).max(m4).max(m5).max(m6).max(m7)
+}
+
 #[inline]
 pub(crate) fn min_slice(a: &[f64]) -> Option<f64> {
     if a.is_empty() {
-        return None;
-    }
-    // Blocked min for cache; NaN-aware: skip NaN like f64::min only if both NaN
-    let mut best = f64::INFINITY;
-    const BS: usize = 512;
-    let mut i = 0;
-    while i < a.len() {
-        let end = (i + BS).min(a.len());
-        let mut m0 = f64::INFINITY;
-        let mut m1 = f64::INFINITY;
-        let mut m2 = f64::INFINITY;
-        let mut m3 = f64::INFINITY;
-        let mut j = i;
-        while j + 4 <= end {
-            m0 = m0.min(a[j]);
-            m1 = m1.min(a[j + 1]);
-            m2 = m2.min(a[j + 2]);
-            m3 = m3.min(a[j + 3]);
-            j += 4;
-        }
-        while j < end {
-            m0 = m0.min(a[j]);
-            j += 1;
-        }
-        best = best.min(m0).min(m1).min(m2).min(m3);
-        i = end;
-    }
-    if best.is_infinite() && a.iter().all(|x| x.is_nan()) {
-        Some(f64::NAN)
+        None
     } else {
-        Some(best)
+        Some(min_slice_seq(a))
     }
 }
 
-/// Max with pairwise reduction.
 #[inline]
 pub(crate) fn max_slice(a: &[f64]) -> Option<f64> {
     if a.is_empty() {
-        return None;
-    }
-    let mut best = f64::NEG_INFINITY;
-    const BS: usize = 512;
-    let mut i = 0;
-    while i < a.len() {
-        let end = (i + BS).min(a.len());
-        let mut m0 = f64::NEG_INFINITY;
-        let mut m1 = f64::NEG_INFINITY;
-        let mut m2 = f64::NEG_INFINITY;
-        let mut m3 = f64::NEG_INFINITY;
-        let mut j = i;
-        while j + 4 <= end {
-            m0 = m0.max(a[j]);
-            m1 = m1.max(a[j + 1]);
-            m2 = m2.max(a[j + 2]);
-            m3 = m3.max(a[j + 3]);
-            j += 4;
-        }
-        while j < end {
-            m0 = m0.max(a[j]);
-            j += 1;
-        }
-        best = best.max(m0).max(m1).max(m2).max(m3);
-        i = end;
-    }
-    if best.is_infinite() && a.iter().all(|x| x.is_nan()) {
-        Some(f64::NAN)
+        None
     } else {
-        Some(best)
+        Some(max_slice_seq(a))
     }
 }
+
+
+
 
 #[inline]
 pub(crate) fn abs_slice(a: &[f64], out: &mut [f64]) {
@@ -975,13 +980,36 @@ pub(crate) fn quantile_sorted(sorted: &[f64], q: f64) -> Option<f64> {
     }
 }
 
-/// Median of unsorted data (sorts a copy). Empty → None.
+/// Median of unsorted data. Empty → None.
+///
+/// Odd length: `select_nth` (average O(n)). Even length: two order statistics
+/// then average (still cheaper than a full sort for large n).
 #[inline]
 pub(crate) fn median_slice(a: &[f64]) -> Option<f64> {
-    if a.is_empty() {
+    let n = a.len();
+    if n == 0 {
         return None;
     }
+    if n == 1 {
+        return Some(a[0]);
+    }
     let mut v = a.to_vec();
-    v.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
-    quantile_sorted(&v, 0.5)
+    if n % 2 == 1 {
+        let mid = n / 2;
+        let (_, val, _) = v.select_nth_unstable_by(mid, |x, y| {
+            x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        Some(*val)
+    } else {
+        let hi = n / 2;
+        // After select for hi, v[hi] is the upper middle; lower middle is max of left partition.
+        v.select_nth_unstable_by(hi, |x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+        let upper = v[hi];
+        let lower = v[..hi]
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        Some(0.5 * (lower + upper))
+    }
 }
+

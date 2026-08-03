@@ -500,3 +500,30 @@ assert(C:get(1,1) == 19 and C:get(2,2) == 50)
     )
     .unwrap();
 }
+
+#[test]
+fn m7b_i64_quant_parity_face() {
+    use matlua::lua::Lua;
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local A = ml.array_i64({{1,2,3},{4,5,6}})
+local mr = A:median_axis(2)
+assert(mr:get(1) == 2 and mr:get(2) == 5)
+local a = ml.array_i64({1,-2,3})
+local b = ml.array_i64({4,5,6})
+local out = ml.zeros_i64(3)
+a:sub_out(b, out)
+assert(out:get(1) == -3)
+a:abs_out(out)
+assert(out:get(2) == 2)
+local M = ml.array_i64({{1,2},{3,4}})
+local N = ml.array_i64({{5,6},{7,8}})
+local C = ml.zeros_i64(2,2)
+ml.matmul_out(M, N, C)
+assert(C:get(1,1) == 19 and C:get(2,2) == 50)
+"#,
+    )
+    .unwrap();
+}

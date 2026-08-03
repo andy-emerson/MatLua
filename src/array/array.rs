@@ -61,12 +61,13 @@ pub struct Array {
 }
 
 impl Clone for Array {
-    /// Deep copy of values (unique buffer). Prefer [`Self::reshape`] for
-    /// zero-copy shape changes that intentionally share storage.
+    /// Metadata + `Arc` share of the value buffer (NumPy-like view semantics).
+    /// Deep copy of values: [`Self::copy`].
     fn clone(&self) -> Self {
-        let mut data = pool::take_uninit(self.len());
-        data.copy_from_slice(self.as_slice());
-        Self::from_parts(self.shape.clone(), data)
+        Self {
+            shape: self.shape.clone(),
+            data: Arc::clone(&self.data),
+        }
     }
 }
 
@@ -142,8 +143,16 @@ impl Array {
 
     /// Deep copy of shape and values (unique buffer).
     #[inline]
+    pub fn copy(&self) -> Array {
+        let mut data = pool::take_uninit(self.len());
+        data.copy_from_slice(self.as_slice());
+        Self::from_parts(self.shape.clone(), data)
+    }
+
+    /// Deep copy of shape and values (unique buffer). Alias of [`Self::copy`].
+    #[inline]
     pub fn to_owned_array(&self) -> Array {
-        self.clone()
+        self.copy()
     }
 
     /// Build from shape and a flat row-major buffer.
@@ -228,17 +237,21 @@ impl Array {
         let n = n_f as usize;
         let mut data = pool::take_uninit(n);
         let mut x = start;
-        let mut written = 0usize;
-        for i in 0..n {
-            if (step > 0.0 && x >= stop) || (step < 0.0 && x <= stop) {
-                break;
-            }
+        let mut i = 0usize;
+        while i + 4 <= n {
             data[i] = x;
-            written = i + 1;
-            x += step;
+            data[i + 1] = x + step;
+            data[i + 2] = x + step * 2.0;
+            data[i + 3] = x + step * 3.0;
+            x += step * 4.0;
+            i += 4;
         }
-        data.truncate(written);
-        Ok(Self::from_parts(Shape::from_len(data.len()), data))
+        while i < n {
+            data[i] = x;
+            x += step;
+            i += 1;
+        }
+        Ok(Self::from_parts(Shape::from_len(n), data))
     }
 
     /// Read one element at a multi-index (0-based).
