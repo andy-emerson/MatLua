@@ -3,6 +3,8 @@
 use std::alloc::{alloc_zeroed, handle_alloc_error, Layout};
 use std::cell::RefCell;
 
+// Empirical (M7.c bench host, 2026-07; unverified elsewhere) — see DESIGN §3.26.
+// Not derived from any allocator or workload analysis; revisit under M9.
 const MIN_POOL_CAP: usize = 256;
 const MAX_POOL_BUFFERS: usize = 24;
 

@@ -35,7 +35,8 @@ use convert::{array_as_mat_ref, array_as_matrix_dims, mat_to_array, matref_to_ar
 /// setting (typically Rayon with default faer features).
 #[inline]
 fn matmul_par(m: usize, n: usize, k: usize) -> Par {
-    // ~ n³ work proxy; below ~128³ rayon overhead often dominates.
+    // ~ n³ work proxy. The 128³ cutoff is empirical (M7.c bench host, 2026-07;
+    // unverified elsewhere) — see DESIGN §3.26.
     let work = (m as u64)
         .saturating_mul(n as u64)
         .saturating_mul(k as u64);
@@ -97,6 +98,9 @@ fn blocked_transpose(src: &[f64], rows: usize, cols: usize, dst: &mut [f64]) {
     debug_assert_eq!(src.len(), rows.saturating_mul(cols));
     debug_assert_eq!(dst.len(), rows.saturating_mul(cols));
     // Tile so inner writes stream along destination rows (unit stride on dst).
+    // Analyzed (DESIGN §3.26): a 32×32 f64 tile is 8 KB read + 8 KB written,
+    // 16 KB total — comfortably inside a 32 KB L1d (smallest common size on
+    // x86-64/aarch64) with room left for streaming.
     const BS: usize = 32;
     let mut j0 = 0;
     while j0 < cols {
@@ -214,6 +218,8 @@ pub fn matmul_at(a: &Array, b: &Array) -> Result<Array> {
     }
     // AᵀA (same buffer): for large feature count, materialize Aᵀ (blocked) then
     // dest-GEMM. Small k keeps a pure transposed MatRef GEMM (cheaper).
+    // The 512 crossover is empirical (M7.c bench host, 2026-07; unverified
+    // elsewhere) — see DESIGN §3.26.
     if std::ptr::eq(a.as_slice().as_ptr(), b.as_slice().as_ptr())
         && a.len() == b.len()
         && a.rank() == 2
@@ -264,6 +270,8 @@ pub fn matmul_bt(a: &Array, b: &Array) -> Result<Array> {
         )));
     }
     // AAᵀ (same buffer): large k (shared dimension) → materialize Aᵀ then A @ Aᵀ.
+    // The 512 crossover is empirical (M7.c bench host, 2026-07; unverified
+    // elsewhere) — see DESIGN §3.26.
     if std::ptr::eq(a.as_slice().as_ptr(), b.as_slice().as_ptr())
         && a.len() == b.len()
         && a.rank() == 2

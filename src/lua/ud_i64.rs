@@ -42,6 +42,8 @@ pub unsafe fn push_array_i64(L: *mut lua_State, array: ArrayI64) {
         let p = lua_newuserdatauv(L, std::mem::size_of::<ArrayI64Ud>(), 0) as *mut ArrayI64Ud;
         ptr::write(p, ArrayI64Ud { array });
         luaL_setmetatable(L, ARRAY_I64_MT.as_ptr());
+        // 64 KB floor / 256 KB step cap: empirical (M7.c bench host, 2026-07;
+        // unverified elsewhere) — see DESIGN §3.26.
         if account >= 64 * 1024 {
             let step_kb = ((account / 1024) as c_int).min(256);
             let _ = lua_gc(L, LUA_GCSTEP, step_kb);

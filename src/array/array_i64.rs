@@ -13,6 +13,8 @@ use crate::error::{Error, Result};
 
 /// Cache-blocked transpose with **destination-row streaming** (same idea as f64).
 fn blocked_transpose_i64(src: &[i64], rows: usize, cols: usize, dst: &mut [i64]) {
+    // Analyzed (DESIGN §3.26): 32×32 i64 tile = 8 KB read + 8 KB written,
+    // inside a 32 KB L1d with room for streaming.
     const BS: usize = 32;
     let mut j0 = 0;
     while j0 < cols {

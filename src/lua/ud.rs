@@ -45,6 +45,8 @@ pub unsafe fn push_array(L: *mut lua_State, array: Array) {
         luaL_setmetatable(L, ARRAY_MT.as_ptr());
         // Skip tiny results; cap step so very large matrices do not pause ~O(nbytes)
         // on every face return (still prompts collection of dead userdata).
+        // The 64 KB floor and 256 KB step cap are empirical (M7.c bench host,
+        // 2026-07; unverified elsewhere) — see DESIGN §3.26.
         if account >= 64 * 1024 {
             let step_kb = ((account / 1024) as c_int).min(256);
             let _ = lua_gc(L, LUA_GCSTEP, step_kb);
