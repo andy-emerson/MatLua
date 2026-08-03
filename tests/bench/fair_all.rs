@@ -141,7 +141,7 @@ fn bench_rust(sizes: &[usize]) {
             let _ = Array::arange(0.0, n as f64).unwrap();
         }));
         emit("rust", "copy", n, time_ms(it, wrm, || {
-            let _ = a.clone();
+            let _ = a.copy();
         }));
         // reshape n×n → (n/2)×(2n) when n even
         if n % 2 == 0 {
@@ -151,7 +151,7 @@ fn bench_rust(sizes: &[usize]) {
             }));
         }
         emit("rust", "fill", n, {
-            let mut t = a.clone();
+            let mut t = a.copy();
             time_ms(it, wrm, || {
                 t.fill(3.0);
             })

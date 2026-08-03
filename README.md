@@ -117,16 +117,21 @@ Closed decisions and milestones: [DESIGN.md](DESIGN.md).
 **M0–M6 are on `main`** (see [DESIGN.md](DESIGN.md) §7.1). The tree is a **v0.1
 candidate**: a host can embed MatLua and scripts can do ordinary dense array and
 linear-algebra work end-to-end. Crate version remains **`0.0.1`** until a formal
-`0.1.0` cut. **M7 Done. M7.b Done** (quant pack + host view entry). Next **M7.c** (optimize). Embed/TallyDB letter work is **M8–M12** (see DESIGN §7.1.1).
+`0.1.0` cut. **M7 Done. M7.b Done.** **M7.c in progress** (not closed): optimize f64+i64; exact
+wrapping i64 matmul is plan A; get complete honest numbers before setting any
+performance target — [DESIGN.md](DESIGN.md) §7.1.2. Embed/TallyDB letter work is
+**M8–M12** (§7.1.1).
 
-**Performance:** fair three-way microbench (NumPy · MatLua Rust · MatLua Lua) lives
-under [`tests/`](tests/README.md). Run `python3 tests/bench/compare_fair.py`.
-Path-length A/B: `cargo test --release --test path_length -- --run`.
+**Performance:** three-way microbenches (NumPy · MatLua Rust · MatLua Lua) under
+[`tests/README.md`](tests/README.md). Prefer `python3 tests/bench/compare_tables.py`
+(Tables A–F). i64 **matmul** is timed against **NumPy f64 BLAS** on integer-valued
+inputs (not `int64@int64`).
 
-**Known limits (not basic-desk blockers; tracked as M7–M12 / issues):** no Lua
-host-buffer views yet (Rust views exist); small-buffer pool min size; embed error
-boundary; multi-dtype beyond `f64`; shared `arrow-lite` cutover. In-place `out=`
-is [#21](https://github.com/andy-emerson/MatLua/issues/21).
+**Known limits (tracked M7.c–M12 / issues):** exact i64 GEMM still far from BLAS-class
+f64 speed (see tables); small-buffer pool min size; embed error boundary; dtypes
+beyond f64/i64; `arrow-lite` cutover. Full in-place `out=` is
+[#21](https://github.com/andy-emerson/MatLua/issues/21) (partial `*_out` exists).
+Host→Lua views: `push_view_f64` / `push_view_i64` (M7.b).
 
 ## License
 
