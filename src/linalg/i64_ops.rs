@@ -57,36 +57,91 @@ fn matmul_result(data: Vec<i64>, rows: usize, cols: usize, prefer_vec: bool) -> 
 // re-packed B ×(am/MC) and A ×(bn/NC) — at n = 1024 that was ×16 redundant
 // packing traffic on both operands.
 //
-// Constant provenance (DESIGN §3.26):
-// - MR×NR = 4×8 (analyzed + empirical): the accumulator tile is a flat array
-//   with fixed-trip inner loops — the shape LLVM's vectorizers handle — not
-//   named scalars, which pin codegen to scalar `imul`. Lane budget: 32
-//   accumulator lanes = 16 SSE2 xmm (the full file — operands borrow spill
-//   slots, hidden under the 5+-instruction emulated 64-bit lane product),
-//   8 AVX2 ymm, 4 AVX-512 zmm (fits everywhere wider). No single shape is
-//   optimal for every ISA. In-situ A/B on gemm n=1024 (empirical: shared
-//   4-vCPU cloud Xeon w/ AVX-512DQ, 2026-08 — re-check new host classes with
-//   tests/bench/i64_roofline.rs): 4×8 = 21.0 Gops at baseline codegen /
-//   22.9 at target-cpu=native; 6×16 = 11.3 / 26.2 (rejected: regresses the
-//   default build); previous named-scalar 8×8 + NC=64 structure = 17.3 / 22.1.
-// - KC = 256 (analyzed): the streamed B micro-panel is KC×NR×8 B = 16 KB,
-//   half of the smallest common L1d (32 KB), leaving room for the A stream
-//   and the C tile.
-// - MC = 128 (analyzed): the A pack is MC×KC×8 B = 256 KB, half of a
-//   conservative 512 KB L2; multiple of MR so full tiles fill each panel.
-// - NC = 1024 (analyzed): the B pack is KC×NC×8 B = 2 MB, a bounded
-//   L3-resident share; multiple of NR.
+// Constant provenance (DESIGN §3.26). Two profiles, selected once at runtime
+// (derived: CPUID feature detection, not a host-tuned table):
+//
+// PORTABLE profile — any build, any CPU:
+// - MR×NR = 4×8 (analyzed + empirical): flat accumulator array with
+//   fixed-trip inner loops — the shape LLVM's vectorizers handle — not named
+//   scalars, which pin codegen to scalar `imul`. Lane budget: 32 accumulator
+//   lanes = 16 SSE2 xmm (the full file — operands borrow spill slots, hidden
+//   under the 5+-instruction emulated 64-bit lane product), 8 AVX2 ymm.
+//   In-situ A/B on gemm n=1024 (empirical: shared 4-vCPU cloud Xeon w/
+//   AVX-512DQ, 2026-08 — re-check new host classes with
+//   tests/bench/i64_roofline.rs): 21.0 Gops at baseline codegen; previous
+//   named-scalar 8×8 + NC=64 structure was 17.3.
+// - KC = 256, MC = 128, NC = 1024 (analyzed): B micro-panel KC×NR×8 B =
+//   16 KB (half the smallest common 32 KB L1d); A pack MC×KC×8 B = 256 KB
+//   (half a conservative 512 KB L2); B pack KC×NC×8 B = 2 MB (bounded
+//   L3-resident share). MC, NC multiples of MR, NR.
+//
+// AVX-512DQ profile — compiled with `#[target_feature]`, taken only when the
+// running CPU reports avx512f+dq+bw+vl (`vpmullq` = native 64-bit lane
+// product, so multiplies stop dominating and wider register tiles pay):
+// - MR×NR = 6×16 (analyzed + empirical): 96 lanes = 12 of 32 zmm, operand
+//   room left. Same flat body; the attribute lets LLVM use zmm regardless of
+//   the crate's baseline target. In-situ n=1024: 11.3 Gops if (mis)used at
+//   SSE2 codegen — hence runtime-gated — vs 26.2 with 512-bit codegen.
+// - KC = 128, MC = 192, NC = 2048 (analyzed): same cache arithmetic with
+//   NR = 16 (16 KB B micro-panel, 192 KB A pack, 2 MB B pack).
+//
+// Non-x86_64 targets always take the portable profile.
 
-/// Rows of A/C panel (mc). Analyzed: see block comment above.
-const MC: usize = 128;
-/// Cols of B/C panel (nc). Analyzed: see block comment above.
-const NC: usize = 1024;
-/// Inner depth panel (kc). Analyzed: see block comment above.
-const KC: usize = 256;
-/// Micro-kernel rows (mr). Analyzed + empirical: see block comment above.
-const MR: usize = 4;
-/// Micro-kernel cols (nr). Analyzed + empirical: see block comment above.
-const NR: usize = 8;
+/// GEBP blocking profile (chosen once per process by [`gemm_params`]).
+#[derive(Clone, Copy)]
+struct GemmParams {
+    mc: usize,
+    nc: usize,
+    kc: usize,
+    mr: usize,
+    nr: usize,
+    /// Use the AVX-512DQ 6×16 micro-kernel (verified present at dispatch).
+    avx512: bool,
+}
+
+const PORTABLE: GemmParams = GemmParams {
+    mc: 128,
+    nc: 1024,
+    kc: 256,
+    mr: 4,
+    nr: 8,
+    avx512: false,
+};
+
+#[cfg(target_arch = "x86_64")]
+const AVX512: GemmParams = GemmParams {
+    mc: 128,
+    nc: 1024,
+    kc: 256,
+    mr: 4,
+    nr: 8,
+    avx512: true,
+};
+
+/// Select the blocking profile for this CPU (cached after first call).
+#[inline]
+fn gemm_params() -> GemmParams {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::sync::OnceLock;
+        static CHOSEN: OnceLock<GemmParams> = OnceLock::new();
+        *CHOSEN.get_or_init(|| {
+            if std::arch::is_x86_feature_detected!("avx512f")
+                && std::arch::is_x86_feature_detected!("avx512dq")
+                && std::arch::is_x86_feature_detected!("avx512bw")
+                && std::arch::is_x86_feature_detected!("avx512vl")
+            {
+                AVX512
+            } else {
+                PORTABLE
+            }
+        })
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        PORTABLE
+    }
+}
 
 /// GEBP source operand: `data` is a stored row-major matrix with row stride
 /// `ld`; `trans` selects op(M) = Mᵀ. Logical dims (m×k for A, k×n for B) are
@@ -107,12 +162,12 @@ struct Op<'a> {
 /// stride by `mr` (≤ cache line). Transposed: p outer copies `mr` contiguous
 /// source elements per step.
 #[inline]
-fn pack_a_mr(a: Op, i0: usize, m: usize, k0: usize, k: usize, buf: &mut [i64]) {
+fn pack_a_mr(a: Op, mr_max: usize, i0: usize, m: usize, k0: usize, k: usize, buf: &mut [i64]) {
     let (aa, ld) = (a.data, a.ld);
     let mut off = 0;
     let mut ir = 0;
     while ir < m {
-        let mr = (m - ir).min(MR);
+        let mr = (m - ir).min(mr_max);
         if a.trans {
             // op(A)[i, p] = A[p, i]: contiguous mr-wide read per p.
             for p in 0..k {
@@ -137,12 +192,12 @@ fn pack_a_mr(a: Op, i0: usize, m: usize, k0: usize, k: usize, buf: &mut [i64]) {
 /// Untransposed: contiguous nr-wide read per p. Transposed: op(B)[p, j] =
 /// B[j, p], so each j reads a contiguous source row and scatters at stride nr.
 #[inline]
-fn pack_b_nr(b: Op, k0: usize, k: usize, j0: usize, n: usize, buf: &mut [i64]) {
+fn pack_b_nr(b: Op, nr_max: usize, k0: usize, k: usize, j0: usize, n: usize, buf: &mut [i64]) {
     let (bb, ld) = (b.data, b.ld);
     let mut off = 0;
     let mut jr = 0;
     while jr < n {
-        let nr = (n - jr).min(NR);
+        let nr = (n - jr).min(nr_max);
         if b.trans {
             for jj in 0..nr {
                 let src = &bb[(j0 + jr + jj) * ld + k0..(j0 + jr + jj) * ld + k0 + k];
@@ -161,17 +216,62 @@ fn pack_b_nr(b: Op, k0: usize, k: usize, j0: usize, n: usize, buf: &mut [i64]) {
     }
 }
 
-/// MR×NR wrapping micro-kernel:
-/// `C[i0..i0+MR, j0..j0+NR] += A_panel[0..k, 0..MR] * B_panel[0..k, 0..NR]`.
-/// `a` is k-major (MR contiguous A values per p, from [`pack_a_mr`]); `b` is
-/// k×NR contiguous (from [`pack_b_nr`]).
-///
-/// Written as a flat accumulator array with fixed-trip inner loops — the shape
-/// LLVM auto-vectorizes at the build's target features (SSE2 `pmuludq`
-/// decomposition at baseline; `vpmullq` on AVX-512DQ builds) — deliberately
-/// not named scalar variables, which pin codegen to scalar `imul`.
+/// Shared flat-tile body: `C[i0..i0+MR, j0..j0+NR] += Aᵖ · Bᵖ` over k, with
+/// `a` k-major (MR contiguous per p, from [`pack_a_mr`]) and `b` k×NR
+/// contiguous (from [`pack_b_nr`]). A flat accumulator array with fixed-trip
+/// inner loops — the shape LLVM auto-vectorizes at the enclosing function's
+/// target features — deliberately not named scalars, which pin codegen to
+/// scalar `imul`.
+macro_rules! flat_tile_body {
+    ($MR:expr, $NR:expr, $k:expr, $a:expr, $b:expr, $c:expr, $ldc:expr, $i0:expr, $j0:expr) => {{
+        const MR_: usize = $MR;
+        const NR_: usize = $NR;
+        let (k, a, b, ldc, i0, j0) = ($k, $a, $b, $ldc, $i0, $j0);
+        let c: &mut [i64] = $c;
+        let mut acc = [0i64; MR_ * NR_];
+        for p in 0..k {
+            let ap = &a[p * MR_..p * MR_ + MR_];
+            let bp = &b[p * NR_..p * NR_ + NR_];
+            for i in 0..MR_ {
+                let ai = ap[i];
+                for j in 0..NR_ {
+                    acc[i * NR_ + j] = acc[i * NR_ + j].wrapping_add(ai.wrapping_mul(bp[j]));
+                }
+            }
+        }
+        for i in 0..MR_ {
+            let row = (i0 + i) * ldc + j0;
+            for j in 0..NR_ {
+                c[row + j] = c[row + j].wrapping_add(acc[i * NR_ + j]);
+            }
+        }
+    }};
+}
+
+/// Portable 4×8 micro-kernel (any build, any CPU).
 #[inline]
-fn micro_tile(
+fn micro_tile_4x8(
+    k: usize,
+    a: &[i64], // k-major, 4 per p
+    b: &[i64], // k × 8
+    c: &mut [i64],
+    ldc: usize,
+    i0: usize,
+    j0: usize,
+) {
+    flat_tile_body!(4, 8, k, a, b, c, ldc, i0, j0);
+}
+
+/// AVX-512DQ 6×16 micro-kernel: same portable body, compiled with 512-bit
+/// features enabled so LLVM emits `vpmullq` zmm code even in a baseline
+/// build.
+///
+/// # Safety
+/// Caller must have verified avx512f+dq+bw+vl at runtime ([`gemm_params`]
+/// only sets `avx512` after `is_x86_feature_detected!`).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl")]
+unsafe fn micro_tile_avx512(
     k: usize,
     a: &[i64], // k-major, MR per p
     b: &[i64], // k × NR
@@ -180,23 +280,7 @@ fn micro_tile(
     i0: usize,
     j0: usize,
 ) {
-    let mut acc = [0i64; MR * NR];
-    for p in 0..k {
-        let ap = &a[p * MR..p * MR + MR];
-        let bp = &b[p * NR..p * NR + NR];
-        for i in 0..MR {
-            let ai = ap[i];
-            for j in 0..NR {
-                acc[i * NR + j] = acc[i * NR + j].wrapping_add(ai.wrapping_mul(bp[j]));
-            }
-        }
-    }
-    for i in 0..MR {
-        let row = (i0 + i) * ldc + j0;
-        for j in 0..NR {
-            c[row + j] = c[row + j].wrapping_add(acc[i * NR + j]);
-        }
-    }
+    flat_tile_body!(4, 8, k, a, b, c, ldc, i0, j0);
 }
 
 /// Generic remainder micro-kernel (any m,n ≤ MR,NR not full tile).
@@ -225,11 +309,36 @@ fn micro_edge(
     }
 }
 
+/// Run the profile's full-size micro-kernel on one tile.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn run_full_tile(
+    p: GemmParams,
+    k: usize,
+    a: &[i64],
+    b: &[i64],
+    c: &mut [i64],
+    ldc: usize,
+    i0: usize,
+    j0: usize,
+) {
+    #[cfg(target_arch = "x86_64")]
+    if p.avx512 {
+        // SAFETY: gemm_params() sets `avx512` only after runtime detection of
+        // avx512f+dq+bw+vl on this CPU.
+        unsafe { micro_tile_avx512(k, a, b, c, ldc, i0, j0) };
+        return;
+    }
+    let _ = p;
+    micro_tile_4x8(k, a, b, c, ldc, i0, j0);
+}
+
 /// One MC row-band of the GEBP inner product for a fixed (j0, k0) block:
 /// packs A[i0..i0+mb, k0..k0+kb] (thread-local, pooled) and walks jr/ir
 /// micro-tiles against the shared read-only `b_pack`.
 #[allow(clippy::too_many_arguments)]
 fn gemm_row_band(
+    p: GemmParams,
     a: Op,
     ldc: usize,
     b_pack: &[i64],
@@ -243,21 +352,22 @@ fn gemm_row_band(
 ) {
     debug_assert_eq!(c_band.len(), mb * ldc);
     let mut a_pack = pool_i64::take_uninit(mb * kb);
-    pack_a_mr(a, i0, mb, k0, kb, &mut a_pack);
+    pack_a_mr(a, p.mr, i0, mb, k0, kb, &mut a_pack);
 
     let mut jr = 0;
     let mut b_off = 0;
     while jr < nb {
-        let nr = (nb - jr).min(NR);
+        let nr = (nb - jr).min(p.nr);
         let mut ir = 0;
         let mut a_off = 0;
         while ir < mb {
-            let mr = (mb - ir).min(MR);
-            if mr == MR && nr == NR {
-                micro_tile(
+            let mr = (mb - ir).min(p.mr);
+            if mr == p.mr && nr == p.nr {
+                run_full_tile(
+                    p,
                     kb,
-                    &a_pack[a_off..a_off + kb * MR],
-                    &b_pack[b_off..b_off + kb * NR],
+                    &a_pack[a_off..a_off + kb * mr],
+                    &b_pack[b_off..b_off + kb * nr],
                     c_band,
                     ldc,
                     ir,
@@ -318,6 +428,13 @@ fn gemm_simple(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &m
 /// a work rule, not a host-tuned n table. Barrier count is
 /// ceil(bn/NC)·ceil(an/KC), negligible next to band work at these sizes.
 fn gemm_blocked(m: usize, k: usize, n: usize, a: Op, b: Op, data: &mut [i64]) {
+    gemm_blocked_with(gemm_params(), m, k, n, a, b, data);
+}
+
+/// [`gemm_blocked`] with an explicit profile — lets tests exercise both
+/// profiles regardless of the host CPU (the AVX-512 profile still requires a
+/// CPU that has the features; tests gate on runtime detection).
+fn gemm_blocked_with(p: GemmParams, m: usize, k: usize, n: usize, a: Op, b: Op, data: &mut [i64]) {
     let flops = (m as u64).saturating_mul(k as u64).saturating_mul(n as u64);
     // Tiny: no packing. Cutoff is empirical (M7.c bench host, 2026-07;
     // unverified elsewhere) — see DESIGN §3.26.
@@ -330,18 +447,18 @@ fn gemm_blocked(m: usize, k: usize, n: usize, a: Op, b: Op, data: &mut [i64]) {
         .map(|n| n.get())
         .unwrap_or(1)
         .max(1);
-    let n_bands = m.div_ceil(MC);
+    let n_bands = m.div_ceil(p.mc);
     let want_par = nthreads >= 2 && n_bands >= 2;
 
-    let mut b_pack = pool_i64::take_uninit(KC * NC.min(n));
+    let mut b_pack = pool_i64::take_uninit(p.kc * p.nc.min(n));
 
     let mut j0 = 0;
     while j0 < n {
-        let nb = (n - j0).min(NC);
+        let nb = (n - j0).min(p.nc);
         let mut k0 = 0;
         while k0 < k {
-            let kb = (k - k0).min(KC);
-            pack_b_nr(b, k0, kb, j0, nb, &mut b_pack[..kb * nb]);
+            let kb = (k - k0).min(p.kc);
+            pack_b_nr(b, p.nr, k0, kb, j0, nb, &mut b_pack[..kb * nb]);
 
             if want_par {
                 use rayon::prelude::*;
@@ -350,7 +467,7 @@ fn gemm_blocked(m: usize, k: usize, n: usize, a: Op, b: Op, data: &mut [i64]) {
                 let mut i0 = 0;
                 let mut rest: &mut [i64] = &mut data[..];
                 while i0 < m {
-                    let mb = (m - i0).min(MC);
+                    let mb = (m - i0).min(p.mc);
                     let (chunk, tail) = rest.split_at_mut(mb * n);
                     bands.push((i0, mb, chunk));
                     rest = tail;
@@ -358,13 +475,14 @@ fn gemm_blocked(m: usize, k: usize, n: usize, a: Op, b: Op, data: &mut [i64]) {
                 }
                 let bp = &b_pack;
                 bands.into_par_iter().for_each(|(i0, mb, c_band)| {
-                    gemm_row_band(a, n, bp, i0, mb, k0, kb, j0, nb, c_band);
+                    gemm_row_band(p, a, n, bp, i0, mb, k0, kb, j0, nb, c_band);
                 });
             } else {
                 let mut i0 = 0;
                 while i0 < m {
-                    let mb = (m - i0).min(MC);
+                    let mb = (m - i0).min(p.mc);
                     gemm_row_band(
+                        p,
                         a,
                         n,
                         &b_pack,
@@ -701,6 +819,34 @@ mod tests {
         let i = ArrayI64::eye(3).unwrap();
         let c = matmul(&a, &i).unwrap();
         assert_eq!(c.as_slice(), a.as_slice());
+    }
+
+    #[test]
+    fn gemm_profiles_match_naive() {
+        // Exercise BOTH blocking profiles explicitly (dispatch would pin the
+        // suite to whichever profile this host selects). AVX-512 profile runs
+        // only where the CPU reports the features it needs.
+        let (m, k, n) = (67usize, 131usize, 45usize);
+        let da = wrapheavy(m * k, 41);
+        let db = wrapheavy(k * n, 43);
+        let r = naive_matmul(m, k, n, &da, &db);
+        let a = Op { data: &da, ld: k, trans: false };
+        let b = Op { data: &db, ld: n, trans: false };
+
+        let mut c = vec![0i64; m * n];
+        gemm_blocked_with(PORTABLE, m, k, n, a, b, &mut c);
+        assert_eq!(c, r, "PORTABLE profile mismatch");
+
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx512f")
+            && std::arch::is_x86_feature_detected!("avx512dq")
+            && std::arch::is_x86_feature_detected!("avx512bw")
+            && std::arch::is_x86_feature_detected!("avx512vl")
+        {
+            let mut c = vec![0i64; m * n];
+            gemm_blocked_with(AVX512, m, k, n, a, b, &mut c);
+            assert_eq!(c, r, "AVX512 profile mismatch");
+        }
     }
 
     /// Reference ijk matmul (wrapping), for exactness checks of the packed path.

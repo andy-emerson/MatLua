@@ -109,23 +109,54 @@ fn vec_mac_f64(a: &[f64], b: &[f64], c: &mut [f64]) {
 
 /// GEBP-shaped inner loop: rank-1 updates into a 4×8 accumulator tile from
 /// packed A columns (4 per k) and packed B rows (8 per k).
-fn tile_4x8_i64(a_pack: &[i64], b_pack: &[i64], out: &mut [i64; 32]) {
-    let mut acc = [[0i64; 8]; 4];
-    for p in 0..KDEPTH {
-        let av = &a_pack[p * 4..p * 4 + 4];
-        let bv = &b_pack[p * 8..p * 8 + 8];
-        for i in 0..4 {
-            let ai = av[i];
-            for j in 0..8 {
-                acc[i][j] = acc[i][j].wrapping_add(ai.wrapping_mul(bv[j]));
+macro_rules! tile_4x8_body {
+    ($a_pack:expr, $b_pack:expr, $out:expr) => {{
+        let (a_pack, b_pack) = ($a_pack, $b_pack);
+        let out: &mut [i64; 32] = $out;
+        let mut acc = [[0i64; 8]; 4];
+        for p in 0..KDEPTH {
+            let av = &a_pack[p * 4..p * 4 + 4];
+            let bv = &b_pack[p * 8..p * 8 + 8];
+            for i in 0..4 {
+                let ai = av[i];
+                for j in 0..8 {
+                    acc[i][j] = acc[i][j].wrapping_add(ai.wrapping_mul(bv[j]));
+                }
             }
         }
-    }
-    for i in 0..4 {
-        for j in 0..8 {
-            out[i * 8 + j] = out[i * 8 + j].wrapping_add(acc[i][j]);
+        for i in 0..4 {
+            for j in 0..8 {
+                out[i * 8 + j] = out[i * 8 + j].wrapping_add(acc[i][j]);
+            }
         }
-    }
+    }};
+}
+
+fn tile_4x8_i64(a_pack: &[i64], b_pack: &[i64], out: &mut [i64; 32]) {
+    tile_4x8_body!(a_pack, b_pack, out);
+}
+
+/// Same tile compiled with AVX-512DQ enabled (native 64-bit lane multiply) —
+/// the ceiling proxy for the shipped kernel's runtime-dispatched ISA path.
+///
+/// # Safety
+/// Call only after `is_x86_feature_detected!` confirms avx512f+dq+bw+vl.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl")]
+unsafe fn tile_4x8_i64_avx512(a_pack: &[i64], b_pack: &[i64], out: &mut [i64; 32]) {
+    tile_4x8_body!(a_pack, b_pack, out);
+}
+
+#[cfg(target_arch = "x86_64")]
+fn avx512_ok() -> bool {
+    std::arch::is_x86_feature_detected!("avx512f")
+        && std::arch::is_x86_feature_detected!("avx512dq")
+        && std::arch::is_x86_feature_detected!("avx512bw")
+        && std::arch::is_x86_feature_detected!("avx512vl")
+}
+#[cfg(not(target_arch = "x86_64"))]
+fn avx512_ok() -> bool {
+    false
 }
 
 fn emit(name: &str, gops: f64, detail: &str) {
@@ -134,7 +165,7 @@ fn emit(name: &str, gops: f64, detail: &str) {
 
 /// Run the tile kernel on every core at once (per-thread private buffers,
 /// allocated once outside the timed region); returns aggregate Gops.
-fn par_tile_gops(nthreads: usize, reps: u64) -> f64 {
+fn par_tile_gops(nthreads: usize, reps: u64, isa: bool) -> f64 {
     let t = Instant::now();
     std::thread::scope(|s| {
         for tid in 0..nthreads {
@@ -143,6 +174,15 @@ fn par_tile_gops(nthreads: usize, reps: u64) -> f64 {
                 let bp = black_box(fill_i64(KDEPTH * 8, 19 + tid as i64));
                 let mut out = [0i64; 32];
                 for _ in 0..reps {
+                    #[cfg(target_arch = "x86_64")]
+                    if isa {
+                        // SAFETY: caller gates on avx512_ok().
+                        unsafe {
+                            tile_4x8_i64_avx512(black_box(&ap), black_box(&bp), black_box(&mut out))
+                        };
+                        continue;
+                    }
+                    let _ = isa;
                     tile_4x8_i64(black_box(&ap), black_box(&bp), black_box(&mut out));
                 }
             });
@@ -207,10 +247,38 @@ fn main() {
     // a ~0.5 s window; setup is outside the timed loop.
     let per_call_ops = (KDEPTH * 32 * 2) as f64;
     let reps = ((0.5 * g_tile * 1e9) / per_call_ops).ceil() as u64;
-    let g_par = par_tile_gops(nthreads, reps.max(1));
+    let g_par = par_tile_gops(nthreads, reps.max(1), false);
     emit("tile_4x8_i64_par", g_par, "aggregate over all cores");
 
-    // Shipped GEMM, achieved Gops and % of aggregate tile roofline.
+    // ISA-dispatched tile (matches the shipped kernel's runtime AVX-512 path).
+    let mut ceiling = g_par;
+    let mut ceiling_name = "tile_par";
+    if avx512_ok() {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut tile_out = [0i64; 32];
+            let g_isa = gops((KDEPTH * 32) as u64, || {
+                // SAFETY: gated on avx512_ok() above.
+                unsafe {
+                    tile_4x8_i64_avx512(
+                        black_box(&a_pack),
+                        black_box(&b_pack),
+                        black_box(&mut tile_out),
+                    )
+                };
+            });
+            emit("tile_4x8_i64_isa", g_isa, "same tile, AVX-512DQ codegen, 1 thread");
+            let reps = ((0.5 * g_isa * 1e9) / per_call_ops).ceil() as u64;
+            let g_isa_par = par_tile_gops(nthreads, reps.max(1), true);
+            emit("tile_4x8_i64_isa_par", g_isa_par, "aggregate over all cores");
+            if g_isa_par > ceiling {
+                ceiling = g_isa_par;
+                ceiling_name = "isa_tile_par";
+            }
+        }
+    }
+
+    // Shipped GEMM, achieved Gops and % of the applicable tile roofline.
     let n = 1024usize;
     let am = dense(n, 23);
     let bm = dense(n, 29);
@@ -222,10 +290,9 @@ fn main() {
     }
     let dt = median(samples);
     let achieved = (2 * n as u64 * n as u64 * n as u64) as f64 / dt / 1e9;
-    let pct_par = 100.0 * achieved / g_par;
-    let pct_one = 100.0 * achieved / g_tile;
+    let pct = 100.0 * achieved / ceiling;
     println!(
-        "roofline\tgemm_1024\t{achieved:.3}\tachieved Gops ({:.1} ms); {pct_par:.0}% of tile_par, {pct_one:.0}% of 1-thread tile",
+        "roofline\tgemm_1024\t{achieved:.3}\tachieved Gops ({:.1} ms); {pct:.0}% of {ceiling_name}",
         dt * 1e3
     );
 }
