@@ -1623,6 +1623,45 @@ impl Drop for Array {
 
 #[cfg(test)]
 mod tests {
+    use super::Array;
+
+    #[test]
+    fn min_max_propagate_nan_flat_and_axis() {
+        // DESIGN §3.15: IEEE ufuncs propagate NaN; skipping is nanmin/nanmax.
+        let a = Array::from_shape_slice(vec![4], &[3.0, f64::NAN, 1.0, 2.0]).unwrap();
+        assert!(a.min().unwrap().is_nan());
+        assert!(a.max().unwrap().is_nan());
+        assert_eq!(a.nanmin().unwrap(), 1.0);
+        assert_eq!(a.nanmax().unwrap(), 3.0);
+        let m = Array::from_shape_slice(vec![2, 2], &[1.0, f64::NAN, 3.0, 4.0]).unwrap();
+        let c = m.min_axis(0).unwrap(); // column mins
+        assert_eq!(c.as_slice()[0], 1.0);
+        assert!(c.as_slice()[1].is_nan());
+        let r = m.max_axis(1).unwrap(); // row maxes
+        assert!(r.as_slice()[0].is_nan());
+        assert_eq!(r.as_slice()[1], 4.0);
+    }
+
+    #[test]
+    fn parallel_reductions_match_sequential() {
+        // >= 2^21 elements crosses the parallel-chunking threshold; the
+        // parallel result must match a sequential fold.
+        let n = (1usize << 21) + 3;
+        let data: Vec<f64> = (0..n).map(|i| ((i * 37 % 1013) as f64) - 500.0).collect();
+        let a = Array::from_shape_slice(vec![n], &data).unwrap();
+        let seq_min = data.iter().cloned().fold(f64::INFINITY, f64::min);
+        let seq_max = data.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        assert_eq!(a.min().unwrap(), seq_min);
+        assert_eq!(a.max().unwrap(), seq_max);
+        let seq_sum: f64 = data.iter().sum();
+        assert!((a.sum() - seq_sum).abs() / seq_sum.abs() < 1e-12);
+        // NaN near the end exercises cross-chunk propagation.
+        let mut nd = data.clone();
+        nd[n - 2] = f64::NAN;
+        let b = Array::from_shape_slice(vec![n], &nd).unwrap();
+        assert!(b.min().unwrap().is_nan());
+    }
+
     #[test]
     fn m6_axis_and_cov() {
         let m = Array::from_shape_slice(vec![2, 3], &[1., 2., 3., 4., 5., 6.]).unwrap();

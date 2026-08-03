@@ -303,56 +303,71 @@ pub(crate) fn sum_sq_slice(a: &[f64]) -> f64 {
     sum_sq_dispatch(a)
 }
 
-/// Min/max over non-empty slices (Rust `f64::min`/`max` NaN handling —
-/// unchanged). Eight ILP accumulators; ISA-dispatched twins; parallel above
-/// the shared reduction quantum. Chunk results combine with the same
-/// operator, so semantics match the sequential loop.
+/// Min/max over non-empty slices, **NaN-propagating** (DESIGN §3.15: IEEE
+/// ufuncs propagate NaN; skipping is the explicit `nan*` variants' job —
+/// NumPy behaves the same). Rust `f64::min`/`max` skip NaN, so a fused
+/// `x != x` lane runs beside the min lanes (both vectorize; measured ≤7%
+/// single-thread cost, hidden in the parallel bandwidth-bound regime).
+/// Chunk results combine with an OR over the NaN flag, so parallel equals
+/// sequential.
 macro_rules! isa_minmax_f64 {
     ($seq:ident, $avx:ident, $disp:ident, $pub_fn:ident, $m:ident) => {
+        /// Returns (result, saw_nan) over the chunk.
         #[inline]
-        fn $seq(a: &[f64]) -> f64 {
+        fn $seq(a: &[f64]) -> (f64, bool) {
             let mut m = [a[0]; 8];
+            let mut nan = [false; 8];
             let mut chunks = a[1..].chunks_exact(8);
             for c in chunks.by_ref() {
                 for j in 0..8 {
+                    nan[j] |= c[j] != c[j];
                     m[j] = m[j].$m(c[j]);
                 }
             }
             let mut r = a[0];
+            let mut saw = a[0] != a[0];
             for j in 0..8 {
                 r = r.$m(m[j]);
+                saw |= nan[j];
             }
             for &x in chunks.remainder() {
+                saw |= x != x;
                 r = r.$m(x);
             }
-            r
+            (r, saw)
         }
         /// # Safety
-        /// Caller must have verified the features (`isa::avx512`).
+        /// Caller must have verified the features (`isa::avx512_fast` implies
+        /// `isa::avx512`).
         #[cfg(target_arch = "x86_64")]
         #[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl")]
-        unsafe fn $avx(a: &[f64]) -> f64 {
+        unsafe fn $avx(a: &[f64]) -> (f64, bool) {
             let mut m = [a[0]; 8];
+            let mut nan = [false; 8];
             let mut chunks = a[1..].chunks_exact(8);
             for c in chunks.by_ref() {
                 for j in 0..8 {
+                    nan[j] |= c[j] != c[j];
                     m[j] = m[j].$m(c[j]);
                 }
             }
             let mut r = a[0];
+            let mut saw = a[0] != a[0];
             for j in 0..8 {
                 r = r.$m(m[j]);
+                saw |= nan[j];
             }
             for &x in chunks.remainder() {
+                saw |= x != x;
                 r = r.$m(x);
             }
-            r
+            (r, saw)
         }
         #[inline]
-        fn $disp(a: &[f64]) -> f64 {
+        fn $disp(a: &[f64]) -> (f64, bool) {
             #[cfg(target_arch = "x86_64")]
             if crate::array::isa::avx512_fast() {
-                // SAFETY: features verified by isa::avx512().
+                // SAFETY: avx512_fast() implies the checked features.
                 return unsafe { $avx(a) };
             }
             $seq(a)
@@ -362,14 +377,20 @@ macro_rules! isa_minmax_f64 {
             if a.is_empty() {
                 return None;
             }
-            if reduce_par_ok(a.len()) {
+            let (r, saw) = if reduce_par_ok(a.len()) {
                 use rayon::prelude::*;
-                return a
-                    .par_chunks(REDUCE_QUANTUM)
+                a.par_chunks(REDUCE_QUANTUM)
                     .map($disp)
-                    .reduce_with(|x, y| x.$m(y));
+                    .reduce_with(|x, y| (x.0.$m(y.0), x.1 | y.1))
+                    .unwrap()
+            } else {
+                $disp(a)
+            };
+            if saw {
+                Some(f64::NAN)
+            } else {
+                Some(r)
             }
-            Some($disp(a))
         }
     };
 }
@@ -913,55 +934,74 @@ pub(crate) fn div_matrix_col(m: usize, n: usize, a: &[f64], col: &[f64], out: &m
 
 #[inline]
 pub(crate) fn axis0_min(m: usize, n: usize, a: &[f64], out: &mut [f64]) {
+    // NaN-propagating like the flat min (DESIGN §3.15): a NaN in a column
+    // pins that column's result to NaN.
     out.fill(f64::INFINITY);
     for i in 0..m {
         for j in 0..n {
             let x = a[i * n + j];
-            if x < out[j] {
-                out[j] = x;
-            }
+            let cur = out[j];
+            out[j] = if x != x || cur != cur {
+                f64::NAN
+            } else if x < cur {
+                x
+            } else {
+                cur
+            };
         }
     }
 }
 
 #[inline]
 pub(crate) fn axis1_min(m: usize, n: usize, a: &[f64], out: &mut [f64]) {
+    // NaN-propagating like the flat min (DESIGN §3.15).
     for i in 0..m {
         let mut mnv = f64::INFINITY;
+        let mut saw = false;
         for j in 0..n {
             let x = a[i * n + j];
+            saw |= x != x;
             if x < mnv {
                 mnv = x;
             }
         }
-        out[i] = mnv;
+        out[i] = if saw { f64::NAN } else { mnv };
     }
 }
 
 #[inline]
 pub(crate) fn axis0_max(m: usize, n: usize, a: &[f64], out: &mut [f64]) {
+    // NaN-propagating like the flat max (DESIGN §3.15).
     out.fill(f64::NEG_INFINITY);
     for i in 0..m {
         for j in 0..n {
             let x = a[i * n + j];
-            if x > out[j] {
-                out[j] = x;
-            }
+            let cur = out[j];
+            out[j] = if x != x || cur != cur {
+                f64::NAN
+            } else if x > cur {
+                x
+            } else {
+                cur
+            };
         }
     }
 }
 
 #[inline]
 pub(crate) fn axis1_max(m: usize, n: usize, a: &[f64], out: &mut [f64]) {
+    // NaN-propagating like the flat max (DESIGN §3.15).
     for i in 0..m {
         let mut mx = f64::NEG_INFINITY;
+        let mut saw = false;
         for j in 0..n {
             let x = a[i * n + j];
+            saw |= x != x;
             if x > mx {
                 mx = x;
             }
         }
-        out[i] = mx;
+        out[i] = if saw { f64::NAN } else { mx };
     }
 }
 

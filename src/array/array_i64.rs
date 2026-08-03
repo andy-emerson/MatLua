@@ -1816,6 +1816,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parallel_i64_reductions_match_sequential() {
+        let n = (1usize << 21) + 5;
+        let data: Vec<i64> = (0..n as i64).map(|i| (i * 37 % 1013) - 500).collect();
+        let a = ArrayI64::from_shape_vec(vec![n], data.clone()).unwrap();
+        assert_eq!(a.min().unwrap(), *data.iter().min().unwrap());
+        assert_eq!(a.max().unwrap(), *data.iter().max().unwrap());
+        let seq: i64 = data.iter().fold(0i64, |s, &x| s.wrapping_add(x));
+        assert_eq!(a.sum(), seq);
+    }
+
+    #[test]
     fn arange_step_wide_range_does_not_overflow() {
         // stop - start exceeds i64 range; the length math must widen first.
         let a = ArrayI64::arange_step(-5_000_000_000_000_000_000, 5_000_000_000_000_000_000, 1_000_000_000_000_000_000)
