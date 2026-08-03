@@ -13,6 +13,16 @@ Each cell is the **median** of several timed single calls after a short warmup (
 
 **i64 matmul reference:** NumPy **float64 BLAS** on the same integer-valued inputs (not `int64@int64` — no integer BLAS, not a product bar). MatLua times are **exact wrapping i64**. See DESIGN §7.1.2.
 
+**Roofline (engineering yardstick):** `i64_roofline` measures the running
+host's achievable wrapping i64 multiply-add throughput, so i64 GEMM can be
+judged as **% of machine ceiling**, not only as a ratio to f64 BLAS (which
+mixes kernel quality with ISA physics — no 64-bit vector multiply below
+AVX-512DQ). See the Roofline section below.
+
+**Provenance:** every table names the host that produced it; all faces of one
+table come from one host. Run-to-run noise on shared cloud hosts is real
+(±10–20% observed); treat small deltas accordingly.
+
 **M7.c plan (durable):** keep exact i64 matmul (plan A); complete honest numbers before any competitiveness threshold. M7.c is **not closed** by publishing these tables.
 
 
@@ -37,9 +47,43 @@ python3 tests/bench/numpy_i64_promote.py --sizes 64,256,1024,4096 \
   | awk -F'\t' 'NF==4 && $1=="numpy"{print}' >> tests/bench/last_i64_promote.tsv
 
 python3 tests/bench/compare_tables.py --write-readme tests/README.md
+
+# Machine ceiling for exact wrapping i64 MACs (optionally with
+# RUSTFLAGS="-C target-cpu=native" for the ISA-enabled ceiling)
+cargo test --release --test i64_roofline -- --run
 ```
 
+## Roofline (i64 engineering yardstick)
+
+Host: 4 vCPU Intel Xeon @ 2.10 GHz (shared cloud container, AVX-512DQ
+available), rustc 1.94.1, 2026-08-03. Gops = 2 × MACs / s. Median of 5
+samples; ±10–20% run-to-run noise observed on this shared host.
+
+| kernel | default codegen (Gops) | `target-cpu=native` (Gops) | note |
+| --- | ---: | ---: | --- |
+| scalar_chain | 2.30 | 2.35 | dependent MAC latency floor (context) |
+| scalar_ilp8 | 3.81 | 7.77 | 8 independent accumulators |
+| vec_mac_i64 | 3.81 | 6.6–8.2 | flat `c[j]+=a[j]*b[j]`; native uses `vpmullq` |
+| vec_mac_f64 | 8.57 | 8.3–10.3 | ISA-physics context vs vec_mac_i64 |
+| tile_4x8_i64 | 6.13 | 6.79 | GEBP-shaped register tile, 1 thread |
+| tile_4x8_i64_par | 23.1 | 26.2 | aggregate, 4 threads |
+| gemm_1024 (shipped) | 17.3 (≈75% of tile_par) | 22.1 (≈84%) | `i64_ops::matmul`, parallel |
+
+Readings: (1) at **default** codegen (baseline x86-64, SSE2) the shipped GEMM
+already sits near the measured tile ceiling — kernel-shape headroom there is
+bounded; (2) enabling the wider ISA doubles the flat-loop i64 ceiling but the
+GEMM kernel captures little of it — its source shape does not autovectorize;
+(3) exact-i64 ceilings are the same order as a *streaming* f64 loop, while
+BLAS f64 GEMM reaches far higher through register-blocked FMA — a gap ISA
+physics guarantees for exact i64 below AVX-512DQ. Hosts that build with
+`-C target-cpu=native` (or `x86-64-v4`) get the higher ceiling at zero source
+cost.
+
 ## Results
+
+**Provenance gap (being closed):** Tables A–F below predate the provenance
+rule — they were produced on an earlier undocumented M7.c bench host. The
+next full refresh stamps host and date here.
 
 <!-- PERF_TABLES_START -->
 
