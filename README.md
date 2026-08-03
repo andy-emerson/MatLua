@@ -49,7 +49,7 @@ work on arrays (and array ↔ number). Matrix product is always explicit:
 | **Masks / compare** | `where`; `eq`/`ne`/`lt`/`le`/`gt`/`ge` (0/1); `isnan` / `isfinite` |
 | **Indexing** | `nonzero`, `compress`, `put`, `put_mask`, `take` (i64 or f64 indices) |
 | **Host embed (Rust)** | `lua::push_view_f64` / `push_view_i64` (zero-copy read-only), `push_array_copy_*` |
-| **Broadcast / views** | elementwise broadcast; `broadcast_to`; `slice`/`rows`/`row`/`col` (1-based half-open on face) |
+| **Broadcast / views** | elementwise broadcast; `broadcast_to`; `concatenate`/`stack`; `slice`/`rows` (1-based half-open on face), `row`/`col` (single 1-based index) |
 | **NaN reductions** | `nansum`, `nanmean`, `nanmin`, `nanmax`, `nanvar`, `nanstd` |
 | **Tier-2** | `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis on `sum`/`mean`/…, `any`/`all` |
 | **Random** | `seed`, `random`, `randn`, `uniform`, `normal`, `integers` (i64), `choice` |

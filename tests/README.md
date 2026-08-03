@@ -55,10 +55,12 @@ compare the register-resident tile ceilings against the Roofline section's
 recorded values for the host. If they deviate beyond noise (±20%), the
 session is unfit: cells would be honestly measured but incomparable — to the
 recorded roofline, to other sessions, and often to each other within the
-run. Discard the run and refresh later; do not publish it. (Motivating
-case: 2026-08-03 evening, this container measured ~3× degraded on pure
-register-resident compute — hypervisor co-tenancy, no in-container load; a
-completed full refresh was discarded rather than published.)
+run. Discard the run and refresh later; do not publish it. (Two full
+refreshes have been discarded under this rule, both 2026-08-03: one when the
+container measured ~3× degraded on pure register-resident compute —
+hypervisor co-tenancy, no in-container load — and one when 512-bit
+downclocking cut only the AVX-512 tile while scalar throughput stayed
+normal.)
 
 ## Results
 

@@ -158,7 +158,7 @@ Lua userdata today holds **owned** arrays. Host zero-copy *into* scripts remains
 - Identity: `eye`
 - **Nested Lua tables** as constructor sugar only (`ml.array({...})` copies into dense `f64`)
 
-**Not yet:** `empty` / uninit constructors, column/row view helpers, advanced slicing.
+**Not yet:** `empty` / uninit constructors, advanced slicing. (`slice`/`rows`/`row` zero-copy views and copying `col` shipped in M5 — §3.15.)
 
 Arrays are **not** plain Lua tables at runtime.
 
@@ -199,6 +199,7 @@ Rationale: Lua has a single `*`; naming matmul avoids silent confusion.
 |------------|------|
 | **faer** | Dense linear algebra |
 | **arrow-array / arrow-buffer / arrow-schema** (lean defaults) | Arrays, buffers, types |
+| **rayon** | Parallel reductions and GEMM row-band threading |
 | **thiserror** | Public error types |
 | **cc** (build) | Compile vendored Lua when `lua` is enabled |
 | Lua C sources | Vendored under `vendor/lua` for the `lua` feature only |
@@ -276,7 +277,7 @@ internally. Measurement: `tests/bench/compare_compose.py`.
 ### 3.19 M7.b order statistics
 
 - **`median` / `quantile` / `quantiles`**: linear interpolation (NumPy-style `q∈[0,1]`); empty errors.
-- **Axis:** `median_axis` / `quantile_axis` on rank-2 (`f64`).
+- **Axis:** `median_axis` / `quantile_axis` on rank-2 (`f64`; `i64` → `f64` results per §3.24).
 - **`i64`:** scalar `median`/`quantile` return **`f64`** (even-length median averages).
 
 ### 3.20 M7.b random
@@ -386,9 +387,14 @@ Names match the `lua` feature on `main`. Tutorial samples live in
 Methods: `shape`, `rank`, `get`, `set`, `sum`, `mean`, `min`, `max`, `nansum`,
 `nanmean`, `nanmin`, `nanmax`, `nanvar`, `nanstd`, `copy`, `reshape`, `transpose`,
 `fill`, ufuncs, compares (`eq`/`ne`/`lt`/`le`/`gt`/`ge`), `slice`/`rows`/`row`/`col`,
-`cumsum`, `argmin`, `argmax`, `var`, `std`  
-Module also: `where`, `concatenate`, `stack`, `broadcast_to`  
-Metamethods: `__add`, `__sub`, `__mul`, `__div`, `__unm`, `__len`, `__tostring`, `__gc`
+`cumsum`, `argmin`, `argmax`, `var`, `std`, `var_axis`, `std_axis`,
+`median`, `quantile` (+ axis), `argsort`, `take`, `diagonal`, `trace`,
+`nonzero`, `compress`, `put`, `put_mask`, `add_out`/`sub_out`/`mul_out`/`div_out`/`neg_out`/`abs_out`  
+Module also: `where`, `concatenate`, `stack`, `broadcast_to`, `diag`, `outer`,
+`cov`, `corrcoef`, `matmul_out`  
+Metamethods: `__add`, `__sub`, `__mul`, `__div`, `__unm`, `__len`, `__tostring`, `__gc`  
+(Later-milestone rulings §3.16–§3.25 extend these lists; the registration
+arrays in `src/lua/api.rs` / `api_i64.rs` are the authoritative surface.)
 
 ### 4.3 NumPy contrast (capability, not syntax parity)
 
@@ -405,7 +411,7 @@ local beta = ml.normal_eq(X, y)
 -- Long path (still correct): ml.solve(ml.matmul(X:transpose(), X), ml.matmul(X:transpose(), y))
 ```
 
-Rank-1 vectors are valid `matmul` / `solve` operands (column convention). Column-fill helpers (`:col`, `:assign`) are **not** implemented; use `get`/`set` loops or build from tables until view sugar lands.
+Rank-1 vectors are valid `matmul` / `solve` operands (column convention). Column **read** is `a:col(j)` (copies, row-major storage — §3.15); column-**assign** helpers are **not** implemented; use `get`/`set` loops until assign sugar lands.
 
 ---
 
@@ -531,7 +537,7 @@ closure questions listed at the end of this section.
 | Decision | Ruling |
 |----------|--------|
 | Exact **i64** matmul | **Plan A:** keep **wrapping exact i64** matmul as the product path. Do **not** silently promote large GEMM to f64. |
-| Performance bar / thresholds | **Not set yet.** Get **accurate, complete** measurements first; choose competitiveness targets only with enough BLAS context. |
+| Performance bar / thresholds | **Deferred to the closure ruling.** Measurements are complete and published (tests/README, 2026-08-03 gated run); the proposed bar (≥ 70% of machine roofline) is item 1 under “Remaining for closure” below. |
 | Matmul yardstick (tables) | **NumPy float64 BLAS** on the **same integer-valued** inputs (e.g. 3.0), **not** `int64@int64`. NumPy has i64 dtype but **no integer BLAS** ([numpy#14556](https://github.com/numpy/numpy/issues/14556)); int64@int64 is a slow fallback and hid a real gap. MatLua still reports **exact wrapping i64** times. |
 | Optimization discipline | Prefer **algorithms and design** (packing, sharing, demand-zero alloc, correct face paths). Do **not** sell host-specific size cutoffs as “opts.” Parallelism may use **work ÷ threads**, not a fixed `n` table from one box. |
 | Engineering yardstick (i64 GEMM) | Besides the NumPy f64 BLAS **product** yardstick, exact i64 GEMM is judged as **% of measured machine roofline** — peak sustained wrapping i64 multiply-add throughput on the same host (`tests/bench/i64_roofline.rs`). The roofline separates kernel quality from ISA physics (no 64-bit vector multiply below AVX-512DQ), so the BLAS ratio alone cannot say whether the kernel is good. |
@@ -637,7 +643,7 @@ NumPy comparison is the **gate**, not the driver of every change.
 | Axis | Contract |
 |------|----------|
 | **Scope** | Dense `f64`, rank 1–2: elementwise bulk ops, `matmul`, `solve`, and the shipped decompositions |
-| **Sizes** | Report at least \(n \in \{64, 256, 1024\}\) (matmul may also use 2048) |
+| **Sizes** | Report at least \(n \in \{64, 256, 1024\}\) (published tables run 64–4096) |
 | **Faces** | Always **three-way**: **NumPy** (baseline **1.00×**), **Rust** (critical path), **Lua** (product) |
 | **Reporting** | Relative wall time to NumPy (NumPy column is always 1.00×); absolute ms secondary |
 | **Bar** | On medium+ matmul/solve (release, same shapes), MatLua wall time within about **1–2×** of NumPy on the same machine |
