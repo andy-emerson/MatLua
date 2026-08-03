@@ -1185,10 +1185,9 @@ pub unsafe extern "C" fn a_argmax(L: *mut lua_State) -> c_int {
 }
 pub unsafe extern "C" fn a_var(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
-    // a:var([axis], [ddof]) — if first optional is axis (integer) and rank-2 path requested
-    // Conventions: var() | var(ddof) | var(axis, ddof) when axis is integer 0/1 and second present
-    // Simpler: var() flat ddof0; var(ddof) flat; var(axis, ddof) when two ints — but ddof alone conflicts.
-    // Use: optional ddof only for flat; for axis use var_axis via :var_axis(axis, ddof) method.
+    // a:var([ddof]) is flat-only; an axis reduction is the separate
+    // a:var_axis(axis, ddof) (1-based axis) — a single optional integer would
+    // be ambiguous between ddof and axis.
     let ddof = if unsafe { lua_gettop(L) } >= 2 {
         let d = unsafe { luaL_checkinteger(L, 2) };
         if d < 0 {

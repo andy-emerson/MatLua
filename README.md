@@ -36,7 +36,9 @@ local beta = ml.normal_eq(X, y)  -- short path: matmul_at + solve (see DESIGN)
 -- or: ml.solve(ml.matmul_at(X, X), ml.matmul_at(X, y))
 ```
 
-**Indexing is 1-based on the Lua face.** Elementwise `+ - * /` and unary `-`
+**Indexing is 1-based on the Lua face** — element indices *and* reduction axes
+(`axis 1` = down rows, `axis 2` = across columns); the Rust face is 0-based.
+Elementwise `+ - * /` and unary `-`
 work on arrays (and array ↔ number). Matrix product is always explicit:
 `ml.matmul(a, b)` — Lua has a single `*`, so it stays elementwise.
 
@@ -54,7 +56,7 @@ work on arrays (and array ↔ number). Matrix product is always explicit:
 | **Constructors** | `zeros`, `ones`, `full`, `arange` (`start, stop[, step]`, half-open), `array` (nested tables → dense `f64`), `eye` |
 | **Array methods** | `shape`, `rank`, `get` / `set`, `sum` / `mean` / `min` / `max`, `var` / `std`, **`median`/`quantile`**, `argmin` / `argmax`, ufuncs (`abs`/`sqrt`/`exp`/`log`/`log1p`/`sign`/`power`/`clip`/`isnan`/`isfinite`/`cumsum`), `copy`, `reshape` (may share; write COWs), `transpose`, `fill`, `#a` |
 | **Elementwise** | `+`, `-`, `*`, `/`, unary `-`; **`add_out`/`mul_out`/…** and **`matmul_out`** (preallocated) |
-| **Linear algebra (`f64`)** | `matmul`, …, `solve`, `lstsq`, `eigh`, `pinv`, `cholesky`, `qr`, `svd`, **`det`/`slogdet`/`matrix_rank`/`cond`/`eig`/`eigvals`** (M7.b) |
+| **Linear algebra (`f64`)** | `matmul`, …, `solve`, `lstsq`, `eigh`, `pinv`, `cholesky`, `cholesky_solve`, `qr`, `svd`, **`det`/`slogdet`/`matrix_rank`/`cond`/`eig`/`eigvals`** (M7.b) |
 | **`i64`-unique** | bitwise / rem / shift, `unique` / `isin` / `bincount` / `searchsorted` / `sort`, `divmod` / `gcd` / `lcm`, bit counts |
 | **Linear algebra (`i64`)** | Integer path: `matmul_i64` / … (wrapping). **Same** `solve`/`eigh`/… accept `ArrayI64` and return **`f64`** (NumPy-style). Also `linalg::from_i64` / `i64_ops` in Rust |
 | **Rust core** | `Array` (`f64`), `ArrayI64` (`i64`), views over host `f64`/`i64` buffers, Arrow `Float64`/`Int64`, LA `matlua::linalg` + `linalg::i64_ops` |
@@ -117,9 +119,10 @@ Closed decisions and milestones: [DESIGN.md](DESIGN.md).
 **M0–M6 are on `main`** (see [DESIGN.md](DESIGN.md) §7.1). The tree is a **v0.1
 candidate**: a host can embed MatLua and scripts can do ordinary dense array and
 linear-algebra work end-to-end. Crate version remains **`0.0.1`** until a formal
-`0.1.0` cut. **M7 Done. M7.b Done.** **M7.c in progress** (not closed): optimize f64+i64; exact
-wrapping i64 matmul is plan A; get complete honest numbers before setting any
-performance target — [DESIGN.md](DESIGN.md) §7.1.2. Embed/TallyDB letter work is
+`0.1.0` cut. **M7 Done. M7.b Done.** **M7.c work complete** on the optimization
+branch — closure pending sign-off on the rulings in [DESIGN.md](DESIGN.md)
+§7.1.2 (performance bar, accepted residuals). Exact wrapping i64 matmul (plan A)
+held, at ~73–88% of the measured machine roofline. Embed/TallyDB letter work is
 **M8–M12** (§7.1.1).
 
 **Performance:** three-way microbenches (NumPy · MatLua Rust · MatLua Lua) under
@@ -128,8 +131,8 @@ across sizes), full per-n three-face tables in the appendix, plus an i64
 machine-roofline yardstick. i64 **matmul** is timed against **NumPy f64 BLAS** on
 integer-valued inputs (not `int64@int64`).
 
-**Known limits (tracked M7.c–M12 / issues):** exact i64 GEMM runs ~5–7× NumPy f64
-BLAS (integer-valued) at ~80–88% of the measured machine ceiling — the rest is
+**Known limits (tracked M7.c–M12 / issues):** exact i64 GEMM runs ~6–9× NumPy f64
+BLAS (integer-valued) at ~73–88% of the measured machine ceiling — the rest is
 integer-multiply ISA physics (see tests/README Roofline); small-buffer pool min size; embed error boundary; dtypes
 beyond f64/i64; `arrow-lite` cutover. Full in-place `out=` is
 [#21](https://github.com/andy-emerson/MatLua/issues/21) (partial `*_out` exists).

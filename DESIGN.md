@@ -112,7 +112,10 @@ MatLua does not subsume TallyDB.
 | **Lua (user)** | **1-based** |
 | **Rust (implementation)** | **0-based** |
 
-The binding translates. Users never need Rust indices.
+The binding translates. Users never need Rust indices. This covers **every
+integer position the face exposes** — element indices, slice/range bounds,
+returned index arrays (`argmin`, `argsort`, `nonzero`, …), *and reduction
+axes* (§3.16).
 
 ### 3.2 Rank and shape
 
@@ -166,7 +169,7 @@ Arrays are **not** plain Lua tables at runtime.
 - Metamethods: elementwise `+`, `-`, `*`, `/`, unary `-` (array–array or array–number).
 - **Matrix multiplication:** module function `ml.matmul(a, b)` only (not `*`, no `@`).
 - **Transpose:** `ml.transpose(a)` and method `a:transpose()`.
-- Other LA: `matmul_at`, `matmul_bt`, `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `dot`, `norm`, `cholesky`, `qr`, `svd`.
+- Other LA: `matmul_at`, `matmul_bt`, `normal_eq`, `solve`, `lstsq`, `eigh`, `pinv`, `dot`, `norm`, `cholesky`, `cholesky_solve` (SPD solve via LLᵀ, downstream consumer need), `qr`, `svd`.
 
 Rationale: Lua has a single `*`; naming matmul avoids silent confusion.
 
@@ -233,12 +236,13 @@ internally. Measurement: `tests/bench/compare_compose.py`.
 - **Broadcast:** NumPy right-align rules for elementwise ops and `broadcast_to`. Practical focus rank ≤ 2; higher ranks supported by the same algorithm.
 - **Compares:** `eq`/`ne`/`lt`/`le`/`gt`/`ge` return **0/1** dense `f64` masks (no separate bool dtype). IEEE: NaN comparisons are false.
 - **Ufuncs:** IEEE **propagate** NaN. Skipping NaN uses explicit `nan*` reductions.
+- **`min` / `max` (flat and axis):** **propagate** NaN — any NaN in the reduced set yields NaN, matching NumPy `min`/`max`. Skipping variants are `nanmin`/`nanmax`. (Ruling 2026-08: propagation implemented with a fused NaN check; measured cost ≤7% single-thread, hidden by parallel reduction at size.)
 - **Views:** rank-1 `slice`, rank-2 `rows`/`row` are zero-copy when contiguous; `col` **copies** (row-major). Lua face uses **1-based half-open** ranges for `slice`/`rows` (stop exclusive).
 
 ### 3.16 Tier-2 quant helpers (M6)
 
 - **`cov` / `corrcoef`:** variables in **rows** (NumPy `rowvar=True`). `cov` default `ddof=1`.
-- **Axis:** reductions take **0-based axis** (NumPy-shaped) even on the Lua face; element indices remain 1-based.
+- **Axis:** the **Rust face is 0-based** (Rust is inherently 0-based); the **Lua face is 1-based** (axis 1 = down rows, axis 2 = across columns), consistent with Lua's 1-based element indices. The binding layer converts. (Ruling 2026-08; supersedes the earlier "0-based even on the Lua face" choice, which left the Lua face half-converted.)
 - **`argsort` / `take`:** Rust 0-based; Lua face converts to/from 1-based indices.
 - **`diag`:** vector→matrix or matrix→diagonal; `diagonal` / `trace` on matrices; `outer` for rank-1×rank-1.
 - **`any` / `all`:** nonzero non-NaN is true (same as `where` cond); optional axis → 0/1 mask.
@@ -248,7 +252,7 @@ internally. Measurement: `tests/bench/compare_compose.py`.
 - **`ArrayI64`**: owned row-major `i64`, same shape/rank model as `f64` [`Array`].
 - **Introduction order:** `f64` first, then `i64` (not a permanent “LA is only f64” hierarchy).
 - **Integer LA path:** `matmul` / `matmul_at` / `matmul_bt` / `dot` / `transpose` / `eye` on `ArrayI64` via `linalg::i64_ops` (wrapping `i64` accumulators; not faer). Integer×integer→integer in \(\mathbb{Z}\); fixed-width may wrap. **Performance:** plan A keeps exact i64; fair tables compare matmul to **NumPy f64 BLAS on integer-valued data** (§7.1.2), not `int64@int64`.
-- **Real LA on integer inputs (NumPy-style):** `linalg::from_i64::{solve,lstsq,normal_eq,pinv,eigh,cholesky,qr,svd}` promote with `to_f64` and return **`f64` arrays**. Lua `ml.solve` / `eigh` / … accept `ArrayI64` the same way. Not exact rational solve; values \(>2^{53}\) lose integer exactness.
+- **Real LA on integer inputs (NumPy-style):** `linalg::from_i64::{solve,lstsq,normal_eq,pinv,eigh,cholesky,cholesky_solve,qr,svd}` promote with `to_f64` and return **`f64` arrays**. Lua `ml.solve` / `eigh` / … accept `ArrayI64` the same way. Not exact rational solve; values \(>2^{53}\) lose integer exactness.
 - **Still not pure-`i64` codomain:** those ops never return `ArrayI64` (math is real-valued).
 - **Stats that are real-valued:** `mean` / `var` / `std` (+ axis) take `i64` and return `f64`.
 - **Arithmetic:** wrapping add/sub/mul/neg/abs; truncating `/`; division by zero → `0` (no panic).
@@ -461,14 +465,14 @@ explicit boundaries (zero-copy views in, owned results out).
 | **v0.1** tag | Explicit release cut | **Deferred** |
 | **M7** | **`i64` surface (correctness):** shared array grammar + integer-path LA (wrapping) + **i64-unique** + views + gcd/lcm/divmod/bitcount + **`from_i64` solvers** (i64 in → f64 out). | **Done** |
 | **M7.b** | **Quant leave-late pack** (f64 + **i64 parity**, §3.24): diagnostics, order stats, random, indexing, partial `out=` (#21), host views. | **Done** (i64 residual closed on M7.c branch) |
-| **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once M7/M7.b correctness holds | **In progress** — not closed; see **§7.1.2** (plan A: exact i64 GEMM; accurate numbers first) |
+| **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once M7/M7.b correctness holds | **Work complete on branch** — closure pending Human sign-off on the rulings in **§7.1.2** (plan A held: exact i64 GEMM at ~73–88% of machine roofline) |
 | **M8** | **Host integration depth** (TallyDB letter §5–§6 + view face): see **§7.1.1** | **Planned** |
 | **M9** | **Small-window pool** — freelist for *n* ≪ 256 (TallyDB hot path; letter pressure) | **Planned** |
 | **M10** | **Embed-safe Lua boundary** — letter **§1.1–§1.3** (feature-split face, longjmp/`Drop`, no panic across C) | **Planned** |
 | **M11** | **CI + embed hygiene** — letter **§7** (APICHECK, ASan) + no `DLOPEN` embed profile, Miri-clean `take_uninit` | **Planned** |
 | **M12** | **Arrow C Data Interface + `arrow-lite`** — letter **§3**; cutover when shared lite v0.1 ships | **Gated** |
 
-**Priority:** Finish **M7.c** (exact i64 GEMM focus after measurement completeness — §7.1.2) → embed **M8–M11** → **M12**. Further dtypes (`f32`, complex, …) after this arc unless a new need appears.
+**Priority:** Close **M7.c** (Human rulings, §7.1.2) → embed **M8–M11** → **M12**. Further dtypes (`f32`, complex, …) after this arc unless a new need appears.
 
 **Also tracked:** GitHub **#21** full `out=` surface (beyond M7.b partial) — **deferred past M7.c** (partial `*_out` stays); TallyDB engine cutover (other repo).
 
@@ -515,11 +519,12 @@ M7.b delivered **host entry** (`push_view_f64`/`i64`, `push_array_copy_*`) as re
 4. Alignment helpers so TallyDB can present **one** array type to scripts (conversions or direct userdata accept — design at M8 kickoff, MatLua-led).
 5. Does **not** replace M10 safety or M12 Arrow C ABI.
 
-### 7.1.2 M7.c optimization program (**in progress — not closed**)
+### 7.1.2 M7.c optimization program (**work complete on branch — closure pending Human sign-off**)
 
 **Goal:** whole-surface performance (f64 + i64) without breaking correctness
-contracts. **M7.c is not finished** when this branch merges; further M7.c work
-continues under a new approach led by the Human after PR merge.
+contracts. The optimization work of this arc is **complete on the
+`feat-m7c-i64-gemm` branch**; M7.c **closes only on Human sign-off** of the
+closure questions listed at the end of this section.
 
 #### Decisions closed (this arc)
 
@@ -551,26 +556,44 @@ continues under a new approach led by the Human after PR merge.
   composed paths (`matmul_at`/`bt`, `normal_eq`); Arc-share `Clone` (deep copy
   = `copy()`); demand-zero `zeros`; ILP elementwise/reduction kernels; blocked
   transpose; Lua GC-debt accounting on large userdata.
+- f64 (this arc): factorization inputs repacked **column-major** once at the
+  boundary (faer panel kernels are column-major-optimized; buffers pool-recycled);
+  **small-n `solve` fast path** — unblocked partial-pivot LU for n ≤ 192 single-RHS
+  with zero-pivot fallback to faer; **parallel flat reductions** (`sum`/`sum_sq`/
+  `min`/`max`/`norm`) above a derived element quantum; `min`/`max` **propagate
+  NaN** (§3.15); `cholesky_solve` added (downstream consumer need).
 - i64: packing **GEBP** shared by `matmul` / `matmul_at` / `matmul_bt`
   (transposition absorbed in the pack layer); **runtime ISA dispatch** — a
   portable 4×8 profile plus an AVX-512DQ `#[target_feature]` profile selected
-  by CPUID, no build flags, non-x86 always portable (constants and shape
-  evidence per §3.26 at the definition site in `linalg/i64_ops.rs`); 4-wide
-  elementwise; hybrid `isin`; promote-out LA via `from_i64`.
+  by CPUID **plus a one-time ~1 ms micro-calibration race** of the two tile
+  kernels (CPUID cannot see dynamic 512-bit downclocking; observed live on the
+  bench container), no build flags, non-x86 always portable (constants and
+  shape evidence per §3.26 at the definition site in `linalg/i64_ops.rs`);
+  4-wide elementwise; parallel + ISA-dispatched reductions; hybrid `isin`;
+  promote-out LA via `from_i64`.
 - Harness: user-POV summary (Lua vs NumPy, ranges across n) + three-way
   Tables A–F in appendix, n ∈ {64, 256, 1024, 4096}; `i64_roofline`
-  machine-ceiling harness.
+  machine-ceiling harness doubling as a **calibration gate** — tables are
+  published only when register-resident ceilings sit within ±20% of recorded
+  baselines, so host degradation can't masquerade as regression (two full
+  refresh runs were discarded under this rule).
+- Faces measured on **identical inputs**: the Lua face receives byte-copies of
+  the Rust-face arrays (`set_global_array*`), all faces `black_box`/consume
+  results, medians are true medians, promote ops pay i64→f64 conversion inside
+  the clock on every face including NumPy.
 
-**Honest residual (2026-08 rebench, post rework + runtime ISA dispatch):**
-exact i64 matmul / `matmul_at` / `matmul_bt` are **~5–7×** slower than NumPy
-**f64 BLAS** (integer-valued) across n=64–4096 (n=4096: 4.2 s vs 0.8 s; was
-~14× / 14.1 s before this arc's Goto-order rework, vectorizable tile, shared
-transposed-pack path, and AVX-512DQ runtime dispatch). The roofline shows the
-shipped kernel at ~80–88% of the measured ceiling of whichever ISA path
-dispatch selects on the 2026-08 bench container, so the remaining gap is
+**Honest residual (2026-08-03 published run, post rework + calibrated ISA
+dispatch):** exact i64 matmul / `matmul_at` / `matmul_bt` are **~6–9×** slower
+than NumPy **f64 BLAS** (integer-valued) at GEMM-dominated sizes n=256–4096
+(n=4096: 3.8–3.9 s vs 0.52–0.56 s; small-n cells are fixed-overhead, not
+kernel; was ~14× / 14.1 s before this arc's Goto-order rework, vectorizable
+tile, shared transposed-pack path, and AVX-512DQ runtime dispatch). The
+roofline shows the shipped kernel at **~73–88%** of the measured ceiling of
+whichever ISA path calibration selects (73% at the published run's
+end-of-session gate; up to 88% on healthier sessions), so the remaining gap is
 dominated by **ISA physics** (f64 BLAS register-blocked FMA vs 64-bit integer
 multiply throughput), not kernel shape. f64 matmul is already near NumPy f64.
-Whether ~5–7× at ~80–88% of machine ceiling satisfies plan A is the closure
+Whether ~6–9× at ~73–88% of machine ceiling satisfies plan A is the closure
 question for M7.c (Human sign-off).
 
 #### Explicitly rejected / demoted
@@ -581,22 +604,23 @@ question for M7.c (Human sign-off).
 - **Host-tuned** Rayon cutoffs on reductions sold as algorithmic wins.
 - Silent **f64 promote** for i64 matmul to chase BLAS times.
 
-#### Open M7.c work
+#### Remaining for closure (Human rulings)
 
-1. **Accurate complete numbers** — keep harness truthful; fill gaps only with
-   real runs; no performance targets until measurement context (including the
-   roofline) is enough.
-2. **Exact i64 GEMM (plan A)** — analyzed kernel per §3.26; candidates beyond
-   it (not commitments): portable SIMD where ISA allows i64 mul, optional ISA
-   paths — always measured against the BLAS f64 integer-valued reference, the
-   host roofline, **and** exactness tests.
-3. Residual face/kernel items only as they show up in honest tables (not as an
-   excuse to re-open threshold games).
+The engineering items above are done; these are the open decisions:
 
-#### What “done” for M7.c is *not* yet
+1. **Performance bar** — adopt (or amend) “≥ 70% of the measured machine
+   roofline” as the standing bar for the exact-i64 GEMM path (the shipped
+   kernel measures ~73–88% depending on host state).
+2. **Accepted residuals** — record as accepted-physics or open issues: i64
+   GEMM ~6–9× NumPy f64 BLAS at GEMM-dominated sizes (ISA physics); f64 `svd`
+   and mid-n `solve` trailing NumPy's LAPACK (faer algorithmic gap, not
+   harness error).
+3. **ISA multiversioning** — keep-ruling: the AVX-512DQ twin-kernel +
+   micro-calibration mechanism stays (measured ~1.5–2× tile speedup when the
+   host isn't downclocking, and calibration protects the downclocked case).
 
-M7.c is **not** closed by merging this branch. Closure requires Human sign-off
-after the exact-i64-GEMM approach and measurement story are satisfactory.
+M7.c **closes on Human sign-off** of the above — merging the branch alone does
+not close it.
 
 #### What remains explicitly *not* TallyDB-owned
 
@@ -620,7 +644,12 @@ NumPy comparison is the **gate**, not the driver of every change.
 | **Method** | Fixed harness + NumPy scripts under `tests/bench/`; publish tables in `tests/README.md` |
 | **Non-goals** | Beat MKL/OpenBLAS on every micro-op; research kernels; replace faer with system BLAS; full broadcasting engine |
 
-**Residuals vs bar (present tense):** medium+ matmul and many bulk kernels sit near the band; large pure `XᵀX` and some micro-ops can exceed 1–2× (OpenBLAS residual / noise). Lua bulk paths track Rust when hosts use generational GC. Prefer `tests/README.md` for measured numbers, not success language here.
+**Residuals vs bar (present tense):** f64 matmul and the bulk elementwise /
+reduction kernels sit within the band. Known exceedances: `svd` and mid-size
+`solve` trail NumPy's LAPACK (faer algorithmic gap, not harness error — listed
+as closure residuals in §7.1.2). Lua bulk paths track Rust when hosts use
+generational GC. Prefer `tests/README.md` for measured numbers, not success
+language here.
 
 | Milestone | Intent | Status |
 |-----------|--------|--------|
@@ -685,12 +714,13 @@ Lua face (1-based) including `*_i64` and dual-dtype `solve`/`matmul`, M4a–M6, 
 
 Package version is **`0.0.1`**. Call **v0.1** when the human tags a release;
 until then treat the tree as a **v0.1 candidate** per §7.1. **M7** and **M7.b** are **Done**.
-**Next:** Merge current M7.c measurement/kernel work when Human PRs; **M7.c continues**
-(exact i64 GEMM, plan A, §7.1.2) under the Human’s next approach. Then embed
-**M8–M11** and **M12**.
-(Arrow C Data / arrow-lite) per §7.1 / §7.1.1 (TallyDB letter agreements).
+**M7.c work is complete on `feat-m7c-i64-gemm`**; closure needs the Human
+rulings in §7.1.2 (performance bar, accepted residuals, ISA keep-ruling).
+**Next:** Human merges the branch and rules on closure, then embed **M8–M11**
+and **M12** (Arrow C Data / arrow-lite) per §7.1 / §7.1.1 (TallyDB letter
+agreements).
 
-Open work: **M7.c not closed** (§7.1.2), then M8–M12; GitHub **#21** (`out=` full surface); measured tables in
+Open work: M7.c closure rulings (§7.1.2), then M8–M12; GitHub **#21** (`out=` full surface); measured tables in
 [`tests/README.md`](tests/README.md) — not as a living log in this file.
 
 Update this document when rulings or the frozen public face change — not on
