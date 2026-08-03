@@ -531,6 +531,11 @@ pub(crate) fn axis1_any(m: usize, n: usize, a: &[i64], out: &mut [i64]) {
 #[inline]
 pub(crate) fn axis0_all(m: usize, n: usize, a: &[i64], out: &mut [i64]) {
     out.fill(1);
+    // Empty reduction axis: match ArrayI64::all() and the f64 twin (false).
+    if m == 0 {
+        out.fill(0);
+        return;
+    }
     for i in 0..m {
         for j in 0..n {
             if a[i * n + j] == 0 {
@@ -541,6 +546,11 @@ pub(crate) fn axis0_all(m: usize, n: usize, a: &[i64], out: &mut [i64]) {
 }
 #[inline]
 pub(crate) fn axis1_all(m: usize, n: usize, a: &[i64], out: &mut [i64]) {
+    // Empty reduction axis: match ArrayI64::all() and the f64 twin (false).
+    if n == 0 {
+        out.fill(0);
+        return;
+    }
     for i in 0..m {
         let mut v = 1i64;
         for j in 0..n {

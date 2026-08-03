@@ -220,9 +220,19 @@ unsafe fn ensure_view_f64_mt(L: *mut lua_State) {
         lua_setfield(L, -2, c"__index".as_ptr());
         lua_pushcfunction(L, Some(v_f64_len));
         lua_setfield(L, -2, c"__len".as_ptr());
-        // no __gc free — host owns memory
+        // __gc drops the MatLua-owned Shape inside the view struct. The host's
+        // data buffer is never freed here — the host owns that memory.
+        lua_pushcfunction(L, Some(v_f64_gc));
+        lua_setfield(L, -2, c"__gc".as_ptr());
         lua_pop(L, 1);
     }
+}
+
+unsafe extern "C" fn v_f64_gc(L: *mut lua_State) -> c_int {
+    let ud = unsafe { check_view_f64(L, 1) };
+    // SAFETY: __gc runs exactly once per userdata; the struct is not used after.
+    unsafe { std::ptr::drop_in_place(ud) };
+    0
 }
 
 unsafe fn ensure_view_i64_mt(L: *mut lua_State) {
@@ -246,8 +256,18 @@ unsafe fn ensure_view_i64_mt(L: *mut lua_State) {
         lua_setfield(L, -2, c"__index".as_ptr());
         lua_pushcfunction(L, Some(v_i64_len));
         lua_setfield(L, -2, c"__len".as_ptr());
+        // __gc drops the MatLua-owned Shape; host data is never freed here.
+        lua_pushcfunction(L, Some(v_i64_gc));
+        lua_setfield(L, -2, c"__gc".as_ptr());
         lua_pop(L, 1);
     }
+}
+
+unsafe extern "C" fn v_i64_gc(L: *mut lua_State) -> c_int {
+    let ud = unsafe { check_view_i64(L, 1) };
+    // SAFETY: __gc runs exactly once per userdata; the struct is not used after.
+    unsafe { std::ptr::drop_in_place(ud) };
+    0
 }
 
 #[inline]

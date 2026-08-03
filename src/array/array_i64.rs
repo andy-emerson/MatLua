@@ -206,7 +206,9 @@ impl ArrayI64 {
 
     #[inline]
     pub(crate) fn from_parts(shape: Shape, data: Vec<i64>) -> Self {
-        debug_assert_eq!(data.len(), shape.numel());
+        // Release-mode assert like the f64 twin: a silent shape/len desync
+        // here corrupts every downstream index computation.
+        assert_eq!(data.len(), shape.numel());
         Self {
             shape,
             data: Arc::new(data),
@@ -718,6 +720,9 @@ impl ArrayI64 {
     /// `min_axis` (see `f64` [`Array`] counterpart).
     pub fn min_axis(&self, axis: usize) -> Result<ArrayI64> {
         let (m, n) = self.rank2_dims()?;
+        if m == 0 || n == 0 {
+            return Err(Error::Shape("min_axis of empty dimension".into()));
+        }
         match axis {
             0 => {
                 let mut out = pool::take_uninit(n);
@@ -736,6 +741,9 @@ impl ArrayI64 {
     /// `max_axis` (see `f64` [`Array`] counterpart).
     pub fn max_axis(&self, axis: usize) -> Result<ArrayI64> {
         let (m, n) = self.rank2_dims()?;
+        if m == 0 || n == 0 {
+            return Err(Error::Shape("max_axis of empty dimension".into()));
+        }
         match axis {
             0 => {
                 let mut out = pool::take_uninit(n);

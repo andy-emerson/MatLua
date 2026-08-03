@@ -200,7 +200,8 @@ fn m6_tier2_face() {
         r#"
 local ml = require "matlua"
 local m = ml.array({{1,2,3},{4,5,6}})
-local s = m:sum(0)
+-- Lua-face axes are 1-based: axis 1 reduces over rows (NumPy axis 0).
+local s = m:sum(1)
 assert(s:get(1) == 5 and s:get(3) == 9)
 local x = ml.array({{1,2,3},{2,4,6}})
 local c = ml.cov(x)
@@ -244,7 +245,8 @@ local f = a:to_f64()
 assert(type(f:sum()) == "number")
 local z = ml.zeros_i64(3)
 assert(z:sum() == 0)
-local s = a:sum(0)
+-- Lua-face axes are 1-based: axis 1 reduces over rows (NumPy axis 0).
+local s = a:sum(1)
 assert(s:get(1) == 5 and s:get(3) == 9)
 local idx = ml.array_i64({3,1,2}):argsort()
 assert(idx:get(1) == 2 and idx:get(2) == 3 and idx:get(3) == 1)
@@ -265,9 +267,9 @@ fn m7_i64_extended_face() {
 local ml = require "matlua"
 local a = ml.array_i64({1,2,3})
 local b = ml.array_i64({4,5,6})
-local c = ml.concatenate_i64(0, a, b)
+local c = ml.concatenate_i64(1, a, b)
 assert(#c == 6 and c:get(6) == 6)
-local s = ml.stack_i64(0, a, b)
+local s = ml.stack_i64(1, a, b)
 assert(s:rank() == 2 and s:get(2,3) == 6)
 local cond = ml.array_i64({1,0,1})
 local w = ml.where_i64(cond, a, b)
