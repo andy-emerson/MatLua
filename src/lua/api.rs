@@ -317,6 +317,21 @@ pub unsafe extern "C" fn l_solve(L: *mut lua_State) -> c_int {
     1
 }
 
+pub unsafe extern "C" fn l_cholesky_solve(L: *mut lua_State) -> c_int {
+    if unsafe { is_i64(L, 1) && is_i64(L, 2) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let b = unsafe { &*check_array_i64(L, 2) };
+        let x = lua_try!(L, linalg::from_i64::cholesky_solve(&a.array, &b.array));
+        unsafe { push_array(L, x) };
+        return 1;
+    }
+    let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
+    let b = lua_try!(L, unsafe { arg_as_f64(L, 2) });
+    let x = lua_try!(L, linalg::cholesky_solve(&a, &b));
+    unsafe { push_array(L, x) };
+    1
+}
+
 pub unsafe extern "C" fn l_lstsq(L: *mut lua_State) -> c_int {
     if unsafe { is_i64(L, 1) && is_i64(L, 2) } {
         let a = unsafe { &*check_array_i64(L, 1) };
@@ -1658,7 +1673,7 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
         lua_pop(L, 1);
 
         lua_newtable(L);
-        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 42] = [
+        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 43] = [
             (c"zeros", l_zeros),
             (c"ones", l_ones),
             (c"full", l_full),
@@ -1678,6 +1693,7 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
             (c"matmul_bt", l_matmul_bt),
             (c"normal_eq", l_normal_eq),
             (c"solve", l_solve),
+            (c"cholesky_solve", l_cholesky_solve),
             (c"lstsq", l_lstsq),
             (c"eigh", l_eigh),
             (c"pinv", l_pinv),

@@ -43,6 +43,11 @@ pub fn cholesky(a: &ArrayI64) -> Result<Array> {
     super::cholesky(&f(a))
 }
 
+/// `cholesky_solve` after promoting to `f64`.
+pub fn cholesky_solve(a: &ArrayI64, b: &ArrayI64) -> Result<Array> {
+    super::cholesky_solve(&f(a), &f(b))
+}
+
 /// `qr` after promoting to `f64`.
 pub fn qr(a: &ArrayI64) -> Result<(Array, Array)> {
     super::qr(&f(a))

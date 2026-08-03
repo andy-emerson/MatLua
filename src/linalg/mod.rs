@@ -526,6 +526,42 @@ pub fn pinv(a: &Array) -> Result<Array> {
     mat_to_array(&p, false)
 }
 
+/// Solve `a x = b` for symmetric positive-definite `a` via Cholesky (`LLᵀ`).
+///
+/// Uses the lower triangle of `a`. About half the flops of the LU [`solve`]
+/// on SPD systems; errors with [`Error::Linalg`] when `a` is not positive
+/// definite. `b` may be rank-1 `(n,)` or rank-2 `(n, k)`; the result matches
+/// `b`'s rank convention. (Added for TallyDB-class hosts: factor-only
+/// [`cholesky`] existed, but their windows need the solve.)
+pub fn cholesky_solve(a: &Array, b: &Array) -> Result<Array> {
+    let (n, m) = array_as_matrix_dims(a)?;
+    if a.rank() != 2 || n != m {
+        return Err(Error::shape("cholesky_solve requires a square rank-2 matrix"));
+    }
+    let (bn, bk) = array_as_matrix_dims(b)?;
+    if bn != n {
+        return Err(Error::shape(format!(
+            "cholesky_solve rhs rows {bn} != matrix order {n}"
+        )));
+    }
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
+    let llt = am
+        .llt(Side::Lower)
+        .map_err(|e| Error::linalg(format!("cholesky_solve: not positive definite: {e:?}")))?;
+    // Dest-pack like `solve`: copy RHS row-major and solve in place.
+    let prefer_vec = b.rank() == 1 && bk == 1;
+    let n_out = bn.saturating_mul(bk);
+    let mut data = crate::array::pool_take_uninit(n_out);
+    if n_out > 0 {
+        data.copy_from_slice(b.as_slice());
+        let mut rhs = MatMut::from_row_major_slice_mut(&mut data, bn, bk);
+        llt.solve_in_place(&mut rhs);
+    }
+    matmul_result(data, bn, bk, prefer_vec)
+}
+
 /// Cholesky factor `L` of a symmetric positive-definite matrix (`A = L Lᵀ`).
 ///
 /// Uses the lower triangle of `a`. Returns lower-triangular `L` as rank-2.
@@ -602,6 +638,41 @@ pub fn eye(n: usize) -> Result<Array> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cholesky_solve_matches_lu_solve_on_spd() {
+        let n = 24usize;
+        // Diagonally dominant symmetric => SPD.
+        let mut d = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let v = 0.1 * (((i * 7 + j * 3) % 11) as f64) / 11.0;
+                d[i * n + j] = if i == j { v + n as f64 } else { v };
+            }
+        }
+        // symmetrize
+        for i in 0..n {
+            for j in 0..i {
+                let m = 0.5 * (d[i * n + j] + d[j * n + i]);
+                d[i * n + j] = m;
+                d[j * n + i] = m;
+            }
+        }
+        let a = Array::from_shape_slice(vec![n, n], &d).unwrap();
+        let b: Vec<f64> = (0..n).map(|i| (i % 5) as f64).collect();
+        let bv = Array::from_shape_slice(vec![n], &b).unwrap();
+        let x_chol = cholesky_solve(&a, &bv).unwrap();
+        let x_lu = solve(&a, &bv).unwrap();
+        assert_eq!(x_chol.rank(), 1);
+        for i in 0..n {
+            assert!((x_chol.as_slice()[i] - x_lu.as_slice()[i]).abs() < 1e-9);
+        }
+        // Non-SPD input must error, not return garbage.
+        let mut nd = d.clone();
+        nd[0] = -100.0;
+        let bad = Array::from_shape_slice(vec![n, n], &nd).unwrap();
+        assert!(cholesky_solve(&bad, &bv).is_err());
+    }
 
     #[test]
     fn small_solve_path_matches_faer_path() {
