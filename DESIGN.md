@@ -551,22 +551,26 @@ continues under a new approach led by the Human after PR merge.
   composed paths (`matmul_at`/`bt`, `normal_eq`); Arc-share `Clone` (deep copy
   = `copy()`); demand-zero `zeros`; ILP elementwise/reduction kernels; blocked
   transpose; Lua GC-debt accounting on large userdata.
-- i64: packing **GEBP** matmul (panel/tile constants per §3.26 — derivation at
-  the definition site in `linalg/i64_ops.rs`); 4-wide elementwise; hybrid
-  `isin`; promote-out LA via `from_i64`.
+- i64: packing **GEBP** shared by `matmul` / `matmul_at` / `matmul_bt`
+  (transposition absorbed in the pack layer); **runtime ISA dispatch** — a
+  portable 4×8 profile plus an AVX-512DQ `#[target_feature]` profile selected
+  by CPUID, no build flags, non-x86 always portable (constants and shape
+  evidence per §3.26 at the definition site in `linalg/i64_ops.rs`); 4-wide
+  elementwise; hybrid `isin`; promote-out LA via `from_i64`.
 - Harness: three-way Tables A–F at n ∈ {64, 256, 1024, 4096}; `i64_roofline`
   machine-ceiling harness.
 
-**Honest residual (2026-08 rebench, post kernel rework):** exact i64 matmul is
-on the order of **~8–13×** slower than NumPy **f64 BLAS** (integer-valued)
-across n=64–4096 — **~9.2× at n=4096** (was ~14× before the Goto-order /
-vectorizable-tile rework; ~22 Gops aggregate at default codegen vs ~190 Gops
-BLAS on the 2026-08 bench container). The roofline shows the shipped kernel at
-~88% of that container's measured tile ceiling at default codegen, so closing
-the remaining gap is mostly **ISA physics** (no 64-bit vector multiply below
-AVX-512DQ) plus wider-ISA builds, not kernel shape. f64 matmul is already near
-NumPy f64. The i64 GEMM gap remains the **central open M7.c product problem**
-under plan A — not “make tables pretty vs int64@int64.”
+**Honest residual (2026-08 rebench, post rework + runtime ISA dispatch):**
+exact i64 matmul / `matmul_at` / `matmul_bt` are **~5–7×** slower than NumPy
+**f64 BLAS** (integer-valued) across n=64–4096 (n=4096: 4.2 s vs 0.8 s; was
+~14× / 14.1 s before this arc's Goto-order rework, vectorizable tile, shared
+transposed-pack path, and AVX-512DQ runtime dispatch). The roofline shows the
+shipped kernel at ~80–88% of the measured ceiling of whichever ISA path
+dispatch selects on the 2026-08 bench container, so the remaining gap is
+dominated by **ISA physics** (f64 BLAS register-blocked FMA vs 64-bit integer
+multiply throughput), not kernel shape. f64 matmul is already near NumPy f64.
+Whether ~5–7× at ~80–88% of machine ceiling satisfies plan A is the closure
+question for M7.c (Human sign-off).
 
 #### Explicitly rejected / demoted
 
