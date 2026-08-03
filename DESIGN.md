@@ -557,7 +557,8 @@ continues under a new approach led by the Human after PR merge.
   by CPUID, no build flags, non-x86 always portable (constants and shape
   evidence per §3.26 at the definition site in `linalg/i64_ops.rs`); 4-wide
   elementwise; hybrid `isin`; promote-out LA via `from_i64`.
-- Harness: three-way Tables A–F at n ∈ {64, 256, 1024, 4096}; `i64_roofline`
+- Harness: user-POV summary (Lua vs NumPy, ranges across n) + three-way
+  Tables A–F in appendix, n ∈ {64, 256, 1024, 4096}; `i64_roofline`
   machine-ceiling harness.
 
 **Honest residual (2026-08 rebench, post rework + runtime ISA dispatch):**

@@ -58,6 +58,48 @@ def md_table(headers: list[str], rows: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
+def fmt_ratio_range(ratios: list[float]) -> str:
+    """Range across measured n; collapses to one value when spread < 10%."""
+    lo, hi = min(ratios), max(ratios)
+    if lo <= 0:
+        return "—"
+    if hi / lo < 1.10:
+        return f"{(lo + hi) / 2:.2f}x"
+    return f"{lo:.2f}x–{hi:.2f}x"
+
+
+def build_summary(data: dict, rust_legacy: bool = False) -> str:
+    """User-POV summary: Lua vs NumPy per op (see module docstring)."""
+    ops = sorted({op for (face, op, n) in data if face == "lua"})
+    rows = []
+    for op in ops:
+        ns = sorted(n for (face, o, n) in data if face == "lua" and o == op)
+        ratios = []
+        for n in ns:
+            np_ms = data.get(("numpy", op, n))
+            lu_ms = data.get(("lua", op, n))
+            if np_ms and lu_ms and np_ms > 0:
+                ratios.append(lu_ms / np_ms)
+        n_big = ns[-1] if ns else None
+        np_big = data.get(("numpy", op, n_big)) if n_big is not None else None
+        lu_big = data.get(("lua", op, n_big)) if n_big is not None else None
+        rows.append([
+            op,
+            str(n_big) if n_big is not None else "—",
+            fmt_ms(np_big),
+            fmt_ms(lu_big),
+            fmt_ratio_range(ratios) if ratios else "—",
+        ])
+    return md_table(
+        ["op", "largest n", "NumPy (ms)", "MatLua Lua (ms)", "Lua/NumPy, all n"],
+        rows,
+    )
+
+
+def details(title: str, body: str) -> str:
+    return f"<details>\n<summary>{title}</summary>\n\n{body}\n\n</details>"
+
+
 def build_f64(data: dict) -> tuple[str, str]:
     keys = sorted({(op, n) for (face, op, n) in data if face in ("numpy", "rust", "lua")})
     abs_rows = []
@@ -156,31 +198,46 @@ def main() -> None:
     i_abs, i_rel = build_i64(i64)
     p_abs, p_rel = build_promote(promo)
 
-    body = f"""### Table A — f64 absolute (ms)
+    f_sum = build_summary(f64)
+    i_sum = build_summary(i64)
+    p_sum = build_summary(promo)
 
-{f_abs}
+    body = f"""### Summary — Lua face vs NumPy
 
-### Table B — f64 relative (NumPy = 1.00x)
+One row per op, user point of view: the Lua face (the product) against NumPy
+(the bar). Absolute times at the largest measured n; the ratio column is the
+**min–max of Lua/NumPy across all measured n** (below 1.00x = MatLua faster;
+a wide range means size-dependent). Derived from the appendix cells — nothing
+new is measured for this table. Rust-face and per-n detail: appendix below.
 
-{f_rel}
+#### f64
 
-### Table C — i64 absolute (ms)
+{f_sum}
 
-Matmul NumPy column is **f64 BLAS** on integer-valued data (see Measurement).
+#### i64
 
-{i_abs}
+`matmul` / `matmul_at` / `matmul_bt` reference is NumPy **f64 BLAS** on
+integer-valued data (see Yardsticks); MatLua times are exact wrapping i64.
 
-### Table D — i64 relative (NumPy = 1.00x)
+{i_sum}
 
-{i_rel}
+#### i64→f64 promote-out
 
-### Table E — i64→f64 promote-out absolute (ms)
+{p_sum}
 
-{p_abs}
+### Appendix — full three-face tables
 
-### Table F — i64→f64 promote-out relative (NumPy = 1.00x)
+{details("Table A — f64 absolute (ms)", f_abs)}
 
-{p_rel}
+{details("Table B — f64 relative (NumPy = 1.00x)", f_rel)}
+
+{details("Table C — i64 absolute (ms) — matmul* NumPy column is f64 BLAS on integer-valued data", i_abs)}
+
+{details("Table D — i64 relative (NumPy = 1.00x)", i_rel)}
+
+{details("Table E — i64→f64 promote-out absolute (ms)", p_abs)}
+
+{details("Table F — i64→f64 promote-out relative (NumPy = 1.00x)", p_rel)}
 """
     print(body)
     if args.write_readme:

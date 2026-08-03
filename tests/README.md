@@ -7,96 +7,132 @@
 
 ## Measurement
 
-Sizes: **64, 256, 1024, 4096**.
+### Method
 
-Each cell is the **median** of several timed single calls after a short warmup (not one-shot). Setup sits outside the clock. Relative tables use **NumPy = 1.00x** when that face was measured; otherwise **—** (never invent a baseline).
+Sizes: **64, 256, 1024, 4096**. Each cell is the **median** of several timed
+single calls after a short warmup (not one-shot); setup sits outside the
+clock. A face that was not measured shows **—** — cells are never invented,
+and summary ranges are derived from measured cells only.
 
-**i64 matmul reference:** NumPy **float64 BLAS** on the same integer-valued inputs (not `int64@int64` — no integer BLAS, not a product bar). MatLua times are **exact wrapping i64**. See DESIGN §7.1.2.
+**M7.c plan (durable):** keep exact i64 matmul (plan A); complete honest
+numbers before any competitiveness threshold. M7.c is **not closed** by
+publishing these tables.
 
-**Roofline (engineering yardstick):** `i64_roofline` measures the running
-host's achievable wrapping i64 multiply-add throughput, so i64 GEMM can be
-judged as **% of machine ceiling**, not only as a ratio to f64 BLAS (which
-mixes kernel quality with ISA physics — no 64-bit vector multiply below
-AVX-512DQ). See the Roofline section below.
+### Yardsticks
 
-**Provenance:** every table names the host that produced it; all faces of one
-table come from one host. Run-to-run noise on shared cloud hosts is real
-(±10–20% observed); treat small deltas accordingly.
+- **NumPy is the product bar** (= 1.00x): the product is the Lua face, so
+  the summary tables read Lua vs NumPy; the Rust face is developer
+  diagnostics in the appendix.
+- **i64 matmul family** (`matmul` / `matmul_at` / `matmul_bt`): the NumPy
+  reference is **float64 BLAS** on the same integer-valued inputs (not
+  `int64@int64` — NumPy has no integer BLAS, so that fallback is not a
+  product bar). MatLua times are **exact wrapping i64**. See DESIGN §7.1.2.
+- **Machine roofline** (engineering yardstick): `i64_roofline` measures the
+  running host's achievable wrapping i64 multiply-add throughput, so i64
+  GEMM is also judged as **% of machine ceiling** — the BLAS ratio alone
+  mixes kernel quality with ISA physics (no 64-bit vector multiply below
+  AVX-512DQ). See the Roofline section.
 
-**M7.c plan (durable):** keep exact i64 matmul (plan A); complete honest numbers before any competitiveness threshold. M7.c is **not closed** by publishing these tables.
+### Provenance
 
-
-```bash
-cargo test
-cargo test --features lua
-
-# Refresh result tables (release)
-cargo test --release --features lua --test fair_all -- --run --sizes 64,256,1024,4096 \
-  | awk -F'\t' 'NF==4 && ($1=="rust"||$1=="lua"){print}' > tests/bench/last_f64.tsv
-python3 tests/bench/numpy_fair.py --sizes 64,256,1024,4096 \
-  | awk -F'\t' 'NF==4 && $1=="numpy"{print}' >> tests/bench/last_f64.tsv
-
-cargo test --release --features lua --test i64_surface -- --run --sizes 64,256,1024,4096 \
-  | awk -F'\t' 'NF==4 && ($1=="rust"||$1=="lua"){print}' > tests/bench/last_i64.tsv
-python3 tests/bench/numpy_i64_fair.py --sizes 64,256,1024,4096 \
-  | awk -F'\t' 'NF==4 && $1=="numpy"{print}' >> tests/bench/last_i64.tsv
-
-cargo test --release --features lua --test i64_promote -- --run --sizes 64,256,1024,4096 \
-  | awk -F'\t' 'NF==4 && ($1=="rust"||$1=="lua"){print}' > tests/bench/last_i64_promote.tsv
-python3 tests/bench/numpy_i64_promote.py --sizes 64,256,1024,4096 \
-  | awk -F'\t' 'NF==4 && $1=="numpy"{print}' >> tests/bench/last_i64_promote.tsv
-
-python3 tests/bench/compare_tables.py --write-readme tests/README.md
-
-# Machine ceiling for exact wrapping i64 MACs (optionally with
-# RUSTFLAGS="-C target-cpu=native" for the ISA-enabled ceiling)
-cargo test --release --test i64_roofline -- --run
-```
-
-## Roofline (i64 engineering yardstick)
-
-Host: 4 vCPU Intel Xeon @ 2.10 GHz (shared cloud container, AVX-512DQ
-available), rustc 1.94.1, 2026-08-03. Gops = 2 × MACs / s. Median of 5
-samples; ±10–20% run-to-run noise observed on this shared host.
-
-All rows are **default codegen** builds; the shipped GEMM selects its ISA
-path at runtime (`is_x86_feature_detected`), so no build flags are needed.
-
-| kernel | Gops | note |
-| --- | ---: | --- |
-| scalar_chain | 2.29 | dependent MAC latency floor (context) |
-| scalar_ilp8 | 3.85 | 8 independent accumulators |
-| vec_mac_i64 | 3.83 | flat `c[j]+=a[j]*b[j]`, baseline codegen |
-| vec_mac_f64 | 8.89 | ISA-physics context vs vec_mac_i64 |
-| tile_4x8_i64 | 4.9–6.1 | GEBP register tile, baseline codegen, 1 thread |
-| tile_4x8_i64_par | 20.0–23.1 | aggregate, 4 threads |
-| tile_4x8_i64_isa | 9.0 | same tile, AVX-512DQ codegen (`vpmullq`), 1 thread |
-| tile_4x8_i64_isa_par | 42.8 | aggregate, 4 threads |
-| gemm_1024, pre-rework kernel | 17.3 | named-scalar 8×8, NC=64 structure |
-| gemm_1024, portable profile | 21.0 | Goto order + flat 4×8 tile |
-| gemm_1024 (shipped, dispatched) | 27–34 | AVX-512DQ profile selected at runtime; ≈80% of isa_tile_par |
-
-Readings: (1) the shipped GEMM sits near the measured ceiling of whichever
-ISA path dispatch selects (~88% of the baseline tile ceiling on non-AVX-512DQ
-CPUs, ~80% of the ISA tile ceiling here); (2) micro-kernel source shape
-decides everything — under `#[target_feature]` only the 32-lane 4×8 tile
-stays register-clean (6×16 = 7.3 Gops, 8×8 = 13.8, 4×16 = 9.8, all
-spill-bound; recorded in `linalg/i64_ops.rs`); (3) exact-i64 ceilings remain
-well under BLAS f64 GEMM (register-blocked FMA) — the residual ~5× matmul gap
-in Table D is dominated by that ISA physics, not kernel quality.
+Every table names the host that produced it; all faces of one table come
+from one host and one session. Run-to-run noise on shared cloud hosts is
+real (±10–20% observed); treat small deltas accordingly. Occasional wider
+spreads between the Rust and Lua faces of the same op are contention — both
+faces call the same kernel.
 
 ## Results
 
-**Provenance:** 4 vCPU Intel Xeon @ 2.10 GHz (shared cloud container),
-rustc 1.94.1 at default codegen, NumPy 2.4.6 (bundled OpenBLAS), 2026-08-03.
-All faces of every table below ran on this host in one session. Shared-host
-noise is ±10–20%; occasional wider spreads between the Rust and Lua faces of
-the same op (e.g. i64 matmul n=1024) are contention — both faces call the
-same kernel.
+**Host:** 4 vCPU Intel Xeon @ 2.10 GHz (shared cloud container), rustc
+1.94.1 at default codegen, NumPy 2.4.6 (bundled OpenBLAS), 2026-08-03.
 
 <!-- PERF_TABLES_START -->
 
-### Table A — f64 absolute (ms)
+### Summary — Lua face vs NumPy
+
+One row per op, user point of view: the Lua face (the product) against NumPy
+(the bar). Absolute times at the largest measured n; the ratio column is the
+**min–max of Lua/NumPy across all measured n** (below 1.00x = MatLua faster;
+a wide range means size-dependent). Derived from the appendix cells — nothing
+new is measured for this table. Rust-face and per-n detail: appendix below.
+
+#### f64
+
+| op | largest n | NumPy (ms) | MatLua Lua (ms) | Lua/NumPy, all n |
+| --- | ---: | ---: | ---: | ---: |
+| arange | 4096 | 0.003099 | 0.006181 | 0.35x–1.99x |
+| cholesky | 4096 | 816.717 | 786.670 | 0.38x–1.06x |
+| copy | 4096 | 80.067 | 21.399 | 0.27x–1.37x |
+| dot | 4096 | 0.003256 | 0.001794 | 0.40x–0.79x |
+| elem_add | 4096 | 75.146 | 35.526 | 0.47x–2.11x |
+| elem_add_scalar | 4096 | 69.347 | 22.887 | 0.33x–2.43x |
+| elem_div | 4096 | 70.387 | 32.757 | 0.47x–1.85x |
+| elem_mul | 4096 | 69.592 | 33.328 | 0.48x–1.90x |
+| elem_sub | 4096 | 77.450 | 33.923 | 0.44x–2.73x |
+| eye | 4096 | 5.2877 | 6.9176 | 0.33x–1.31x |
+| fill | 4096 | 19.322 | 16.845 | 0.57x–1.16x |
+| full | 4096 | 59.652 | 11.941 | 0.20x–1.23x |
+| matmul | 4096 | 719.954 | 921.282 | 0.85x–1.34x |
+| max | 4096 | 6.2137 | 13.071 | 0.73x–2.26x |
+| mean | 4096 | 8.6900 | 7.1854 | 0.19x–0.83x |
+| min | 4096 | 6.5632 | 11.467 | 1.26x–3.82x |
+| norm | 4096 | 3.2159 | 12.201 | 0.51x–3.79x |
+| ones | 4096 | 59.595 | 21.062 | 0.35x–1.27x |
+| qr | 4096 | 5567.463 | 4060.001 | 0.48x–2.09x |
+| reshape | 4096 | 0.001181 | 0.000495 | 0.42x–1.54x |
+| solve | 4096 | 551.200 | 1469.838 | 2.54x–5.47x |
+| sum | 4096 | 15.956 | 12.239 | 0.30x–0.78x |
+| svd | 4096 | 12894.197 | 16882.935 | 1.31x–2.32x |
+| transpose | 4096 | 274.818 | 76.531 | 0.27x–1.45x |
+| zeros | 4096 | 0.055947 | 0.005124 | 0.09x–1.05x |
+
+#### i64
+
+`matmul` / `matmul_at` / `matmul_bt` reference is NumPy **f64 BLAS** on
+integer-valued data (see Yardsticks); MatLua times are exact wrapping i64.
+
+| op | largest n | NumPy (ms) | MatLua Lua (ms) | Lua/NumPy, all n |
+| --- | ---: | ---: | ---: | ---: |
+| arange | 4096 | 0.002385 | 0.006321 | 0.63x–2.65x |
+| copy | 4096 | 75.227 | 90.488 | 0.85x–1.20x |
+| dot | 4096 | 0.003856 | 0.001784 | 0.23x–0.46x |
+| elem_add | 4096 | 72.404 | 77.408 | 1.07x–2.07x |
+| elem_div | 4096 | 147.753 | 112.702 | 0.56x–0.76x |
+| elem_mul | 4096 | 74.510 | 78.822 | 1.06x–1.96x |
+| elem_sub | 4096 | 69.999 | 78.394 | 1.12x–2.10x |
+| eye | 4096 | 6.5028 | 6.9000 | 0.21x–1.06x |
+| fill | 4096 | 22.943 | 20.637 | 0.81x–1.02x |
+| full | 4096 | 55.969 | 63.400 | 0.43x–1.13x |
+| isin | 4096 | 74.665 | 37.025 | 0.28x–0.97x |
+| matmul | 4096 | 801.538 | 3945.952 | 4.92x–8.91x |
+| matmul_at | 4096 | 753.077 | 3750.200 | 4.98x–10.26x |
+| matmul_bt | 4096 | 778.012 | 3777.489 | 4.86x–7.28x |
+| max | 4096 | 7.0320 | 21.779 | 0.71x–3.10x |
+| min | 4096 | 9.0915 | 24.635 | 0.96x–2.95x |
+| ones | 4096 | 59.139 | 57.752 | 0.44x–1.00x |
+| reshape | 4096 | 0.000784 | 0.000640 | 0.82x–1.18x |
+| sum | 4096 | 11.719 | 14.664 | 0.49x–1.25x |
+| transpose | 4096 | 266.504 | 103.264 | 0.24x–2.03x |
+| unique | 4096 | 0.447670 | 0.008696 | 0.02x–0.05x |
+| zeros | 4096 | 0.011488 | 0.008146 | 0.69x–1.18x |
+
+#### i64→f64 promote-out
+
+| op | largest n | NumPy (ms) | MatLua Lua (ms) | Lua/NumPy, all n |
+| --- | ---: | ---: | ---: | ---: |
+| cholesky | 4096 | 1215.196 | 752.159 | 0.48x–1.07x |
+| mean | 4096 | 17.892 | 11.245 | 0.11x–0.63x |
+| median | 4096 | 86.327 | 80.751 | 0.29x–1.08x |
+| norm | 4096 | 3.4534 | 17.850 | 0.73x–9.16x |
+| qr | 4096 | 4545.119 | 2865.385 | 0.51x–3.03x |
+| quantile | 4096 | 110.731 | 85.178 | 0.08x–0.77x |
+| solve | 4096 | 1033.847 | 1292.341 | 1.25x–4.45x |
+| std | 4096 | 112.306 | 26.642 | 0.21x–0.41x |
+
+### Appendix — full three-face tables
+
+<details>
+<summary>Table A — f64 absolute (ms)</summary>
 
 | op | n | NumPy (ms) | MatLua Rust (ms) | MatLua Lua (ms) |
 | --- | ---: | ---: | ---: | ---: |
@@ -201,7 +237,10 @@ same kernel.
 | zeros | 1024 | 0.481643 | 0.368432 | 0.379261 |
 | zeros | 4096 | 0.055947 | 0.034590 | 0.005124 |
 
-### Table B — f64 relative (NumPy = 1.00x)
+</details>
+
+<details>
+<summary>Table B — f64 relative (NumPy = 1.00x)</summary>
 
 | op | n | NumPy | Rust/NumPy | Lua/NumPy | Lua/Rust |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -306,9 +345,10 @@ same kernel.
 | zeros | 1024 | 1.00x | 0.76x | 0.79x | 1.03x |
 | zeros | 4096 | 1.00x | 0.62x | 0.09x | 0.15x |
 
-### Table C — i64 absolute (ms)
+</details>
 
-Matmul NumPy column is **f64 BLAS** on integer-valued data (see Measurement).
+<details>
+<summary>Table C — i64 absolute (ms) — matmul* NumPy column is f64 BLAS on integer-valued data</summary>
 
 | op | n | NumPy int64 (ms) | MatLua Rust i64 (ms) | MatLua Lua i64 (ms) |
 | --- | ---: | ---: | ---: | ---: |
@@ -401,7 +441,10 @@ Matmul NumPy column is **f64 BLAS** on integer-valued data (see Measurement).
 | zeros | 1024 | 0.410120 | 0.439133 | 0.434347 |
 | zeros | 4096 | 0.011488 | 0.007466 | 0.008146 |
 
-### Table D — i64 relative (NumPy = 1.00x)
+</details>
+
+<details>
+<summary>Table D — i64 relative (NumPy = 1.00x)</summary>
 
 | op | n | NumPy | Rust/NumPy | Lua/NumPy | Lua/Rust |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -494,7 +537,10 @@ Matmul NumPy column is **f64 BLAS** on integer-valued data (see Measurement).
 | zeros | 1024 | 1.00x | 1.07x | 1.06x | 0.99x |
 | zeros | 4096 | 1.00x | 0.65x | 0.71x | 1.09x |
 
-### Table E — i64→f64 promote-out absolute (ms)
+</details>
+
+<details>
+<summary>Table E — i64→f64 promote-out absolute (ms)</summary>
 
 | op | n | NumPy (ms) | MatLua Rust (ms) | MatLua Lua (ms) |
 | --- | ---: | ---: | ---: | ---: |
@@ -531,7 +577,10 @@ Matmul NumPy column is **f64 BLAS** on integer-valued data (see Measurement).
 | std | 1024 | 2.8741 | 1.1476 | 1.1869 |
 | std | 4096 | 112.306 | 18.949 | 26.642 |
 
-### Table F — i64→f64 promote-out relative (NumPy = 1.00x)
+</details>
+
+<details>
+<summary>Table F — i64→f64 promote-out relative (NumPy = 1.00x)</summary>
 
 | op | n | NumPy | Rust/NumPy | Lua/NumPy | Lua/Rust |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -568,4 +617,67 @@ Matmul NumPy column is **f64 BLAS** on integer-valued data (see Measurement).
 | std | 1024 | 1.00x | 0.40x | 0.41x | 1.03x |
 | std | 4096 | 1.00x | 0.17x | 0.24x | 1.41x |
 
+</details>
+
 <!-- PERF_TABLES_END -->
+
+## Roofline (i64 engineering yardstick)
+
+Host: 4 vCPU Intel Xeon @ 2.10 GHz (shared cloud container, AVX-512DQ
+available), rustc 1.94.1, 2026-08-03. Gops = 2 × MACs / s. Median of 5
+samples; ±10–20% run-to-run noise observed on this shared host.
+
+All rows are **default codegen** builds; the shipped GEMM selects its ISA
+path at runtime (`is_x86_feature_detected`), so no build flags are needed.
+
+| kernel | Gops | note |
+| --- | ---: | --- |
+| scalar_chain | 2.29 | dependent MAC latency floor (context) |
+| scalar_ilp8 | 3.85 | 8 independent accumulators |
+| vec_mac_i64 | 3.83 | flat `c[j]+=a[j]*b[j]`, baseline codegen |
+| vec_mac_f64 | 8.89 | ISA-physics context vs vec_mac_i64 |
+| tile_4x8_i64 | 4.9–6.1 | GEBP register tile, baseline codegen, 1 thread |
+| tile_4x8_i64_par | 20.0–23.1 | aggregate, 4 threads |
+| tile_4x8_i64_isa | 9.0 | same tile, AVX-512DQ codegen (`vpmullq`), 1 thread |
+| tile_4x8_i64_isa_par | 42.8 | aggregate, 4 threads |
+| gemm_1024, pre-rework kernel | 17.3 | named-scalar 8×8, NC=64 structure |
+| gemm_1024, portable profile | 21.0 | Goto order + flat 4×8 tile |
+| gemm_1024 (shipped, dispatched) | 27–34 | AVX-512DQ profile selected at runtime; ≈80% of isa_tile_par |
+
+Readings: (1) the shipped GEMM sits near the measured ceiling of whichever
+ISA path dispatch selects (~88% of the baseline tile ceiling on non-AVX-512DQ
+CPUs, ~80% of the ISA tile ceiling here); (2) micro-kernel source shape
+decides everything — under `#[target_feature]` only the 32-lane 4×8 tile
+stays register-clean (6×16 = 7.3 Gops, 8×8 = 13.8, 4×16 = 9.8, all
+spill-bound; recorded in `linalg/i64_ops.rs`); (3) exact-i64 ceilings remain
+well under BLAS f64 GEMM (register-blocked FMA) — the residual ~5× matmul gap
+in Table D is dominated by that ISA physics, not kernel quality.
+
+## Refreshing the tables
+
+```bash
+cargo test
+cargo test --features lua
+
+# Refresh result tables (release)
+cargo test --release --features lua --test fair_all -- --run --sizes 64,256,1024,4096 \
+  | awk -F'\t' 'NF==4 && ($1=="rust"||$1=="lua"){print}' > tests/bench/last_f64.tsv
+python3 tests/bench/numpy_fair.py --sizes 64,256,1024,4096 \
+  | awk -F'\t' 'NF==4 && $1=="numpy"{print}' >> tests/bench/last_f64.tsv
+
+cargo test --release --features lua --test i64_surface -- --run --sizes 64,256,1024,4096 \
+  | awk -F'\t' 'NF==4 && ($1=="rust"||$1=="lua"){print}' > tests/bench/last_i64.tsv
+python3 tests/bench/numpy_i64_fair.py --sizes 64,256,1024,4096 \
+  | awk -F'\t' 'NF==4 && $1=="numpy"{print}' >> tests/bench/last_i64.tsv
+
+cargo test --release --features lua --test i64_promote -- --run --sizes 64,256,1024,4096 \
+  | awk -F'\t' 'NF==4 && ($1=="rust"||$1=="lua"){print}' > tests/bench/last_i64_promote.tsv
+python3 tests/bench/numpy_i64_promote.py --sizes 64,256,1024,4096 \
+  | awk -F'\t' 'NF==4 && $1=="numpy"{print}' >> tests/bench/last_i64_promote.tsv
+
+python3 tests/bench/compare_tables.py --write-readme tests/README.md
+
+# Machine ceiling for exact wrapping i64 MACs (optionally with
+# RUSTFLAGS="-C target-cpu=native" for the ISA-enabled ceiling)
+cargo test --release --test i64_roofline -- --run
+```

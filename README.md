@@ -123,12 +123,14 @@ performance target — [DESIGN.md](DESIGN.md) §7.1.2. Embed/TallyDB letter work
 **M8–M12** (§7.1.1).
 
 **Performance:** three-way microbenches (NumPy · MatLua Rust · MatLua Lua) under
-[`tests/README.md`](tests/README.md). Prefer `python3 tests/bench/compare_tables.py`
-(Tables A–F). i64 **matmul** is timed against **NumPy f64 BLAS** on integer-valued
-inputs (not `int64@int64`).
+[`tests/README.md`](tests/README.md) — summary tables first (Lua vs NumPy, ranges
+across sizes), full per-n three-face tables in the appendix, plus an i64
+machine-roofline yardstick. i64 **matmul** is timed against **NumPy f64 BLAS** on
+integer-valued inputs (not `int64@int64`).
 
-**Known limits (tracked M7.c–M12 / issues):** exact i64 GEMM still far from BLAS-class
-f64 speed (see tables); small-buffer pool min size; embed error boundary; dtypes
+**Known limits (tracked M7.c–M12 / issues):** exact i64 GEMM runs ~5–7× NumPy f64
+BLAS (integer-valued) at ~80–88% of the measured machine ceiling — the rest is
+integer-multiply ISA physics (see tests/README Roofline); small-buffer pool min size; embed error boundary; dtypes
 beyond f64/i64; `arrow-lite` cutover. Full in-place `out=` is
 [#21](https://github.com/andy-emerson/MatLua/issues/21) (partial `*_out` exists).
 Host→Lua views: `push_view_f64` / `push_view_i64` (M7.b).
