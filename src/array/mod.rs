@@ -46,3 +46,9 @@ pub use view_i64::{ArrayViewI64, ArrayViewMutI64};
 pub(crate) fn pool_take_uninit(len: usize) -> Vec<f64> {
     pool::take_uninit(len)
 }
+
+/// Return a scratch buffer to the pool (see [`pool_take_uninit`]).
+#[inline]
+pub(crate) fn pool_recycle(v: Vec<f64>) {
+    pool::recycle(v)
+}

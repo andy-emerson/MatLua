@@ -3,7 +3,7 @@
 //! Inputs: zero-copy [`MatRef`] over contiguous row-major storage.
 //! Outputs: owned row-major [`Array`] (copy out).
 
-use faer::{Mat, MatMut, MatRef};
+use faer::{Mat, MatRef};
 
 use crate::array::{Array, Shape};
 use crate::error::{Error, Result};
@@ -36,19 +36,72 @@ pub(crate) fn array_as_mat_ref(a: &Array) -> Result<MatRef<'_, f64>> {
     Ok(MatRef::from_row_major_slice(data, nrows, ncols))
 }
 
+/// Column-major scratch copy of an array, for faer **factorization** inputs.
+///
+/// faer's panel kernels are column-major-optimized; a row-major `MatRef`
+/// makes every column access strided. The O(mn) blocked transpose here is
+/// amortized against O(n³) factorization work — analyzed (DESIGN §3.26),
+/// and measured on the 2026-08 bench container: LU −26%, full QR −8% at
+/// n=2048 vs row-major views. GEMM paths keep zero-copy views (packing
+/// already absorbs layout).
+///
+/// Returns `(colmajor_buffer, nrows, ncols)`; view it with
+/// `MatRef::from_column_major_slice`. Recycle the buffer via
+/// [`crate::array::pool_recycle`] when the factorization's outputs have been
+/// packed out.
+pub(crate) fn array_to_colmajor(a: &Array) -> Result<(Vec<f64>, usize, usize)> {
+    let (nrows, ncols) = array_as_matrix_dims(a)?;
+    let src = a.as_slice();
+    if src.len() != nrows.saturating_mul(ncols) {
+        return Err(Error::shape("internal layout length mismatch"));
+    }
+    let mut buf = crate::array::pool_take_uninit(src.len());
+    // dst[j*nrows + i] = src[i*ncols + j] — the shared blocked transpose
+    // produces exactly the column-major image.
+    super::blocked_transpose(src, nrows, ncols, &mut buf);
+    Ok((buf, nrows, ncols))
+}
+
 /// Copy a faer matrix view into a MatLua row-major [`Array`].
 ///
-/// - `n × 1` → rank-1 shape `(n,)` when `prefer_vector` is true  
-/// - `1 × n` → rank-1 shape `(n,)` when `prefer_vector` is true  
+/// - `n × 1` → rank-1 shape `(n,)` when `prefer_vector` is true
+/// - `1 × n` → rank-1 shape `(n,)` when `prefer_vector` is true
 /// - otherwise rank-2 shape `(m, n)`
+///
+/// The copy is a 32×32 **tiled gather**: faer results are column-major, and
+/// faer's `copy_from` into a row-major dest degrades to a strided
+/// element-by-element walk (measured: ~40% of the whole user-visible `qr`
+/// time at n=2048 on the 2026-08 bench container). Tiles keep both sides
+/// cache-resident whatever the source strides.
 pub(crate) fn matref_to_array(m: MatRef<'_, f64>, prefer_vector: bool) -> Result<Array> {
     let nrows = m.nrows();
     let ncols = m.ncols();
     let n = nrows.saturating_mul(ncols);
     let mut data = crate::array::pool_take_uninit(n);
     if n > 0 {
-        let mut out = MatMut::from_row_major_slice_mut(&mut data, nrows, ncols);
-        out.copy_from(m);
+        const BS: usize = 32;
+        let rs = m.row_stride();
+        let cs = m.col_stride();
+        let p = m.as_ptr();
+        let mut i0 = 0;
+        while i0 < nrows {
+            let i1 = (i0 + BS).min(nrows);
+            let mut j0 = 0;
+            while j0 < ncols {
+                let j1 = (j0 + BS).min(ncols);
+                for i in i0..i1 {
+                    let row = i * ncols;
+                    let base = i as isize * rs;
+                    for j in j0..j1 {
+                        // SAFETY: i < nrows and j < ncols, so the offset is a
+                        // valid element of `m` by MatRef's own invariant.
+                        data[row + j] = unsafe { *p.offset(base + j as isize * cs) };
+                    }
+                }
+                j0 = j1;
+            }
+            i0 = i1;
+        }
     }
     if prefer_vector && ncols == 1 {
         Ok(Array::from_parts(Shape::from_len(nrows), data))
