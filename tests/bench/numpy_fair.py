@@ -10,8 +10,13 @@ import numpy as np
 
 
 def median(xs: list[float]) -> float:
+    # True median: average the middle pair on even counts (xs[n//2] alone
+    # returns the worse of 2 samples - one contention stall became the cell).
     xs = sorted(xs)
-    return xs[len(xs) // 2]
+    m = len(xs) // 2
+    if len(xs) % 2 == 0 and len(xs) >= 2:
+        return (xs[m - 1] + xs[m]) / 2
+    return xs[m]
 
 
 def time_ms(iters: int, warm: int, fn) -> float:
@@ -62,16 +67,17 @@ def spd_n(n: int) -> np.ndarray:
 
 
 def budget(n: int, heavy: bool) -> tuple[int, int]:
+    # >=5 odd samples at large n: real median, robust to shared-host stalls.
     if heavy:
         if n >= 4096:
-            return 1, 0
+            return 5, 1
         if n >= 1024:
-            return 3, 1
+            return 5, 1
         if n >= 256:
             return 6, 2
         return 15, 3
     if n >= 4096:
-        return 2, 1
+        return 5, 2
     if n >= 1024:
         return 8, 2
     if n >= 256:

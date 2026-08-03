@@ -23,6 +23,7 @@
 
 mod array;
 mod array_i64;
+pub(crate) mod isa;
 pub mod dtype;
 pub(crate) mod kernels;
 pub(crate) mod kernels_i64;

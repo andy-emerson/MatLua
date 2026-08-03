@@ -56,18 +56,36 @@ fn assign4(a: &mut [i64], b: &[i64], f: impl Fn(i64, i64) -> i64) {
     }
 }
 
-#[inline]
-pub(crate) fn add_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
-    zip4(a, b, out, i64::wrapping_add);
+// ISA-dispatched twins: same portable body compiled with AVX-512 features
+// and taken when the CPU has them (pattern and measured effects as in the
+// f64 kernels and the GEMM profiles; i64 multiply additionally gains the
+// native `vpmullq`). Wrapping i64 ops are exact under any lane order.
+macro_rules! isa_binary_i64 {
+    ($name:ident, $avx:ident, $f:expr) => {
+        #[cfg(target_arch = "x86_64")]
+        #[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl")]
+        unsafe fn $avx(a: &[i64], b: &[i64], out: &mut [i64]) {
+            let f = $f;
+            for i in 0..a.len() {
+                out[i] = f(a[i], b[i]);
+            }
+        }
+        #[inline]
+        pub(crate) fn $name(a: &[i64], b: &[i64], out: &mut [i64]) {
+            #[cfg(target_arch = "x86_64")]
+            if crate::array::isa::avx512() {
+                // SAFETY: features verified by isa::avx512().
+                unsafe { $avx(a, b, out) };
+                return;
+            }
+            zip4(a, b, out, $f);
+        }
+    };
 }
-#[inline]
-pub(crate) fn sub_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
-    zip4(a, b, out, i64::wrapping_sub);
-}
-#[inline]
-pub(crate) fn mul_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
-    zip4(a, b, out, i64::wrapping_mul);
-}
+
+isa_binary_i64!(add_slices, add_slices_avx512, i64::wrapping_add);
+isa_binary_i64!(sub_slices, sub_slices_avx512, i64::wrapping_sub);
+isa_binary_i64!(mul_slices, mul_slices_avx512, i64::wrapping_mul);
 /// Truncating division; division by zero → 0 (no panic).
 #[inline]
 pub(crate) fn div_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
@@ -93,18 +111,32 @@ pub(crate) fn div_assign_slices(a: &mut [i64], b: &[i64]) {
 pub(crate) fn neg_slice(a: &[i64], out: &mut [i64]) {
     map4(a, out, i64::wrapping_neg);
 }
-#[inline]
-pub(crate) fn add_scalar(a: &[i64], s: i64, out: &mut [i64]) {
-    map4(a, out, |x| x.wrapping_add(s));
+macro_rules! isa_scalar_i64 {
+    ($name:ident, $avx:ident, $f:expr) => {
+        #[cfg(target_arch = "x86_64")]
+        #[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl")]
+        unsafe fn $avx(a: &[i64], s: i64, out: &mut [i64]) {
+            let f = $f;
+            for i in 0..a.len() {
+                out[i] = f(a[i], s);
+            }
+        }
+        #[inline]
+        pub(crate) fn $name(a: &[i64], s: i64, out: &mut [i64]) {
+            #[cfg(target_arch = "x86_64")]
+            if crate::array::isa::avx512() {
+                // SAFETY: features verified by isa::avx512().
+                unsafe { $avx(a, s, out) };
+                return;
+            }
+            map4(a, out, |x| ($f)(x, s));
+        }
+    };
 }
-#[inline]
-pub(crate) fn sub_scalar(a: &[i64], s: i64, out: &mut [i64]) {
-    map4(a, out, |x| x.wrapping_sub(s));
-}
-#[inline]
-pub(crate) fn mul_scalar(a: &[i64], s: i64, out: &mut [i64]) {
-    map4(a, out, |x| x.wrapping_mul(s));
-}
+
+isa_scalar_i64!(add_scalar, add_scalar_avx512, i64::wrapping_add);
+isa_scalar_i64!(sub_scalar, sub_scalar_avx512, i64::wrapping_sub);
+isa_scalar_i64!(mul_scalar, mul_scalar_avx512, i64::wrapping_mul);
 #[inline]
 pub(crate) fn div_scalar(a: &[i64], s: i64, out: &mut [i64]) {
     if s == 0 {

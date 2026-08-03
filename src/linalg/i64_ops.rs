@@ -745,25 +745,72 @@ pub fn dot(a: &ArrayI64, b: &ArrayI64) -> Result<i64> {
     Ok(s)
 }
 
-/// Euclidean (Frobenius) norm as `f64` (sqrt of sum of squares; squares wrap then cast).
-/// Four-way ILP accumulation (same idea as `sum_sq` on f64).
-pub fn norm(a: &ArrayI64) -> Result<f64> {
-    let s = a.as_slice();
-    let mut s0: i64 = 0;
-    let mut s1: i64 = 0;
-    let mut s2: i64 = 0;
-    let mut s3: i64 = 0;
-    let mut chunks = s.chunks_exact(4);
+/// Sequential wrapping sum of squares, 8 accumulators (ILP/autovec).
+#[inline]
+fn sum_sq_wrap_seq(s: &[i64]) -> i64 {
+    let mut acc = [0i64; 8];
+    let mut chunks = s.chunks_exact(8);
     for c in chunks.by_ref() {
-        s0 = s0.wrapping_add(c[0].wrapping_mul(c[0]));
-        s1 = s1.wrapping_add(c[1].wrapping_mul(c[1]));
-        s2 = s2.wrapping_add(c[2].wrapping_mul(c[2]));
-        s3 = s3.wrapping_add(c[3].wrapping_mul(c[3]));
+        for j in 0..8 {
+            acc[j] = acc[j].wrapping_add(c[j].wrapping_mul(c[j]));
+        }
     }
-    let mut ss = s0.wrapping_add(s1).wrapping_add(s2).wrapping_add(s3);
+    let mut t = acc.iter().fold(0i64, |a, &v| a.wrapping_add(v));
     for &x in chunks.remainder() {
-        ss = ss.wrapping_add(x.wrapping_mul(x));
+        t = t.wrapping_add(x.wrapping_mul(x));
     }
+    t
+}
+
+/// AVX-512 twin of [`sum_sq_wrap_seq`] (`vpmullq`; same body).
+///
+/// # Safety
+/// Caller must have verified the features ([`crate::array::isa::avx512`]).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl")]
+unsafe fn sum_sq_wrap_seq_avx512(s: &[i64]) -> i64 {
+    let mut acc = [0i64; 8];
+    let mut chunks = s.chunks_exact(8);
+    for c in chunks.by_ref() {
+        for j in 0..8 {
+            acc[j] = acc[j].wrapping_add(c[j].wrapping_mul(c[j]));
+        }
+    }
+    let mut t = acc.iter().fold(0i64, |a, &v| a.wrapping_add(v));
+    for &x in chunks.remainder() {
+        t = t.wrapping_add(x.wrapping_mul(x));
+    }
+    t
+}
+
+#[inline]
+fn sum_sq_wrap(s: &[i64]) -> i64 {
+    #[cfg(target_arch = "x86_64")]
+    if crate::array::isa::avx512() {
+        // SAFETY: features verified by isa::avx512().
+        return unsafe { sum_sq_wrap_seq_avx512(s) };
+    }
+    sum_sq_wrap_seq(s)
+}
+
+/// Euclidean (Frobenius) norm as `f64` (sqrt of sum of squares; squares wrap
+/// then cast). ISA-dispatched, and parallel over 2²⁰-element chunks when
+/// each thread gets at least one (derived, DESIGN §3.26 — same rule as the
+/// f64 `sum_sq`). Wrapping i64 addition is exact under any chunking/order.
+pub fn norm(a: &ArrayI64) -> Result<f64> {
+    const QUANTUM: usize = 1 << 20;
+    let s = a.as_slice();
+    let nthreads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let ss = if nthreads >= 2 && s.len() >= 2 * QUANTUM {
+        use rayon::prelude::*;
+        s.par_chunks(QUANTUM)
+            .map(sum_sq_wrap)
+            .reduce(|| 0i64, |x, y| x.wrapping_add(y))
+    } else {
+        sum_sq_wrap(s)
+    };
     Ok((ss as f64).sqrt())
 }
 

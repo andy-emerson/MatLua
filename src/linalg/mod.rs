@@ -333,6 +333,60 @@ pub fn dot(a: &Array, b: &Array) -> Result<f64> {
     Ok(kernels::dot_slice(a.as_slice(), b.as_slice()))
 }
 
+/// Unblocked row-major LU with partial pivoting + in-place solve of a single
+/// RHS (LAPACK `dgesv` shape, no blocking). Returns `false` on an exact zero
+/// pivot; the caller falls back to the faer path so singular behavior stays
+/// identical to the large-n route.
+fn lu_solve_unblocked(n: usize, a: &mut [f64], x: &mut [f64]) -> bool {
+    debug_assert_eq!(a.len(), n * n);
+    debug_assert_eq!(x.len(), n);
+    // Pivot rows are swapped eagerly, and the RHS permutation is applied at
+    // the moment each pivot is chosen (equivalent to LAPACK's ipiv replay).
+    for k in 0..n {
+        let mut p = k;
+        let mut best = a[k * n + k].abs();
+        for i in k + 1..n {
+            let v = a[i * n + k].abs();
+            if v > best {
+                best = v;
+                p = i;
+            }
+        }
+        if best == 0.0 {
+            return false;
+        }
+        if p != k {
+            for j in 0..n {
+                a.swap(k * n + j, p * n + j);
+            }
+            x.swap(k, p);
+        }
+        let akk = a[k * n + k];
+        for i in k + 1..n {
+            let l = a[i * n + k] / akk;
+            a[i * n + k] = l;
+            let (top, bot) = a.split_at_mut(i * n);
+            let arow = &top[k * n + k + 1..k * n + n];
+            let irow = &mut bot[k + 1..n];
+            for j in 0..irow.len() {
+                irow[j] -= l * arow[j];
+            }
+        }
+    }
+    for k in 0..n {
+        for i in k + 1..n {
+            x[i] -= a[i * n + k] * x[k];
+        }
+    }
+    for k in (0..n).rev() {
+        x[k] /= a[k * n + k];
+        for i in 0..k {
+            x[i] -= a[i * n + k] * x[k];
+        }
+    }
+    true
+}
+
 /// Solve `a x = b` for square `a` using LU with partial pivoting (faer).
 ///
 /// - `a` must be rank-2 square
@@ -350,6 +404,27 @@ pub fn solve(a: &Array, b: &Array) -> Result<Array> {
         return Err(Error::shape(format!(
             "solve rhs rows {bn} != matrix order {n}"
         )));
+    }
+    // Small-system fast path: LAPACK-style unblocked LU on a row-major copy
+    // (no blocked-machinery or layout-conversion overhead). Crossover is
+    // empirical (2026-08 bench container: unblocked wins 1.5–3.6× at
+    // n ≤ 192, ties ~384, loses at 512; cutoff kept conservative pending
+    // another host class — DESIGN §3.26). Restricted to single-RHS; exact
+    // zero pivot falls through to the faer path so singular behavior is
+    // unchanged. Agrees with faer to machine epsilon on well-conditioned
+    // systems (same pivoting strategy).
+    if n <= 192 && bk == 1 && n > 0 {
+        let mut lu = crate::array::pool_take_uninit(n * n);
+        lu.copy_from_slice(a.as_slice());
+        let mut x = crate::array::pool_take_uninit(n);
+        x.copy_from_slice(b.as_slice());
+        if lu_solve_unblocked(n, &mut lu, &mut x) {
+            crate::array::pool_recycle(lu);
+            let prefer_vec = b.rank() == 1;
+            return matmul_result(x, n, 1, prefer_vec);
+        }
+        crate::array::pool_recycle(lu);
+        // exact zero pivot → faer path below
     }
     // Factorization input: column-major copy (see `array_to_colmajor`).
     let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
@@ -526,6 +601,36 @@ pub fn eye(n: usize) -> Result<Array> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn small_solve_path_matches_faer_path() {
+        // n=100 takes the unblocked path for the rank-1 rhs; a 2-column rhs
+        // forces the faer path on the same system. Column 0 must agree to
+        // machine-epsilon scale (same pivoting strategy).
+        let n = 100usize;
+        let mut data = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let v = (((i * 31 + j * 17) % 1000) as f64) / 1000.0 - 0.5;
+                data[i * n + j] = if i == j { v + n as f64 } else { v };
+            }
+        }
+        let a = Array::from_shape_slice(vec![n, n], &data).unwrap();
+        let b1: Vec<f64> = (0..n).map(|i| (i % 13) as f64).collect();
+        let mut b2 = vec![0.0f64; n * 2];
+        for i in 0..n {
+            b2[i * 2] = b1[i];
+            b2[i * 2 + 1] = (i % 7) as f64;
+        }
+        let bv = Array::from_shape_slice(vec![n], &b1).unwrap();
+        let bm = Array::from_shape_slice(vec![n, 2], &b2).unwrap();
+        let x_small = solve(&a, &bv).unwrap();
+        let x_faer = solve(&a, &bm).unwrap();
+        for i in 0..n {
+            let d = (x_small.as_slice()[i] - x_faer.as_slice()[i * 2]).abs();
+            assert!(d < 1e-10, "row {i}: {d}");
+        }
+    }
 
     #[test]
     fn matmul_and_transpose() {

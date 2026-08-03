@@ -4,41 +4,69 @@
 //! slices so LLVM can auto-vectorize. Slices must be the same length where
 //! binary.
 
-#[inline]
-pub(crate) fn add_slices(a: &[f64], b: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(a.len(), b.len());
-    debug_assert_eq!(a.len(), out.len());
-    for i in 0..a.len() {
-        out[i] = a[i] + b[i];
-    }
+// ISA-dispatched elementwise kernels: one portable loop body, compiled twice.
+// The plain version autovectorizes at the build's baseline target (SSE2 on
+// default x86-64); the `#[target_feature]` twin is the same body compiled
+// with AVX-512 enabled and is taken when the running CPU has it (same
+// pattern as the GEMM profiles in `linalg::i64_ops`). Measured on the
+// 2026-08 bench container: +52% on L2-resident 256² operands, +19% at 1024²
+// (memory-bound sizes converge). No intrinsics; twins share the source body.
+macro_rules! isa_binary_f64 {
+    ($name:ident, $avx:ident, $op:tt) => {
+        #[cfg(target_arch = "x86_64")]
+        #[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl")]
+        unsafe fn $avx(a: &[f64], b: &[f64], out: &mut [f64]) {
+            for i in 0..a.len() {
+                out[i] = a[i] $op b[i];
+            }
+        }
+        #[inline]
+        pub(crate) fn $name(a: &[f64], b: &[f64], out: &mut [f64]) {
+            debug_assert_eq!(a.len(), b.len());
+            debug_assert_eq!(a.len(), out.len());
+            #[cfg(target_arch = "x86_64")]
+            if crate::array::isa::avx512() {
+                // SAFETY: features verified by isa::avx512().
+                unsafe { $avx(a, b, out) };
+                return;
+            }
+            for i in 0..a.len() {
+                out[i] = a[i] $op b[i];
+            }
+        }
+    };
 }
 
-#[inline]
-pub(crate) fn sub_slices(a: &[f64], b: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(a.len(), b.len());
-    debug_assert_eq!(a.len(), out.len());
-    for i in 0..a.len() {
-        out[i] = a[i] - b[i];
-    }
+macro_rules! isa_scalar_f64 {
+    ($name:ident, $avx:ident, $op:tt) => {
+        #[cfg(target_arch = "x86_64")]
+        #[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl")]
+        unsafe fn $avx(a: &[f64], s: f64, out: &mut [f64]) {
+            for i in 0..a.len() {
+                out[i] = a[i] $op s;
+            }
+        }
+        /// `out[i] = a[i] `op` s` (ISA-dispatched; see module block comment).
+        #[inline]
+        pub(crate) fn $name(a: &[f64], s: f64, out: &mut [f64]) {
+            debug_assert_eq!(a.len(), out.len());
+            #[cfg(target_arch = "x86_64")]
+            if crate::array::isa::avx512() {
+                // SAFETY: features verified by isa::avx512().
+                unsafe { $avx(a, s, out) };
+                return;
+            }
+            for i in 0..a.len() {
+                out[i] = a[i] $op s;
+            }
+        }
+    };
 }
 
-#[inline]
-pub(crate) fn mul_slices(a: &[f64], b: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(a.len(), b.len());
-    debug_assert_eq!(a.len(), out.len());
-    for i in 0..a.len() {
-        out[i] = a[i] * b[i];
-    }
-}
-
-#[inline]
-pub(crate) fn div_slices(a: &[f64], b: &[f64], out: &mut [f64]) {
-    debug_assert_eq!(a.len(), b.len());
-    debug_assert_eq!(a.len(), out.len());
-    for i in 0..a.len() {
-        out[i] = a[i] / b[i];
-    }
-}
+isa_binary_f64!(add_slices, add_slices_avx512, +);
+isa_binary_f64!(sub_slices, sub_slices_avx512, -);
+isa_binary_f64!(mul_slices, mul_slices_avx512, *);
+isa_binary_f64!(div_slices, div_slices_avx512, /);
 
 #[inline]
 pub(crate) fn add_assign_slices(a: &mut [f64], b: &[f64]) {
@@ -80,23 +108,9 @@ pub(crate) fn neg_slice(a: &[f64], out: &mut [f64]) {
     }
 }
 
-/// `out[i] = a[i] + s`
-#[inline]
-pub(crate) fn add_scalar(a: &[f64], s: f64, out: &mut [f64]) {
-    debug_assert_eq!(a.len(), out.len());
-    for i in 0..a.len() {
-        out[i] = a[i] + s;
-    }
-}
+isa_scalar_f64!(add_scalar, add_scalar_avx512, +);
 
-/// `out[i] = a[i] - s`
-#[inline]
-pub(crate) fn sub_scalar(a: &[f64], s: f64, out: &mut [f64]) {
-    debug_assert_eq!(a.len(), out.len());
-    for i in 0..a.len() {
-        out[i] = a[i] - s;
-    }
-}
+isa_scalar_f64!(sub_scalar, sub_scalar_avx512, -);
 
 /// `out[i] = s - a[i]`
 #[inline]
@@ -107,14 +121,7 @@ pub(crate) fn scalar_sub(a: &[f64], s: f64, out: &mut [f64]) {
     }
 }
 
-/// `out[i] = a[i] * s`
-#[inline]
-pub(crate) fn mul_scalar(a: &[f64], s: f64, out: &mut [f64]) {
-    debug_assert_eq!(a.len(), out.len());
-    for i in 0..a.len() {
-        out[i] = a[i] * s;
-    }
-}
+isa_scalar_f64!(mul_scalar, mul_scalar_avx512, *);
 
 /// `out[i] = a[i] / s`
 #[inline]
@@ -180,25 +187,71 @@ pub(crate) fn sum_slice(a: &[f64]) -> f64 {
     s
 }
 
-/// Sum of squares (for Frobenius norm).
+/// Sequential sum of squares, 8 independent accumulators (ILP/autovec).
+#[inline]
+fn sum_sq_seq(a: &[f64]) -> f64 {
+    let mut s = [0.0f64; 8];
+    let mut chunks = a.chunks_exact(8);
+    for c in chunks.by_ref() {
+        for j in 0..8 {
+            s[j] += c[j] * c[j];
+        }
+    }
+    let mut t = s.iter().sum::<f64>();
+    for &x in chunks.remainder() {
+        t += x * x;
+    }
+    t
+}
+
+/// AVX-512 twin of [`sum_sq_seq`] (same body; 512-bit codegen).
+///
+/// # Safety
+/// Caller must have verified the features ([`crate::array::isa::avx512`]).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl")]
+unsafe fn sum_sq_seq_avx512(a: &[f64]) -> f64 {
+    let mut s = [0.0f64; 8];
+    let mut chunks = a.chunks_exact(8);
+    for c in chunks.by_ref() {
+        for j in 0..8 {
+            s[j] += c[j] * c[j];
+        }
+    }
+    let mut t = s.iter().sum::<f64>();
+    for &x in chunks.remainder() {
+        t += x * x;
+    }
+    t
+}
+
+#[inline]
+fn sum_sq_dispatch(a: &[f64]) -> f64 {
+    #[cfg(target_arch = "x86_64")]
+    if crate::array::isa::avx512() {
+        // SAFETY: features verified by isa::avx512().
+        return unsafe { sum_sq_seq_avx512(a) };
+    }
+    sum_sq_seq(a)
+}
+
+/// Sum of squares (for Frobenius norm). ISA-dispatched, and parallel when
+/// each thread gets at least QUANTUM elements — derived (DESIGN §3.26):
+/// rayon spawn/join costs tens of µs; 2²⁰ elements ≈ 8 MB ≈ ~1 ms of
+/// memory-bound work, so overhead stays under a few percent. The summation
+/// was already reassociated (8-lane ILP), so chunked reduction does not
+/// change the rounding class.
 #[inline]
 pub(crate) fn sum_sq_slice(a: &[f64]) -> f64 {
-    let mut s0 = 0.0;
-    let mut s1 = 0.0;
-    let mut s2 = 0.0;
-    let mut s3 = 0.0;
-    let mut chunks = a.chunks_exact(4);
-    for c in chunks.by_ref() {
-        s0 += c[0] * c[0];
-        s1 += c[1] * c[1];
-        s2 += c[2] * c[2];
-        s3 += c[3] * c[3];
+    const QUANTUM: usize = 1 << 20;
+    let nthreads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    if nthreads >= 2 && a.len() >= 2 * QUANTUM {
+        use rayon::prelude::*;
+        return a.par_chunks(QUANTUM).map(sum_sq_dispatch).sum();
     }
-    let mut s = s0 + s1 + s2 + s3;
-    for &x in chunks.remainder() {
-        s += x * x;
-    }
-    s
+    sum_sq_dispatch(a)
 }
 
 /// Min over a non-empty slice (IEEE `f64::min`, NaN-propagating).
