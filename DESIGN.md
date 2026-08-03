@@ -557,10 +557,15 @@ continues under a new approach led by the Human after PR merge.
 - Harness: three-way Tables A–F at n ∈ {64, 256, 1024, 4096}; `i64_roofline`
   machine-ceiling harness.
 
-**Honest residual (as of last rebench on this branch):** exact i64 matmul is on
-the order of **~10–13×** slower than NumPy **f64 BLAS** (integer-valued) at
-n=1024–4096 (~10 Gops portable GEBP vs ~120+ Gops BLAS). f64 matmul is already
-near NumPy f64. That i64 GEMM gap is the **central open M7.c product problem**
+**Honest residual (2026-08 rebench, post kernel rework):** exact i64 matmul is
+on the order of **~8–13×** slower than NumPy **f64 BLAS** (integer-valued)
+across n=64–4096 — **~9.2× at n=4096** (was ~14× before the Goto-order /
+vectorizable-tile rework; ~22 Gops aggregate at default codegen vs ~190 Gops
+BLAS on the 2026-08 bench container). The roofline shows the shipped kernel at
+~88% of that container's measured tile ceiling at default codegen, so closing
+the remaining gap is mostly **ISA physics** (no 64-bit vector multiply below
+AVX-512DQ) plus wider-ISA builds, not kernel shape. f64 matmul is already near
+NumPy f64. The i64 GEMM gap remains the **central open M7.c product problem**
 under plan A — not “make tables pretty vs int64@int64.”
 
 #### Explicitly rejected / demoted
