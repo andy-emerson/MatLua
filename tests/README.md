@@ -41,6 +41,16 @@ real (±10–20% observed); treat small deltas accordingly. Occasional wider
 spreads between the Rust and Lua faces of the same op are contention — both
 faces call the same kernel.
 
+**Calibration gate:** before publishing a refresh, run `i64_roofline` and
+compare the register-resident tile ceilings against the Roofline section's
+recorded values for the host. If they deviate beyond noise (±20%), the
+session is unfit: cells would be honestly measured but incomparable — to the
+recorded roofline, to other sessions, and often to each other within the
+run. Discard the run and refresh later; do not publish it. (Motivating
+case: 2026-08-03 evening, this container measured ~3× degraded on pure
+register-resident compute — hypervisor co-tenancy, no in-container load; a
+completed full refresh was discarded rather than published.)
+
 ## Results
 
 **Host:** 4 vCPU Intel Xeon @ 2.10 GHz (shared cloud container), rustc
