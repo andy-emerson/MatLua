@@ -201,7 +201,11 @@ pub(crate) fn sum_sq_slice(a: &[f64]) -> f64 {
     s
 }
 
-/// Sequential eight-way min (IEEE `f64::min`, NaN-propagating).
+/// Min over a non-empty slice (IEEE `f64::min`, NaN-propagating).
+///
+/// Eight independent accumulators (ILP / auto-vectorization). No host-specific
+/// size thresholds. Parallel reduction is deliberately **not** used: for this
+/// reduction the cross-over is machine-dependent and we refuse to tune it per box.
 #[inline]
 fn min_slice_seq(a: &[f64]) -> f64 {
     let mut m0 = a[0];
@@ -226,16 +230,9 @@ fn min_slice_seq(a: &[f64]) -> f64 {
     for &x in chunks.remainder() {
         m0 = m0.min(x);
     }
-    m0.min(m1)
-        .min(m2)
-        .min(m3)
-        .min(m4)
-        .min(m5)
-        .min(m6)
-        .min(m7)
+    m0.min(m1).min(m2).min(m3).min(m4).min(m5).min(m6).min(m7)
 }
 
-/// Sequential eight-way max.
 #[inline]
 fn max_slice_seq(a: &[f64]) -> f64 {
     let mut m0 = a[0];
@@ -260,49 +257,29 @@ fn max_slice_seq(a: &[f64]) -> f64 {
     for &x in chunks.remainder() {
         m0 = m0.max(x);
     }
-    m0.max(m1)
-        .max(m2)
-        .max(m3)
-        .max(m4)
-        .max(m5)
-        .max(m6)
-        .max(m7)
+    m0.max(m1).max(m2).max(m3).max(m4).max(m5).max(m6).max(m7)
 }
 
-/// Min with four-way reduction; Rayon over chunks when large (NaN-propagating).
 #[inline]
 pub(crate) fn min_slice(a: &[f64]) -> Option<f64> {
     if a.is_empty() {
-        return None;
+        None
+    } else {
+        Some(min_slice_seq(a))
     }
-    // ~256² elements: sequential; larger matrices benefit from parallel chunks.
-    if a.len() >= 262_144 {
-        use rayon::prelude::*;
-        const CS: usize = 4096;
-        return a
-            .par_chunks(CS)
-            .map(min_slice_seq)
-            .reduce_with(|x, y| x.min(y));
-    }
-    Some(min_slice_seq(a))
 }
 
-/// Max with four-way reduction; Rayon over chunks when large.
 #[inline]
 pub(crate) fn max_slice(a: &[f64]) -> Option<f64> {
     if a.is_empty() {
-        return None;
+        None
+    } else {
+        Some(max_slice_seq(a))
     }
-    if a.len() >= 262_144 {
-        use rayon::prelude::*;
-        const CS: usize = 4096;
-        return a
-            .par_chunks(CS)
-            .map(max_slice_seq)
-            .reduce_with(|x, y| x.max(y));
-    }
-    Some(max_slice_seq(a))
 }
+
+
+
 
 #[inline]
 pub(crate) fn abs_slice(a: &[f64], out: &mut [f64]) {
