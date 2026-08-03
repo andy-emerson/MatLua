@@ -61,10 +61,11 @@ fn lcm_i64(a: i64, b: i64) -> i64 {
         return 0;
     }
     let g = gcd_i64(a, b);
-    // wrapping |a|/g*|b|
-    let au = a.unsigned_abs();
-    let bu = b.unsigned_abs();
-    let gu = g.unsigned_abs();
+    // |a|/g*|b| in u128: the u64 product overflows (e.g. lcm(3, i64::MAX)),
+    // which would panic in debug and bypass the i64::MAX clamp in release.
+    let au = a.unsigned_abs() as u128;
+    let bu = b.unsigned_abs() as u128;
+    let gu = g.unsigned_abs() as u128;
     let prod = au / gu * bu;
     i64::try_from(prod).unwrap_or(i64::MAX)
 }
@@ -248,13 +249,14 @@ impl ArrayI64 {
         if (step > 0 && start >= stop) || (step < 0 && start <= stop) {
             return Ok(Self::from_parts(Shape::from_len(0), Vec::new()));
         }
-        // Estimate length carefully
+        // Widen BEFORE subtracting/negating: `stop - start` and `-step` overflow
+        // i64 for wide ranges (e.g. start=-5e18, stop=5e18) and for i64::MIN.
         let n = if step > 0 {
-            let span = (stop - start) as i128;
+            let span = stop as i128 - start as i128;
             ((span + step as i128 - 1) / step as i128) as usize
         } else {
-            let span = (start - stop) as i128;
-            let st = (-step) as i128;
+            let span = start as i128 - stop as i128;
+            let st = -(step as i128);
             ((span + st - 1) / st) as usize
         };
         // Exact length already computed; fill with ILP (wrapping step).
@@ -327,6 +329,15 @@ impl ArrayI64 {
         Ok(Self::from_parts(shape, data))
     }
 
+    /// Exact sum in `i128`, for the `f64`-returning statistics.
+    ///
+    /// [`ArrayI64::sum`] wraps by design (its result is `i64`); `mean`/`var`/
+    /// `std` return **real** values, so a wrapped intermediate there would be
+    /// a silent wrong answer rather than documented wrapping.
+    pub(crate) fn sum_i128(&self) -> i128 {
+        self.as_slice().iter().map(|&x| x as i128).sum()
+    }
+
     /// `sum` (see `f64` [`Array`] counterpart).
     pub fn sum(&self) -> i64 {
         kernels::sum_slice(self.as_slice())
@@ -337,7 +348,7 @@ impl ArrayI64 {
         if self.is_empty() {
             return Err(Error::Shape("mean of empty array".into()));
         }
-        Ok(self.sum() as f64 / self.len() as f64)
+        Ok(self.sum_i128() as f64 / self.len() as f64)
     }
 
     /// `min` (see `f64` [`Array`] counterpart).
@@ -1013,7 +1024,7 @@ impl ArrayI64 {
                 "var requires len > ddof (len={n}, ddof={ddof})"
             )));
         }
-        let mean = self.sum() as f64 / n as f64;
+        let mean = self.sum_i128() as f64 / n as f64;
         let mut acc = 0.0f64;
         for &x in self.as_slice() {
             let d = x as f64 - mean;
@@ -1782,7 +1793,7 @@ impl ArrayI64 {
 
     /// Deep copy alias matching `Array::to_owned_array`.
     pub fn to_owned_array(&self) -> ArrayI64 {
-        self.clone()
+        self.copy()
     }
 }
 
@@ -1795,6 +1806,49 @@ impl PartialEq for ArrayI64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arange_step_wide_range_does_not_overflow() {
+        // stop - start exceeds i64 range; the length math must widen first.
+        let a = ArrayI64::arange_step(-5_000_000_000_000_000_000, 5_000_000_000_000_000_000, 1_000_000_000_000_000_000)
+            .unwrap();
+        assert_eq!(a.len(), 10);
+        assert_eq!(a.as_slice()[0], -5_000_000_000_000_000_000);
+        // -step must also widen before negation.
+        let b = ArrayI64::arange_step(0, -1, i64::MIN).unwrap();
+        assert_eq!(b.len(), 1);
+        assert_eq!(b.as_slice()[0], 0);
+    }
+
+    #[test]
+    fn lcm_saturates_instead_of_overflowing() {
+        // |a|/g*|b| overflows u64 here; must clamp, not wrap or panic.
+        let a = ArrayI64::from_shape_slice(vec![1], &[3]).unwrap();
+        let b = ArrayI64::from_shape_slice(vec![1], &[i64::MAX]).unwrap();
+        assert_eq!(a.lcm(&b).unwrap().as_slice(), &[i64::MAX]);
+    }
+
+    #[test]
+    fn to_owned_array_is_a_deep_copy() {
+        // DESIGN §3.13: to_owned_array is a deep, unique copy — not an Arc share.
+        let a = ArrayI64::from_shape_slice(vec![3], &[1, 2, 3]).unwrap();
+        let owned = a.to_owned_array();
+        assert_eq!(owned.as_slice(), &[1, 2, 3]);
+        // Deep copy => distinct storage, not a shared Arc.
+        assert!(
+            !std::ptr::eq(a.as_slice().as_ptr(), owned.as_slice().as_ptr()),
+            "to_owned_array returned shared storage"
+        );
+    }
+
+    #[test]
+    fn real_valued_stats_do_not_use_the_wrapped_sum() {
+        // sum() wraps by design; mean/var/std return reals and must not.
+        let a = ArrayI64::full(vec![2], i64::MAX).unwrap();
+        assert_eq!(a.sum(), -2); // documented wrapping
+        assert!((a.mean().unwrap() - i64::MAX as f64).abs() < 1e3);
+        assert!(a.var(0).unwrap() < 1e3, "var of a constant array must be ~0");
+    }
 
     #[test]
     fn construct_arith_cast() {

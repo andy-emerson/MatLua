@@ -114,6 +114,30 @@ impl Lua {
         self.state
     }
 
+    /// Bind a global to a **copy** of an `f64` array.
+    ///
+    /// Lets a benchmark or differential test give the Lua face byte-identical
+    /// inputs to the Rust face, instead of rebuilding them with Lua
+    /// constructors that only approximate the same data.
+    pub fn set_global_array(&self, name: &str, a: &crate::array::Array) -> Result<()> {
+        let cname = CString::new(name).map_err(|e| Error::message(e.to_string()))?;
+        unsafe {
+            host::push_array_copy_f64(self.state, a.dims().to_vec(), a.as_slice())?;
+            ffi::lua_setglobal(self.state, cname.as_ptr());
+        }
+        Ok(())
+    }
+
+    /// Bind a global to a **copy** of an `i64` array (see [`Lua::set_global_array`]).
+    pub fn set_global_array_i64(&self, name: &str, a: &crate::array::ArrayI64) -> Result<()> {
+        let cname = CString::new(name).map_err(|e| Error::message(e.to_string()))?;
+        unsafe {
+            host::push_array_copy_i64(self.state, a.dims().to_vec(), a.as_slice())?;
+            ffi::lua_setglobal(self.state, cname.as_ptr());
+        }
+        Ok(())
+    }
+
     /// Execute a chunk; errors become [`Error::Message`].
     pub fn do_string(&self, source: &str) -> Result<()> {
         let c = CString::new(source).map_err(|e| Error::message(e.to_string()))?;
