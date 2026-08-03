@@ -166,25 +166,78 @@ pub(crate) fn dot_slice(a: &[f64], b: &[f64]) -> f64 {
     s
 }
 
-/// Sum with four accumulators for better ILP / auto-vectorization.
+/// Shared parallel-reduction rule (derived, DESIGN §3.26): go parallel when
+/// each rayon task gets at least QUANTUM elements — 2²⁰ elements ≈ 8 MB ≈
+/// ~1 ms of memory-bound work against tens-of-µs spawn/join cost.
+const REDUCE_QUANTUM: usize = 1 << 20;
+
+#[inline]
+fn reduce_par_ok(len: usize) -> bool {
+    len >= 2 * REDUCE_QUANTUM
+        && std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            >= 2
+}
+
+/// Sequential sum, 8 independent accumulators (ILP/autovec).
+#[inline]
+fn sum_seq(a: &[f64]) -> f64 {
+    let mut s = [0.0f64; 8];
+    let mut chunks = a.chunks_exact(8);
+    for c in chunks.by_ref() {
+        for j in 0..8 {
+            s[j] += c[j];
+        }
+    }
+    let mut t = s.iter().sum::<f64>();
+    for &x in chunks.remainder() {
+        t += x;
+    }
+    t
+}
+
+/// AVX-512 twin of [`sum_seq`] (same body; 512-bit codegen).
+///
+/// # Safety
+/// Caller must have verified the features ([`crate::array::isa::avx512`]).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl")]
+unsafe fn sum_seq_avx512(a: &[f64]) -> f64 {
+    let mut s = [0.0f64; 8];
+    let mut chunks = a.chunks_exact(8);
+    for c in chunks.by_ref() {
+        for j in 0..8 {
+            s[j] += c[j];
+        }
+    }
+    let mut t = s.iter().sum::<f64>();
+    for &x in chunks.remainder() {
+        t += x;
+    }
+    t
+}
+
+#[inline]
+fn sum_dispatch(a: &[f64]) -> f64 {
+    #[cfg(target_arch = "x86_64")]
+    if crate::array::isa::avx512_fast() {
+        // SAFETY: features verified by isa::avx512().
+        return unsafe { sum_seq_avx512(a) };
+    }
+    sum_seq(a)
+}
+
+/// Sum: ISA-dispatched, parallel above the reduction quantum. Summation was
+/// already reassociated (ILP lanes), so chunked reduction keeps the same
+/// rounding class. `mean` and the axis reductions sit on this.
 #[inline]
 pub(crate) fn sum_slice(a: &[f64]) -> f64 {
-    let mut s0 = 0.0;
-    let mut s1 = 0.0;
-    let mut s2 = 0.0;
-    let mut s3 = 0.0;
-    let mut chunks = a.chunks_exact(4);
-    for c in chunks.by_ref() {
-        s0 += c[0];
-        s1 += c[1];
-        s2 += c[2];
-        s3 += c[3];
+    if reduce_par_ok(a.len()) {
+        use rayon::prelude::*;
+        return a.par_chunks(REDUCE_QUANTUM).map(sum_dispatch).sum();
     }
-    let mut s = s0 + s1 + s2 + s3;
-    for &x in chunks.remainder() {
-        s += x;
-    }
-    s
+    sum_dispatch(a)
 }
 
 /// Sequential sum of squares, 8 independent accumulators (ILP/autovec).
@@ -243,96 +296,86 @@ fn sum_sq_dispatch(a: &[f64]) -> f64 {
 /// change the rounding class.
 #[inline]
 pub(crate) fn sum_sq_slice(a: &[f64]) -> f64 {
-    const QUANTUM: usize = 1 << 20;
-    let nthreads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
-    if nthreads >= 2 && a.len() >= 2 * QUANTUM {
+    if reduce_par_ok(a.len()) {
         use rayon::prelude::*;
-        return a.par_chunks(QUANTUM).map(sum_sq_dispatch).sum();
+        return a.par_chunks(REDUCE_QUANTUM).map(sum_sq_dispatch).sum();
     }
     sum_sq_dispatch(a)
 }
 
-/// Min over a non-empty slice (IEEE `f64::min`, NaN-propagating).
-///
-/// Eight independent accumulators (ILP / auto-vectorization). No host-specific
-/// size thresholds. Parallel reduction is deliberately **not** used: for this
-/// reduction the cross-over is machine-dependent and we refuse to tune it per box.
-#[inline]
-fn min_slice_seq(a: &[f64]) -> f64 {
-    let mut m0 = a[0];
-    let mut m1 = a[0];
-    let mut m2 = a[0];
-    let mut m3 = a[0];
-    let mut m4 = a[0];
-    let mut m5 = a[0];
-    let mut m6 = a[0];
-    let mut m7 = a[0];
-    let mut chunks = a[1..].chunks_exact(8);
-    for c in chunks.by_ref() {
-        m0 = m0.min(c[0]);
-        m1 = m1.min(c[1]);
-        m2 = m2.min(c[2]);
-        m3 = m3.min(c[3]);
-        m4 = m4.min(c[4]);
-        m5 = m5.min(c[5]);
-        m6 = m6.min(c[6]);
-        m7 = m7.min(c[7]);
-    }
-    for &x in chunks.remainder() {
-        m0 = m0.min(x);
-    }
-    m0.min(m1).min(m2).min(m3).min(m4).min(m5).min(m6).min(m7)
+/// Min/max over non-empty slices (Rust `f64::min`/`max` NaN handling —
+/// unchanged). Eight ILP accumulators; ISA-dispatched twins; parallel above
+/// the shared reduction quantum. Chunk results combine with the same
+/// operator, so semantics match the sequential loop.
+macro_rules! isa_minmax_f64 {
+    ($seq:ident, $avx:ident, $disp:ident, $pub_fn:ident, $m:ident) => {
+        #[inline]
+        fn $seq(a: &[f64]) -> f64 {
+            let mut m = [a[0]; 8];
+            let mut chunks = a[1..].chunks_exact(8);
+            for c in chunks.by_ref() {
+                for j in 0..8 {
+                    m[j] = m[j].$m(c[j]);
+                }
+            }
+            let mut r = a[0];
+            for j in 0..8 {
+                r = r.$m(m[j]);
+            }
+            for &x in chunks.remainder() {
+                r = r.$m(x);
+            }
+            r
+        }
+        /// # Safety
+        /// Caller must have verified the features (`isa::avx512`).
+        #[cfg(target_arch = "x86_64")]
+        #[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl")]
+        unsafe fn $avx(a: &[f64]) -> f64 {
+            let mut m = [a[0]; 8];
+            let mut chunks = a[1..].chunks_exact(8);
+            for c in chunks.by_ref() {
+                for j in 0..8 {
+                    m[j] = m[j].$m(c[j]);
+                }
+            }
+            let mut r = a[0];
+            for j in 0..8 {
+                r = r.$m(m[j]);
+            }
+            for &x in chunks.remainder() {
+                r = r.$m(x);
+            }
+            r
+        }
+        #[inline]
+        fn $disp(a: &[f64]) -> f64 {
+            #[cfg(target_arch = "x86_64")]
+            if crate::array::isa::avx512_fast() {
+                // SAFETY: features verified by isa::avx512().
+                return unsafe { $avx(a) };
+            }
+            $seq(a)
+        }
+        #[inline]
+        pub(crate) fn $pub_fn(a: &[f64]) -> Option<f64> {
+            if a.is_empty() {
+                return None;
+            }
+            if reduce_par_ok(a.len()) {
+                use rayon::prelude::*;
+                return a
+                    .par_chunks(REDUCE_QUANTUM)
+                    .map($disp)
+                    .reduce_with(|x, y| x.$m(y));
+            }
+            Some($disp(a))
+        }
+    };
 }
 
-#[inline]
-fn max_slice_seq(a: &[f64]) -> f64 {
-    let mut m0 = a[0];
-    let mut m1 = a[0];
-    let mut m2 = a[0];
-    let mut m3 = a[0];
-    let mut m4 = a[0];
-    let mut m5 = a[0];
-    let mut m6 = a[0];
-    let mut m7 = a[0];
-    let mut chunks = a[1..].chunks_exact(8);
-    for c in chunks.by_ref() {
-        m0 = m0.max(c[0]);
-        m1 = m1.max(c[1]);
-        m2 = m2.max(c[2]);
-        m3 = m3.max(c[3]);
-        m4 = m4.max(c[4]);
-        m5 = m5.max(c[5]);
-        m6 = m6.max(c[6]);
-        m7 = m7.max(c[7]);
-    }
-    for &x in chunks.remainder() {
-        m0 = m0.max(x);
-    }
-    m0.max(m1).max(m2).max(m3).max(m4).max(m5).max(m6).max(m7)
-}
-
-#[inline]
-pub(crate) fn min_slice(a: &[f64]) -> Option<f64> {
-    if a.is_empty() {
-        None
-    } else {
-        Some(min_slice_seq(a))
-    }
-}
-
-#[inline]
-pub(crate) fn max_slice(a: &[f64]) -> Option<f64> {
-    if a.is_empty() {
-        None
-    } else {
-        Some(max_slice_seq(a))
-    }
-}
-
-
-
+isa_minmax_f64!(min_seq, min_seq_avx512, min_dispatch, min_slice, min);
+isa_minmax_f64!(max_seq, max_seq_avx512, max_dispatch, max_slice, max);
 
 #[inline]
 pub(crate) fn abs_slice(a: &[f64], out: &mut [f64]) {
