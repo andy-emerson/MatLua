@@ -206,7 +206,6 @@ impl Xoshiro256StarStar {
     }
 }
 
-// Silence unused RefCell if we keep Mutex only
 #[cfg(test)]
 mod tests {
     use super::*;
