@@ -92,7 +92,7 @@ fn budget(n: usize, heavy: bool) -> (usize, usize) {
             (10, 2)
         }
     } else if n >= 4096 {
-        (2, 1)
+        (5, 2)
     } else if n >= 1024 {
         (6, 2)
     } else if n >= 256 {

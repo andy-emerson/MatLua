@@ -17,7 +17,14 @@ use matlua::lua::Lua;
 fn median(samples: &[f64]) -> f64 {
     let mut v = samples.to_vec();
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    v[v.len() / 2]
+    // True median: average the middle pair on even counts (v[len/2] alone
+    // returns the WORSE of 2 samples — one contention stall became the cell).
+    let m = v.len() / 2;
+    if v.len() % 2 == 0 && v.len() >= 2 {
+        (v[m - 1] + v[m]) / 2.0
+    } else {
+        v[m]
+    }
 }
 
 fn time_ms(iters: usize, warm: usize, mut body: impl FnMut()) -> f64 {
@@ -83,18 +90,21 @@ fn vec_n(n: usize) -> ArrayI64 {
 }
 
 fn budget(n: usize, heavy: bool) -> (usize, usize) {
+    // 4096 cells were single/double-sample and hostage to shared-host
+    // stalls; >=5 odd samples give a real median (empirical noise floor
+    // +/-10-20%, see tests/README Provenance).
     if heavy {
         if n >= 4096 {
-            (1, 0)
+            (5, 1)
         } else if n >= 1024 {
-            (3, 1)
+            (5, 1)
         } else if n >= 256 {
             (6, 2)
         } else {
             (15, 3)
         }
     } else if n >= 4096 {
-        (2, 1)
+        (5, 2)
     } else if n >= 1024 {
         (8, 2)
     } else if n >= 256 {
@@ -186,6 +196,12 @@ fn bench_rust(sizes: &[usize]) {
         emit("rust", "matmul", n, time_ms(ith, wrmh, || {
             black_box(i64_ops::matmul(&a, &b).unwrap());
         }));
+        emit("rust", "matmul_at", n, time_ms(ith, wrmh, || {
+            black_box(i64_ops::matmul_at(&a, &b).unwrap());
+        }));
+        emit("rust", "matmul_bt", n, time_ms(ith, wrmh, || {
+            black_box(i64_ops::matmul_bt(&a, &b).unwrap());
+        }));
         emit("rust", "unique", n, time_ms(it, wrm, || {
             black_box(v.unique().unwrap());
         }));
@@ -239,6 +255,8 @@ fn bench_lua(sizes: &[usize]) {
         emit("lua", "transpose", n, time_lua(&lua, &a_only, "return A:transpose()", it, wrm));
         emit("lua", "dot", n, time_lua(&lua, &v_only, "return ml.dot(V, V)", it, wrm));
         emit("lua", "matmul", n, time_lua(&lua, &ab, "return ml.matmul(A, B)", ith, wrmh));
+        emit("lua", "matmul_at", n, time_lua(&lua, &ab, "return ml.matmul_at(A, B)", ith, wrmh));
+        emit("lua", "matmul_bt", n, time_lua(&lua, &ab, "return ml.matmul_bt(A, B)", ith, wrmh));
         emit("lua", "unique", n, time_lua(&lua, &v_only, "return V:unique()", it, wrm));
         emit(
             "lua",

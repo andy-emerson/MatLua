@@ -23,6 +23,7 @@
 
 mod array;
 mod array_i64;
+pub(crate) mod isa;
 pub mod dtype;
 pub(crate) mod kernels;
 pub(crate) mod kernels_i64;
@@ -45,4 +46,10 @@ pub use view_i64::{ArrayViewI64, ArrayViewMutI64};
 #[inline]
 pub(crate) fn pool_take_uninit(len: usize) -> Vec<f64> {
     pool::take_uninit(len)
+}
+
+/// Return a scratch buffer to the pool (see [`pool_take_uninit`]).
+#[inline]
+pub(crate) fn pool_recycle(v: Vec<f64>) {
+    pool::recycle(v)
 }

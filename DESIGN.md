@@ -243,13 +243,6 @@ internally. Measurement: `tests/bench/compare_compose.py`.
 - **`diag`:** vector→matrix or matrix→diagonal; `diagonal` / `trace` on matrices; `outer` for rank-1×rank-1.
 - **`any` / `all`:** nonzero non-NaN is true (same as `where` cond); optional axis → 0/1 mask.
 
----
-
-## 4. Lua face (frozen names)
-
-Names match the `lua` feature on `main`. Tutorial samples live in
-[README.md](README.md); this section freezes the surface for implementers.
-
 ### 3.17 `i64` arrays (M7)
 
 - **`ArrayI64`**: owned row-major `i64`, same shape/rank model as `f64` [`Array`].
@@ -313,7 +306,7 @@ Embedders (TallyDB) push engine columns without a second interpreter:
 
 Views are not yet accepted by `linalg` (owned `&Array` only) — TallyDB letter §5 notes copies are fine for current windows; view-aware LA is a later optimization.
 
-### 3.25 M7.b i64 quant-pack parity
+### 3.24 M7.b i64 quant-pack parity
 
 Quant pack applies to **both** dtypes. Deliberate promote-only paths are named; silent holes are bugs.
 
@@ -328,9 +321,9 @@ Quant pack applies to **both** dtypes. Deliberate promote-only paths are named; 
 | LA diagnostics / solvers | native f64 | **`from_i64` → f64** | agreed promote-out |
 | Host `push_view_*` / copy | f64 + i64 | f64 + i64 | |
 
-**M7.b residual (closed on `feat-m7c-optimize`):** axis order-stats, fuller i64 `out=` on Lua, i64 `matmul_out`.
+**M7.b residual:** closed (axis order-stats, fuller i64 `out=` on Lua, i64 `matmul_out` are all shipped).
 
-### 3.24 TallyDB requirements letter (alignment)
+### 3.25 TallyDB requirements letter (alignment)
 
 External letter *“TallyDB → MatLua: what we need”* (not a MatLua file). **Authoritative milestone mapping: §7.1.1.** Summary:
 
@@ -346,6 +339,35 @@ External letter *“TallyDB → MatLua: what we need”* (not a MatLua file). **
 | **5** | View-aware linalg later | Acknowledged; not required now |
 | **6** | One array type in Lua tier | Prefer **MatLua as the math array**; host pushes via view/copy APIs; retiring `tallydb.vector` for math is their call — we make adoption cheap |
 | **7** | APICHECK / differential tests | Welcome; our CI should grow APICHECK (M10) |
+
+### 3.26 Performance constants (provenance)
+
+Every performance-affecting constant — micro-kernel tile shapes, panel sizes,
+parallelism cutoffs, pool bounds, block sizes — carries its provenance, one of
+three classes:
+
+| Class | Requirement |
+|-------|-------------|
+| **Derived** | Computed at runtime from machine properties (e.g. `available_parallelism`, problem size — the GEMM work ÷ threads rule). |
+| **Analyzed** | A written derivation at the definition site from properties stable across the target host class (register/lane budget, cache-footprint arithmetic). Measurement confirms the analysis; it does not substitute for it. |
+| **Empirical** | Explicitly labeled `empirical` with host class and date. Never described as research-backed or as a literature default. |
+
+A parameter sweep on one machine never closes a constant: analysis comes
+first, and a sweep is a check on the analysis. A sweep result that contradicts
+the analysis is a finding to explain, not a value to ship. Comments must not
+claim more research than actually happened.
+
+Rationale (kept): M7.c waves tuned Strassen leaf sizes and GEBP panel
+constants against a single benchmark host; some results were then described as
+literature defaults. The Strassen path was later deleted whole; the mislabeled
+comments survived review. This rule prevents both failure modes.
+
+---
+
+## 4. Lua face (frozen names)
+
+Names match the `lua` feature on `main`. Tutorial samples live in
+[README.md](README.md); this section freezes the surface for implementers.
 
 ### 4.1 Module functions
 
@@ -438,7 +460,7 @@ explicit boundaries (zero-copy views in, owned results out).
 | **M6** | Tier-2 quant sugar: `cov`/`corrcoef`, `outer`/`diag`/`trace`, `argsort`/`take`, axis reductions (rank-2), `any`/`all` | **Done** |
 | **v0.1** tag | Explicit release cut | **Deferred** |
 | **M7** | **`i64` surface (correctness):** shared array grammar + integer-path LA (wrapping) + **i64-unique** + views + gcd/lcm/divmod/bitcount + **`from_i64` solvers** (i64 in → f64 out). | **Done** |
-| **M7.b** | **Quant leave-late pack** (f64 + **i64 parity**, §3.25): diagnostics, order stats, random, indexing, partial `out=` (#21), host views. | **Done** (i64 residual closed on M7.c branch) |
+| **M7.b** | **Quant leave-late pack** (f64 + **i64 parity**, §3.24): diagnostics, order stats, random, indexing, partial `out=` (#21), host views. | **Done** (i64 residual closed on M7.c branch) |
 | **M7.c** | **Optimize entire surface** (f64 + i64): structural and kernel performance once M7/M7.b correctness holds | **In progress** — not closed; see **§7.1.2** (plan A: exact i64 GEMM; accurate numbers first) |
 | **M8** | **Host integration depth** (TallyDB letter §5–§6 + view face): see **§7.1.1** | **Planned** |
 | **M9** | **Small-window pool** — freelist for *n* ≪ 256 (TallyDB hot path; letter pressure) | **Planned** |
@@ -507,6 +529,8 @@ continues under a new approach led by the Human after PR merge.
 | Performance bar / thresholds | **Not set yet.** Get **accurate, complete** measurements first; choose competitiveness targets only with enough BLAS context. |
 | Matmul yardstick (tables) | **NumPy float64 BLAS** on the **same integer-valued** inputs (e.g. 3.0), **not** `int64@int64`. NumPy has i64 dtype but **no integer BLAS** ([numpy#14556](https://github.com/numpy/numpy/issues/14556)); int64@int64 is a slow fallback and hid a real gap. MatLua still reports **exact wrapping i64** times. |
 | Optimization discipline | Prefer **algorithms and design** (packing, sharing, demand-zero alloc, correct face paths). Do **not** sell host-specific size cutoffs as “opts.” Parallelism may use **work ÷ threads**, not a fixed `n` table from one box. |
+| Engineering yardstick (i64 GEMM) | Besides the NumPy f64 BLAS **product** yardstick, exact i64 GEMM is judged as **% of measured machine roofline** — peak sustained wrapping i64 multiply-add throughput on the same host (`tests/bench/i64_roofline.rs`). The roofline separates kernel quality from ISA physics (no 64-bit vector multiply below AVX-512DQ), so the BLAS ratio alone cannot say whether the kernel is good. |
+| Performance constants | Provenance rule **§3.26**: every constant is derived, analyzed, or labeled empirical (host + date). A one-host sweep never closes a constant. |
 
 #### Measurement contract (`tests/`)
 
@@ -514,26 +538,40 @@ continues under a new approach led by the Human after PR merge.
 - Faces: NumPy · MatLua Rust · MatLua Lua; medians after warmup.
 - Tables A–B f64; C–D pure i64; E–F i64→f64 promote-out.
 - **i64 matmul NumPy column** = f64 BLAS on integer-valued data (see `numpy_i64_fair.py`).
+- **Roofline context:** `i64_roofline` reports the host's achievable wrapping
+  i64 multiply-add throughput; i64 GEMM results may cite % of that roofline.
+- **Provenance:** every published table names the host that produced it (CPU,
+  cores) and the run date. All faces of one table come from one host; never
+  mix hosts within a table.
 - Refresh: commands in [`tests/README.md`](tests/README.md). **Do not invent cells.**
 
-#### Landed work (waves, summarized)
+#### Current optimization state
 
-Correctness surface for M7/M7.b is on `main` / this branch. Optimization waves
-landed on this arc include (non-exhaustive):
-
-- f64: faer GEMM/solvers; path-length composites; Arc-share `Clone` (deep copy =
-  `copy()`); `alloc_zeroed` for `zeros`; elementwise / reduction ILP; blocked
+- f64: faer GEMM/solvers with zero-copy `MatRef` in and dest-write out;
+  composed paths (`matmul_at`/`bt`, `normal_eq`); Arc-share `Clone` (deep copy
+  = `copy()`); demand-zero `zeros`; ILP elementwise/reduction kernels; blocked
   transpose; Lua GC-debt accounting on large userdata.
-- i64: packing **GEBP** (mc/kc/nc panels, NR pack of B, **8×8** wrapping
-  micro-kernel); 4-wide elementwise; hybrid `isin`; promote-out LA via
-  `from_i64`.
-- Harness: full three-way tables including n=4096; Lua bulk setup for large n.
+- i64: packing **GEBP** shared by `matmul` / `matmul_at` / `matmul_bt`
+  (transposition absorbed in the pack layer); **runtime ISA dispatch** — a
+  portable 4×8 profile plus an AVX-512DQ `#[target_feature]` profile selected
+  by CPUID, no build flags, non-x86 always portable (constants and shape
+  evidence per §3.26 at the definition site in `linalg/i64_ops.rs`); 4-wide
+  elementwise; hybrid `isin`; promote-out LA via `from_i64`.
+- Harness: user-POV summary (Lua vs NumPy, ranges across n) + three-way
+  Tables A–F in appendix, n ∈ {64, 256, 1024, 4096}; `i64_roofline`
+  machine-ceiling harness.
 
-**Honest residual (as of last rebench on this branch):** exact i64 matmul is on
-the order of **~10–13×** slower than NumPy **f64 BLAS** (integer-valued) at
-n=1024–4096 (~10 Gops portable GEBP vs ~120+ Gops BLAS). f64 matmul is already
-near NumPy f64. That i64 GEMM gap is the **central open M7.c product problem**
-under plan A — not “make tables pretty vs int64@int64.”
+**Honest residual (2026-08 rebench, post rework + runtime ISA dispatch):**
+exact i64 matmul / `matmul_at` / `matmul_bt` are **~5–7×** slower than NumPy
+**f64 BLAS** (integer-valued) across n=64–4096 (n=4096: 4.2 s vs 0.8 s; was
+~14× / 14.1 s before this arc's Goto-order rework, vectorizable tile, shared
+transposed-pack path, and AVX-512DQ runtime dispatch). The roofline shows the
+shipped kernel at ~80–88% of the measured ceiling of whichever ISA path
+dispatch selects on the 2026-08 bench container, so the remaining gap is
+dominated by **ISA physics** (f64 BLAS register-blocked FMA vs 64-bit integer
+multiply throughput), not kernel shape. f64 matmul is already near NumPy f64.
+Whether ~5–7× at ~80–88% of machine ceiling satisfies plan A is the closure
+question for M7.c (Human sign-off).
 
 #### Explicitly rejected / demoted
 
@@ -543,15 +581,15 @@ under plan A — not “make tables pretty vs int64@int64.”
 - **Host-tuned** Rayon cutoffs on reductions sold as algorithmic wins.
 - Silent **f64 promote** for i64 matmul to chase BLAS times.
 
-#### Open M7.c work (after this merge)
+#### Open M7.c work
 
 1. **Accurate complete numbers** — keep harness truthful; fill gaps only with
-   real runs; no performance targets until measurement context is enough.
-2. **Exact i64 GEMM (plan A)** — Human-directed next approach; Agent implements
-   on the agreed plan only. Candidates later (not commitments): stronger pack /
-   micro-kernel, portable SIMD where ISA allows i64 mul, optional ISA paths —
-   always measured against the BLAS f64 integer-valued reference **and** exactness
-   tests.
+   real runs; no performance targets until measurement context (including the
+   roofline) is enough.
+2. **Exact i64 GEMM (plan A)** — analyzed kernel per §3.26; candidates beyond
+   it (not commitments): portable SIMD where ISA allows i64 mul, optional ISA
+   paths — always measured against the BLAS f64 integer-valued reference, the
+   host roofline, **and** exactness tests.
 3. Residual face/kernel items only as they show up in honest tables (not as an
    excuse to re-open threshold games).
 

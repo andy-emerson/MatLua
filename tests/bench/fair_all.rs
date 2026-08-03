@@ -18,7 +18,14 @@ use matlua::lua::Lua;
 fn median(samples: &[f64]) -> f64 {
     let mut v = samples.to_vec();
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    v[v.len() / 2]
+    // True median: average the middle pair on even counts (v[len/2] alone
+    // returns the WORSE of 2 samples — one contention stall became the cell).
+    let m = v.len() / 2;
+    if v.len() % 2 == 0 && v.len() >= 2 {
+        (v[m - 1] + v[m]) / 2.0
+    } else {
+        v[m]
+    }
 }
 
 fn time_ms(iters: usize, warm: usize, mut body: impl FnMut()) -> f64 {
@@ -94,18 +101,21 @@ fn emit(face: &str, op: &str, n: usize, ms: f64) {
 }
 
 fn budget(n: usize, heavy: bool) -> (usize, usize) {
+    // 4096 cells were single/double-sample and hostage to shared-host
+    // stalls; >=5 odd samples give a real median (empirical noise floor
+    // +/-10-20%, see tests/README Provenance).
     if heavy {
         if n >= 4096 {
-            (1, 0)
+            (5, 1)
         } else if n >= 1024 {
-            (3, 1)
+            (5, 1)
         } else if n >= 256 {
             (6, 2)
         } else {
             (15, 3)
         }
     } else if n >= 4096 {
-        (2, 1)
+        (5, 2)
     } else if n >= 1024 {
         (8, 2)
     } else if n >= 256 {

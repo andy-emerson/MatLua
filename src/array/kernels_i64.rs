@@ -56,18 +56,36 @@ fn assign4(a: &mut [i64], b: &[i64], f: impl Fn(i64, i64) -> i64) {
     }
 }
 
-#[inline]
-pub(crate) fn add_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
-    zip4(a, b, out, i64::wrapping_add);
+// ISA-dispatched twins: same portable body compiled with AVX-512 features
+// and taken when the CPU has them (pattern and measured effects as in the
+// f64 kernels and the GEMM profiles; i64 multiply additionally gains the
+// native `vpmullq`). Wrapping i64 ops are exact under any lane order.
+macro_rules! isa_binary_i64 {
+    ($name:ident, $avx:ident, $f:expr) => {
+        #[cfg(target_arch = "x86_64")]
+        #[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl")]
+        unsafe fn $avx(a: &[i64], b: &[i64], out: &mut [i64]) {
+            let f = $f;
+            for i in 0..a.len() {
+                out[i] = f(a[i], b[i]);
+            }
+        }
+        #[inline]
+        pub(crate) fn $name(a: &[i64], b: &[i64], out: &mut [i64]) {
+            #[cfg(target_arch = "x86_64")]
+            if crate::array::isa::avx512_fast() {
+                // SAFETY: features verified by isa::avx512().
+                unsafe { $avx(a, b, out) };
+                return;
+            }
+            zip4(a, b, out, $f);
+        }
+    };
 }
-#[inline]
-pub(crate) fn sub_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
-    zip4(a, b, out, i64::wrapping_sub);
-}
-#[inline]
-pub(crate) fn mul_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
-    zip4(a, b, out, i64::wrapping_mul);
-}
+
+isa_binary_i64!(add_slices, add_slices_avx512, i64::wrapping_add);
+isa_binary_i64!(sub_slices, sub_slices_avx512, i64::wrapping_sub);
+isa_binary_i64!(mul_slices, mul_slices_avx512, i64::wrapping_mul);
 /// Truncating division; division by zero → 0 (no panic).
 #[inline]
 pub(crate) fn div_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
@@ -93,18 +111,32 @@ pub(crate) fn div_assign_slices(a: &mut [i64], b: &[i64]) {
 pub(crate) fn neg_slice(a: &[i64], out: &mut [i64]) {
     map4(a, out, i64::wrapping_neg);
 }
-#[inline]
-pub(crate) fn add_scalar(a: &[i64], s: i64, out: &mut [i64]) {
-    map4(a, out, |x| x.wrapping_add(s));
+macro_rules! isa_scalar_i64 {
+    ($name:ident, $avx:ident, $f:expr) => {
+        #[cfg(target_arch = "x86_64")]
+        #[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl")]
+        unsafe fn $avx(a: &[i64], s: i64, out: &mut [i64]) {
+            let f = $f;
+            for i in 0..a.len() {
+                out[i] = f(a[i], s);
+            }
+        }
+        #[inline]
+        pub(crate) fn $name(a: &[i64], s: i64, out: &mut [i64]) {
+            #[cfg(target_arch = "x86_64")]
+            if crate::array::isa::avx512_fast() {
+                // SAFETY: features verified by isa::avx512().
+                unsafe { $avx(a, s, out) };
+                return;
+            }
+            map4(a, out, |x| ($f)(x, s));
+        }
+    };
 }
-#[inline]
-pub(crate) fn sub_scalar(a: &[i64], s: i64, out: &mut [i64]) {
-    map4(a, out, |x| x.wrapping_sub(s));
-}
-#[inline]
-pub(crate) fn mul_scalar(a: &[i64], s: i64, out: &mut [i64]) {
-    map4(a, out, |x| x.wrapping_mul(s));
-}
+
+isa_scalar_i64!(add_scalar, add_scalar_avx512, i64::wrapping_add);
+isa_scalar_i64!(sub_scalar, sub_scalar_avx512, i64::wrapping_sub);
+isa_scalar_i64!(mul_scalar, mul_scalar_avx512, i64::wrapping_mul);
 #[inline]
 pub(crate) fn div_scalar(a: &[i64], s: i64, out: &mut [i64]) {
     if s == 0 {
@@ -118,67 +150,130 @@ pub(crate) fn abs_slice(a: &[i64], out: &mut [i64]) {
     map4(a, out, i64::wrapping_abs);
 }
 
-/// Four independent accumulators for ILP.
+/// Shared parallel-reduction rule (derived, DESIGN §3.26; same quantum as
+/// the f64 kernels): parallel when each rayon task gets ≥ 2²⁰ elements.
+const REDUCE_QUANTUM: usize = 1 << 20;
+
+#[inline]
+fn reduce_par_ok(len: usize) -> bool {
+    len >= 2 * REDUCE_QUANTUM
+        && std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            >= 2
+}
+
+/// Sum / min / max: 8 ILP accumulators, ISA-dispatched twins, parallel
+/// above the reduction quantum. Wrapping i64 addition and integer min/max
+/// are exact under any chunking and order.
+macro_rules! isa_reduce_i64 {
+    ($seq:ident, $avx:ident, $disp:ident, $init:ident, $step:expr, $join:expr) => {
+        #[inline]
+        fn $seq(a: &[i64]) -> i64 {
+            let step = $step;
+            let join = $join;
+            let mut m = [$init(a); 8];
+            let mut chunks = a.chunks_exact(8);
+            for c in chunks.by_ref() {
+                for j in 0..8 {
+                    m[j] = step(m[j], c[j]);
+                }
+            }
+            let mut r = m[0];
+            for j in 1..8 {
+                r = join(r, m[j]);
+            }
+            for &x in chunks.remainder() {
+                r = step(r, x);
+            }
+            r
+        }
+        /// # Safety
+        /// Caller must have verified the features (`isa::avx512`).
+        #[cfg(target_arch = "x86_64")]
+        #[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl")]
+        unsafe fn $avx(a: &[i64]) -> i64 {
+            let step = $step;
+            let join = $join;
+            let mut m = [$init(a); 8];
+            let mut chunks = a.chunks_exact(8);
+            for c in chunks.by_ref() {
+                for j in 0..8 {
+                    m[j] = step(m[j], c[j]);
+                }
+            }
+            let mut r = m[0];
+            for j in 1..8 {
+                r = join(r, m[j]);
+            }
+            for &x in chunks.remainder() {
+                r = step(r, x);
+            }
+            r
+        }
+        #[inline]
+        fn $disp(a: &[i64]) -> i64 {
+            #[cfg(target_arch = "x86_64")]
+            if crate::array::isa::avx512_fast() {
+                // SAFETY: features verified by isa::avx512().
+                return unsafe { $avx(a) };
+            }
+            $seq(a)
+        }
+    };
+}
+
+#[inline]
+fn zero_init(_a: &[i64]) -> i64 {
+    0
+}
+#[inline]
+fn first_init(a: &[i64]) -> i64 {
+    a[0]
+}
+
+isa_reduce_i64!(sum_seq, sum_seq_avx512, sum_dispatch, zero_init, i64::wrapping_add, i64::wrapping_add);
+isa_reduce_i64!(min_seq, min_seq_avx512, min_dispatch, first_init, i64::min, i64::min);
+isa_reduce_i64!(max_seq, max_seq_avx512, max_dispatch, first_init, i64::max, i64::max);
+
 #[inline]
 pub(crate) fn sum_slice(a: &[i64]) -> i64 {
-    let mut s0: i64 = 0;
-    let mut s1: i64 = 0;
-    let mut s2: i64 = 0;
-    let mut s3: i64 = 0;
-    let mut chunks = a.chunks_exact(4);
-    for c in chunks.by_ref() {
-        s0 = s0.wrapping_add(c[0]);
-        s1 = s1.wrapping_add(c[1]);
-        s2 = s2.wrapping_add(c[2]);
-        s3 = s3.wrapping_add(c[3]);
+    if reduce_par_ok(a.len()) {
+        use rayon::prelude::*;
+        return a
+            .par_chunks(REDUCE_QUANTUM)
+            .map(sum_dispatch)
+            .reduce(|| 0i64, |x, y| x.wrapping_add(y));
     }
-    let mut s = s0.wrapping_add(s1).wrapping_add(s2).wrapping_add(s3);
-    for &x in chunks.remainder() {
-        s = s.wrapping_add(x);
-    }
-    s
+    sum_dispatch(a)
 }
 #[inline]
 pub(crate) fn min_slice(a: &[i64]) -> Option<i64> {
     if a.is_empty() {
         return None;
     }
-    let mut m0 = a[0];
-    let mut m1 = a[0];
-    let mut m2 = a[0];
-    let mut m3 = a[0];
-    let mut chunks = a[1..].chunks_exact(4);
-    for c in chunks.by_ref() {
-        m0 = m0.min(c[0]);
-        m1 = m1.min(c[1]);
-        m2 = m2.min(c[2]);
-        m3 = m3.min(c[3]);
+    if reduce_par_ok(a.len()) {
+        use rayon::prelude::*;
+        return a
+            .par_chunks(REDUCE_QUANTUM)
+            .map(min_dispatch)
+            .reduce_with(i64::min);
     }
-    for &x in chunks.remainder() {
-        m0 = m0.min(x);
-    }
-    Some(m0.min(m1).min(m2).min(m3))
+    Some(min_dispatch(a))
 }
 #[inline]
 pub(crate) fn max_slice(a: &[i64]) -> Option<i64> {
     if a.is_empty() {
         return None;
     }
-    let mut m0 = a[0];
-    let mut m1 = a[0];
-    let mut m2 = a[0];
-    let mut m3 = a[0];
-    let mut chunks = a[1..].chunks_exact(4);
-    for c in chunks.by_ref() {
-        m0 = m0.max(c[0]);
-        m1 = m1.max(c[1]);
-        m2 = m2.max(c[2]);
-        m3 = m3.max(c[3]);
+    if reduce_par_ok(a.len()) {
+        use rayon::prelude::*;
+        return a
+            .par_chunks(REDUCE_QUANTUM)
+            .map(max_dispatch)
+            .reduce_with(i64::max);
     }
-    for &x in chunks.remainder() {
-        m0 = m0.max(x);
-    }
-    Some(m0.max(m1).max(m2).max(m3))
+    Some(max_dispatch(a))
 }
 #[inline]
 pub(crate) fn eq_slices(a: &[i64], b: &[i64], out: &mut [i64]) {
