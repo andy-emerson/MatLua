@@ -65,6 +65,18 @@ def dense2_small(n: int) -> np.ndarray:
     return ((i * np.int64(13) + 2) % 2001 - 1000).reshape(n, n)
 
 
+def dense_huge(n: int) -> np.ndarray:
+    # Mirrors i64_surface dense_huge: |values| ~ 1e12 (beyond i32) — MatLua's
+    # exact wrapping i64 GEBP tier; this f64 reference rounds (timing bar only).
+    i = np.arange(n * n, dtype=np.int64)
+    return (((i * np.int64(17) + 1) % 2001 - 1000) * np.int64(1_000_000_007)).reshape(n, n)
+
+
+def dense2_huge(n: int) -> np.ndarray:
+    i = np.arange(n * n, dtype=np.int64)
+    return (((i * np.int64(13) + 2) % 2001 - 1000) * np.int64(1_000_000_007)).reshape(n, n)
+
+
 def vec_n(n: int) -> np.ndarray:
     i = np.arange(n, dtype=np.int64)
     return i * np.int64(3) + np.int64(1)
@@ -141,6 +153,9 @@ def main() -> None:
         emit("matmul_wide", n, time_ms(ith, wrmh, lambda: af @ bf))
         emit("matmul_at_wide", n, time_ms(ith, wrmh, lambda: af.T @ bf))
         emit("matmul_bt_wide", n, time_ms(ith, wrmh, lambda: af @ bf.T))
+        ahf = dense_huge(n).astype(np.float64, copy=False)
+        bhf = dense2_huge(n).astype(np.float64, copy=False)
+        emit("matmul_huge", n, time_ms(ith, wrmh, lambda: ahf @ bhf))
         emit("unique", n, time_ms(it, wrm, lambda: np.unique(v)))
         emit("isin", n, time_ms(it, wrm, lambda: np.isin(a, v)))
 

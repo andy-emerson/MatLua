@@ -34,15 +34,18 @@ allocator.
 - **i64 matmul family** (`matmul` / `matmul_at` / `matmul_bt`): the NumPy
   reference is **float64 BLAS** on the same integer-valued inputs (not
   `int64@int64` — NumPy has no integer BLAS, so that fallback is not a
-  product bar). MatLua results are **always exact**; the runtime picks
-  between two regimes on a derived bound (DESIGN §7.1.2, 2026-08-04 ruling):
+  product bar). MatLua results are **always exact**; the runtime picks among
+  three bit-identical kernel tiers on a derived range scan (DESIGN §7.1.2,
+  2026-08-04 rulings), and the tables show one row per tier:
   - **Headline rows** use range-safe data (`k·max|A|·max|B| ≤ 2⁵³`, here
-    |v| ≤ 1000): MatLua takes the guarded **f64-promote** path — bit-identical
-    to the wrapping kernel — and the NumPy f64 reference is itself exact.
-  - **`*_wide` rows** use ramps whose intermediates exceed 2⁵³: MatLua runs
-    the exact wrapping **GEBP** kernel; the NumPy f64 reference silently
-    rounds there (its integer results are wrong), so that column is a
-    timing bar only.
+    |v| ≤ 1000): the guarded **f64-promote** tier — and the NumPy f64
+    reference is itself exact there.
+  - **`*_wide` rows** use ramps beyond 2⁵³ intermediates but inside i32:
+    the **i32-pack widening** tier (32×32→64 products, exact for any k —
+    bake-off winner 2026-08-04). NumPy's f64 reference silently rounds
+    here (timing bar only).
+  - **`*_huge` rows** use values ~10¹² (beyond i32): the exact wrapping
+    **i64 GEBP**. NumPy's f64 reference rounds here too (timing bar only).
 - **Machine roofline** (engineering yardstick): `i64_roofline` measures the
   running host's achievable wrapping i64 multiply-add throughput, so i64
   GEMM is also judged as **% of machine ceiling** — the BLAS ratio alone

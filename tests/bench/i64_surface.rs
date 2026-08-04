@@ -79,11 +79,13 @@ fn dense2(n: usize) -> ArrayI64 {
     ArrayI64::from_shape_vec(vec![n, n], data).unwrap()
 }
 
-/// Range-safe ramp: |values| ≤ 1000, so k·max|A|·max|B| ≤ 4096·10⁶ ≪ 2⁵³ at
-/// every bench size — the matmul rows on this data exercise the guarded
-/// f64-promote path (the common integer workload: counts, keys, small
-/// coefficients). The wide ramps above exceed 2⁵³ intermediates at n ≥ 256
-/// and exercise the exact wrapping GEBP (`*_wide` rows).
+/// Three matmul data regimes, one per kernel tier (all tiers bit-identical):
+/// - `dense_small` (|v| ≤ 1000): k·max|A|·max|B| ≪ 2⁵³ → f64-promote tier
+///   (headline rows; the common integer workload).
+/// - `dense`/`dense2` wide ramps (~10⁷–10⁸, fit i32): beyond 2⁵³
+///   intermediates but inside i32 → i32-pack widening tier (`*_wide` rows).
+/// - `dense_huge` (~10¹², beyond i32): exact wrapping i64 GEBP (`*_huge`
+///   rows).
 fn dense_small(n: usize) -> ArrayI64 {
     let mut data = Vec::with_capacity(n * n);
     for i in 0..n * n {
@@ -96,6 +98,22 @@ fn dense2_small(n: usize) -> ArrayI64 {
     let mut data = Vec::with_capacity(n * n);
     for i in 0..n * n {
         data.push(((i as i64 * 13 + 2) % 2001) - 1000);
+    }
+    ArrayI64::from_shape_vec(vec![n, n], data).unwrap()
+}
+
+fn dense_huge(n: usize) -> ArrayI64 {
+    let mut data = Vec::with_capacity(n * n);
+    for i in 0..n * n {
+        data.push((((i as i64 * 17 + 1) % 2001) - 1000) * 1_000_000_007);
+    }
+    ArrayI64::from_shape_vec(vec![n, n], data).unwrap()
+}
+
+fn dense2_huge(n: usize) -> ArrayI64 {
+    let mut data = Vec::with_capacity(n * n);
+    for i in 0..n * n {
+        data.push((((i as i64 * 13 + 2) % 2001) - 1000) * 1_000_000_007);
     }
     ArrayI64::from_shape_vec(vec![n, n], data).unwrap()
 }
@@ -223,6 +241,11 @@ fn bench_rust(sizes: &[usize]) {
         emit("rust", "matmul_bt_wide", n, time_ms(ith, wrmh, || {
             black_box(i64_ops::matmul_bt(&a, &b).unwrap());
         }));
+        let ah = dense_huge(n);
+        let bh = dense2_huge(n);
+        emit("rust", "matmul_huge", n, time_ms(ith, wrmh, || {
+            black_box(i64_ops::matmul(&ah, &bh).unwrap());
+        }));
         emit("rust", "unique", n, time_ms(it, wrm, || {
             black_box(v.unique().unwrap());
         }));
@@ -246,6 +269,8 @@ fn bench_lua(sizes: &[usize]) {
         lua.set_global_array_i64("B", &dense2(n)).unwrap();
         lua.set_global_array_i64("AS", &dense_small(n)).unwrap();
         lua.set_global_array_i64("BS", &dense2_small(n)).unwrap();
+        lua.set_global_array_i64("AH", &dense_huge(n)).unwrap();
+        lua.set_global_array_i64("BH", &dense2_huge(n)).unwrap();
         lua.set_global_array_i64("V", &vec_n(n)).unwrap();
         lua.do_string("T = A:copy(); collectgarbage(\"collect\")").unwrap();
         let ab = "";
@@ -288,12 +313,13 @@ fn bench_lua(sizes: &[usize]) {
         emit("lua", "matmul_wide", n, time_lua(&lua, ab, "return ml.matmul(A, B)", ith, wrmh));
         emit("lua", "matmul_at_wide", n, time_lua(&lua, ab, "return ml.matmul_at(A, B)", ith, wrmh));
         emit("lua", "matmul_bt_wide", n, time_lua(&lua, ab, "return ml.matmul_bt(A, B)", ith, wrmh));
+        emit("lua", "matmul_huge", n, time_lua(&lua, ab, "return ml.matmul(AH, BH)", ith, wrmh));
         emit("lua", "unique", n, time_lua(&lua, v_only, "return V:unique()", it, wrm));
         emit("lua", "isin", n, time_lua(&lua, "", "return A:isin(V)", it, wrm));
 
         // Free this size's globals before the next.
         let _ = lua.do_string(
-            "A=nil;B=nil;AS=nil;BS=nil;V=nil;T=nil;collectgarbage(\"collect\")",
+            "A=nil;B=nil;AS=nil;BS=nil;AH=nil;BH=nil;V=nil;T=nil;collectgarbage(\"collect\")",
         );
     }
 }

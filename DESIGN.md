@@ -252,7 +252,7 @@ internally. Measurement: `tests/bench/compare_compose.py`.
 
 - **`ArrayI64`**: owned row-major `i64`, same shape/rank model as `f64` [`Array`].
 - **Introduction order:** `f64` first, then `i64` (not a permanent “LA is only f64” hierarchy).
-- **Integer LA path:** `matmul` / `matmul_at` / `matmul_bt` / `dot` / `transpose` / `eye` on `ArrayI64` via `linalg::i64_ops` (wrapping `i64` accumulators; not faer). Integer×integer→integer in \(\mathbb{Z}\); fixed-width may wrap. **Performance:** plan A keeps exact i64 results always; range-safe inputs (`k·max\|A\|·max\|B\| ≤ 2⁵³`) take a **guarded f64-promote** fast path at BLAS speed, bit-identical to the wrapping kernel (§7.1.2, 2026-08-04 ruling); wider values run the exact wrapping GEBP. Fair tables compare matmul to **NumPy f64 BLAS on integer-valued data** (§7.1.2), not `int64@int64`.
+- **Integer LA path:** `matmul` / `matmul_at` / `matmul_bt` / `dot` / `transpose` / `eye` on `ArrayI64` via `linalg::i64_ops` (wrapping `i64` accumulators; not faer). Integer×integer→integer in \(\mathbb{Z}\); fixed-width may wrap. **Performance:** plan A keeps exact i64 results always, via three bit-identical kernel tiers picked by a range scan (§7.1.2, 2026-08-04 rulings): f64-promote at BLAS speed when intermediates fit 2⁵³; i32-pack widening GEBP (exact for any k) when inputs fit i32; exact wrapping i64 GEBP otherwise. Fair tables compare matmul to **NumPy f64 BLAS on integer-valued data** (§7.1.2), not `int64@int64`.
 - **Real LA on integer inputs (NumPy-style):** `linalg::from_i64::{solve,lstsq,normal_eq,pinv,eigh,cholesky,cholesky_solve,qr,svd}` promote with `to_f64` and return **`f64` arrays**. Lua `ml.solve` / `eigh` / … accept `ArrayI64` the same way. Not exact rational solve; values \(>2^{53}\) lose integer exactness.
 - **Still not pure-`i64` codomain:** those ops never return `ArrayI64` (math is real-valued).
 - **Stats that are real-valued:** `mean` / `var` / `std` (+ axis) take `i64` and return `f64`.
@@ -556,7 +556,7 @@ closure questions listed at the end of this section.
 
 | Decision | Ruling |
 |----------|--------|
-| Exact **i64** matmul | **Plan A:** keep **wrapping exact i64** matmul as the product path. Do **not** promote to f64 where that could round. **Amended (Human ruling 2026-08-04): guarded promote** — when `k·max\|A\|·max\|B\| ≤ 2⁵³` every intermediate is exactly representable in f64, so the matrix paths promote to faer's f64 GEMM and truncate back, **bit-identical** to the wrapping kernel at BLAS speed (guard derivation at `promote_bound_ok` in `linalg/i64_ops.rs`). Outside the bound the exact wrapping GEBP runs unchanged. |
+| Exact **i64** matmul | **Plan A:** keep **wrapping exact i64** matmul as the product path. Do **not** promote to f64 where that could round. **Amended (Human rulings 2026-08-04): three bit-identical kernel tiers**, picked per product by one O(elements) range scan (`gemm_tier` in `linalg/i64_ops.rs`): (1) `k·max\|A\|·max\|B\| ≤ 2⁵³` → **guarded f64 promote** to faer's GEMM (every intermediate exactly representable; truncation back exact); (2) inputs fit **i32** → **i32-pack GEBP** with 32×32→64 widening products, exact for **any** k — bake-off winner, ~2× the i64 tile speed per thread (`tests/bench/wide_matmul_exp.rs`); (3) otherwise → the exact wrapping **i64 GEBP**. Unguarded promote stays rejected. |
 | Performance bar / thresholds | **Deferred to the closure ruling.** Measurements are complete and published (tests/README, 2026-08-03 gated run); the proposed bar (≥ 70% of machine roofline) is item 1 under “Remaining for closure” below. |
 | Matmul yardstick (tables) | **NumPy float64 BLAS** on the **same integer-valued** inputs (e.g. 3.0), **not** `int64@int64`. NumPy has i64 dtype but **no integer BLAS** ([numpy#14556](https://github.com/numpy/numpy/issues/14556)); int64@int64 is a slow fallback and hid a real gap. MatLua still reports **exact wrapping i64** times. |
 | Optimization discipline | Prefer **algorithms and design** (packing, sharing, demand-zero alloc, correct face paths). Do **not** sell host-specific size cutoffs as “opts.” Parallelism may use **work ÷ threads**, not a fixed `n` table from one box. |
@@ -625,8 +625,12 @@ question for M7.c (Human sign-off).
 #### Explicitly rejected / demoted
 
 - Using **NumPy int64@int64** as the matmul success bar.
-- **Strassen** as default: measured slower than GEBP through n=4096 on class of
-  host used for tables; may revisit only after base cubic kernel is stronger.
+- **Strassen** (both as default and as the wide-value tier): re-measured
+  2026-08-04 against the ceiling-quality GEBP over the wrapping ring
+  (`wide_matmul_exp.rs`, leaf = shipped parallel GEBP at 1024): 592 ms vs
+  504 ms at n=2048, 5.5 s vs 3.7 s at n=4096 — the O(n²) add passes and
+  quadrant traffic swamp the 7/8 multiply saving on this host class. Lost
+  the bake-off to the i32-pack tier; stays rejected, now with numbers.
 - **Host-tuned** Rayon cutoffs on reductions sold as algorithmic wins.
 - **Unguarded f64 promote** for i64 matmul to chase BLAS times: past 2⁵³ f64
   has no representation for every i64 (2⁵³ + 1 round-trips to 2⁵³), so results
