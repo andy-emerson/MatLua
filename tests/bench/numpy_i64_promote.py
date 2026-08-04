@@ -85,6 +85,9 @@ def main() -> None:
         v = (np.arange(n, dtype=np.int64) * 3 + 1)
         emit("solve", n, time_ms(ith, wrmh, lambda: np.linalg.solve(s, v)))
         emit("cholesky", n, time_ms(ith, wrmh, lambda: np.linalg.cholesky(s)))
+        # NumPy has no cho_solve (SciPy does); the honest NumPy-user reference
+        # for an SPD solve is np.linalg.solve on the same system.
+        emit("cholesky_solve", n, time_ms(ith, wrmh, lambda: np.linalg.solve(s, v)))
         emit("qr", n, time_ms(ith, wrmh, lambda: np.linalg.qr(a)))
 
 

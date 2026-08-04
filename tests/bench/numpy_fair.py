@@ -131,6 +131,9 @@ def main() -> None:
         print(f"numpy\tmatmul\t{n}\t{time_ms(it, wrm, lambda: a @ b):.6f}")
         print(f"numpy\tsolve\t{n}\t{time_ms(it, wrm, lambda: np.linalg.solve(s, rhs)):.6f}")
         print(f"numpy\tcholesky\t{n}\t{time_ms(it, wrm, lambda: np.linalg.cholesky(s)):.6f}")
+        # NumPy has no cho_solve (SciPy does); the honest NumPy-user reference
+        # for an SPD solve is np.linalg.solve on the same system.
+        print(f"numpy\tcholesky_solve\t{n}\t{time_ms(it, wrm, lambda: np.linalg.solve(s, rhs)):.6f}")
         print(f"numpy\tqr\t{n}\t{time_ms(it, wrm, lambda: np.linalg.qr(a, mode='reduced')):.6f}")
         print(f"numpy\tsvd\t{n}\t{time_ms(it, wrm, lambda: np.linalg.svd(a, full_matrices=False)):.6f}")
 

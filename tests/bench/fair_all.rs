@@ -214,6 +214,11 @@ fn bench_rust(sizes: &[usize]) {
         emit("rust", "cholesky", n, time_ms(it, wrm, || {
             black_box(linalg::cholesky(&s).unwrap());
         }));
+        // NumPy has no cho_solve (that's SciPy); its reference column is
+        // np.linalg.solve on the same SPD system — what a NumPy user would call.
+        emit("rust", "cholesky_solve", n, time_ms(it, wrm, || {
+            black_box(linalg::cholesky_solve(&s, &rhs).unwrap());
+        }));
         emit("rust", "qr", n, time_ms(it, wrm, || {
             black_box(linalg::qr(&a).unwrap());
         }));
@@ -300,6 +305,7 @@ fn bench_lua(sizes: &[usize]) {
         emit("lua", "matmul", n, time_lua(&lua, "", "return ml.matmul(A, B)", ith, wrmh));
         emit("lua", "solve", n, time_lua(&lua, "", "return ml.solve(S, rhs)", ith, wrmh));
         emit("lua", "cholesky", n, time_lua(&lua, "", "return ml.cholesky(S)", ith, wrmh));
+        emit("lua", "cholesky_solve", n, time_lua(&lua, "", "return ml.cholesky_solve(S, rhs)", ith, wrmh));
         emit("lua", "qr", n, time_lua(&lua, "", "return ml.qr(A)", ith, wrmh));
         emit("lua", "svd", n, time_lua(&lua, "", "return ml.svd(A)", ith, wrmh));
 
