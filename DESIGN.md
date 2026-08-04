@@ -367,6 +367,26 @@ constants against a single benchmark host; some results were then described as
 literature defaults. The Strassen path was later deleted whole; the mislabeled
 comments survived review. This rule prevents both failure modes.
 
+### 3.27 Allocation failure (2026-08-04)
+
+A refused buffer allocation returns **`Error::Alloc`** — it surfaces on the
+Lua face as a normal (pcall-able) error and never aborts the embedding host.
+There is **no MatLua-imposed size ceiling** (rejected: any constant is
+arbitrary and wrong for someone); the effective limit is whatever the
+OS/cgroup grants the process, i.e. the operator's choice. Mechanism: the
+buffer pools expose fallible `try_take_*` twins (`try_reserve_exact` /
+null-checked `alloc_zeroed`), used by every `Result`-returning construction
+path. Known bounds of the guarantee, both documented and accepted for now:
+
+- Same-size *derived* scratch inside infallible contexts (`Clone`, operator
+  impls, casts, rayon closures) keeps historical abort-on-OOM; reaching it
+  requires inputs that already allocated successfully. Full closure of that
+  window is boundary work (M10).
+- Linux overcommit can grant an allocation the OS later cannot back (OOM
+  killer); fallible allocation removes the abort-on-refusal class, it does
+  not budget memory. An optional host-configurable budget at `register()`
+  can come later (M8+) if a consumer needs one.
+
 ---
 
 ## 4. Lua face (frozen names)

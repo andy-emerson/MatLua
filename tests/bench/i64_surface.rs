@@ -79,6 +79,27 @@ fn dense2(n: usize) -> ArrayI64 {
     ArrayI64::from_shape_vec(vec![n, n], data).unwrap()
 }
 
+/// Range-safe ramp: |values| ≤ 1000, so k·max|A|·max|B| ≤ 4096·10⁶ ≪ 2⁵³ at
+/// every bench size — the matmul rows on this data exercise the guarded
+/// f64-promote path (the common integer workload: counts, keys, small
+/// coefficients). The wide ramps above exceed 2⁵³ intermediates at n ≥ 256
+/// and exercise the exact wrapping GEBP (`*_wide` rows).
+fn dense_small(n: usize) -> ArrayI64 {
+    let mut data = Vec::with_capacity(n * n);
+    for i in 0..n * n {
+        data.push(((i as i64 * 17 + 1) % 2001) - 1000);
+    }
+    ArrayI64::from_shape_vec(vec![n, n], data).unwrap()
+}
+
+fn dense2_small(n: usize) -> ArrayI64 {
+    let mut data = Vec::with_capacity(n * n);
+    for i in 0..n * n {
+        data.push(((i as i64 * 13 + 2) % 2001) - 1000);
+    }
+    ArrayI64::from_shape_vec(vec![n, n], data).unwrap()
+}
+
 fn vec_n(n: usize) -> ArrayI64 {
     let mut data = Vec::with_capacity(n);
     for i in 0..n {
@@ -180,13 +201,26 @@ fn bench_rust(sizes: &[usize]) {
         emit("rust", "dot", n, time_ms(it, wrm, || {
             black_box(i64_ops::dot(&v, &v).unwrap());
         }));
+        // Headline matmul rows: range-safe data (guarded f64-promote path).
+        // *_wide rows: values whose intermediates exceed 2^53 (exact GEBP).
+        let asm = dense_small(n);
+        let bsm = dense2_small(n);
         emit("rust", "matmul", n, time_ms(ith, wrmh, || {
-            black_box(i64_ops::matmul(&a, &b).unwrap());
+            black_box(i64_ops::matmul(&asm, &bsm).unwrap());
         }));
         emit("rust", "matmul_at", n, time_ms(ith, wrmh, || {
-            black_box(i64_ops::matmul_at(&a, &b).unwrap());
+            black_box(i64_ops::matmul_at(&asm, &bsm).unwrap());
         }));
         emit("rust", "matmul_bt", n, time_ms(ith, wrmh, || {
+            black_box(i64_ops::matmul_bt(&asm, &bsm).unwrap());
+        }));
+        emit("rust", "matmul_wide", n, time_ms(ith, wrmh, || {
+            black_box(i64_ops::matmul(&a, &b).unwrap());
+        }));
+        emit("rust", "matmul_at_wide", n, time_ms(ith, wrmh, || {
+            black_box(i64_ops::matmul_at(&a, &b).unwrap());
+        }));
+        emit("rust", "matmul_bt_wide", n, time_ms(ith, wrmh, || {
             black_box(i64_ops::matmul_bt(&a, &b).unwrap());
         }));
         emit("rust", "unique", n, time_ms(it, wrm, || {
@@ -210,6 +244,8 @@ fn bench_lua(sizes: &[usize]) {
         // e.g. isin degenerate to a single hot key on the Lua face).
         lua.set_global_array_i64("A", &dense(n)).unwrap();
         lua.set_global_array_i64("B", &dense2(n)).unwrap();
+        lua.set_global_array_i64("AS", &dense_small(n)).unwrap();
+        lua.set_global_array_i64("BS", &dense2_small(n)).unwrap();
         lua.set_global_array_i64("V", &vec_n(n)).unwrap();
         lua.do_string("T = A:copy(); collectgarbage(\"collect\")").unwrap();
         let ab = "";
@@ -246,15 +282,18 @@ fn bench_lua(sizes: &[usize]) {
         emit("lua", "max", n, time_lua(&lua, a_only, "return A:max()", it, wrm));
         emit("lua", "transpose", n, time_lua(&lua, a_only, "return A:transpose()", it, wrm));
         emit("lua", "dot", n, time_lua(&lua, v_only, "return ml.dot(V, V)", it, wrm));
-        emit("lua", "matmul", n, time_lua(&lua, ab, "return ml.matmul(A, B)", ith, wrmh));
-        emit("lua", "matmul_at", n, time_lua(&lua, ab, "return ml.matmul_at(A, B)", ith, wrmh));
-        emit("lua", "matmul_bt", n, time_lua(&lua, ab, "return ml.matmul_bt(A, B)", ith, wrmh));
+        emit("lua", "matmul", n, time_lua(&lua, ab, "return ml.matmul(AS, BS)", ith, wrmh));
+        emit("lua", "matmul_at", n, time_lua(&lua, ab, "return ml.matmul_at(AS, BS)", ith, wrmh));
+        emit("lua", "matmul_bt", n, time_lua(&lua, ab, "return ml.matmul_bt(AS, BS)", ith, wrmh));
+        emit("lua", "matmul_wide", n, time_lua(&lua, ab, "return ml.matmul(A, B)", ith, wrmh));
+        emit("lua", "matmul_at_wide", n, time_lua(&lua, ab, "return ml.matmul_at(A, B)", ith, wrmh));
+        emit("lua", "matmul_bt_wide", n, time_lua(&lua, ab, "return ml.matmul_bt(A, B)", ith, wrmh));
         emit("lua", "unique", n, time_lua(&lua, v_only, "return V:unique()", it, wrm));
         emit("lua", "isin", n, time_lua(&lua, "", "return A:isin(V)", it, wrm));
 
         // Free this size's globals before the next.
         let _ = lua.do_string(
-            "A=nil;B=nil;V=nil;T=nil;collectgarbage(\"collect\")",
+            "A=nil;B=nil;AS=nil;BS=nil;V=nil;T=nil;collectgarbage(\"collect\")",
         );
     }
 }

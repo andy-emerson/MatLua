@@ -74,7 +74,7 @@ pub fn transpose(a: &Array) -> Result<Array> {
         1 => {
             // Column (n,) → row matrix (1, n).
             let n = a.len();
-            let mut data = crate::array::pool_take_uninit(n);
+            let mut data = crate::array::pool_try_take_uninit(n)?;
             data.copy_from_slice(a.as_slice());
             Ok(Array::from_parts(Shape::matrix(1, n)?, data))
         }
@@ -82,7 +82,7 @@ pub fn transpose(a: &Array) -> Result<Array> {
             let rows = a.dims()[0];
             let cols = a.dims()[1];
             let src = a.as_slice();
-            let mut data = crate::array::pool_take_uninit(rows.saturating_mul(cols));
+            let mut data = crate::array::pool_try_take_uninit(rows.saturating_mul(cols))?;
             blocked_transpose(src, rows, cols, &mut data);
             Ok(Array::from_parts(Shape::matrix(cols, rows)?, data))
         }
@@ -152,7 +152,7 @@ pub fn matmul(a: &Array, b: &Array) -> Result<Array> {
     let prefer_vec = b.rank() == 1 || (a.rank() == 1 && bn == 1);
 
     let n_out = am.saturating_mul(bn);
-    let mut data = crate::array::pool_take_uninit(n_out);
+    let mut data = crate::array::pool_try_take_uninit(n_out)?;
     if n_out > 0 {
         let mut dst = MatMut::from_row_major_slice_mut(&mut data, am, bn);
         faer_matmul(
@@ -234,7 +234,7 @@ pub fn matmul_at(a: &Array, b: &Array) -> Result<Array> {
     let rhs = array_as_mat_ref(b)?;
     let prefer_vec = b.rank() == 1;
     let n_out = an.saturating_mul(bn);
-    let mut data = crate::array::pool_take_uninit(n_out);
+    let mut data = crate::array::pool_try_take_uninit(n_out)?;
     if n_out > 0 {
         let mut dst = MatMut::from_row_major_slice_mut(&mut data, an, bn);
         faer_matmul(
@@ -286,7 +286,7 @@ pub fn matmul_bt(a: &Array, b: &Array) -> Result<Array> {
     let rhs = array_as_mat_ref(b)?.transpose();
     let prefer_vec = a.rank() == 1;
     let n_out = am.saturating_mul(bm);
-    let mut data = crate::array::pool_take_uninit(n_out);
+    let mut data = crate::array::pool_try_take_uninit(n_out)?;
     if n_out > 0 {
         let mut dst = MatMut::from_row_major_slice_mut(&mut data, am, bm);
         faer_matmul(
@@ -414,9 +414,9 @@ pub fn solve(a: &Array, b: &Array) -> Result<Array> {
     // unchanged. Agrees with faer to machine epsilon on well-conditioned
     // systems (same pivoting strategy).
     if n <= 192 && bk == 1 && n > 0 {
-        let mut lu = crate::array::pool_take_uninit(n * n);
+        let mut lu = crate::array::pool_try_take_uninit(n * n)?;
         lu.copy_from_slice(a.as_slice());
-        let mut x = crate::array::pool_take_uninit(n);
+        let mut x = crate::array::pool_try_take_uninit(n)?;
         x.copy_from_slice(b.as_slice());
         if lu_solve_unblocked(n, &mut lu, &mut x) {
             crate::array::pool_recycle(lu);
@@ -435,7 +435,7 @@ pub fn solve(a: &Array, b: &Array) -> Result<Array> {
     // (avoids faer-owned Mat + second pack-out).
     let prefer_vec = b.rank() == 1 && bk == 1;
     let n_out = bn.saturating_mul(bk);
-    let mut data = crate::array::pool_take_uninit(n_out);
+    let mut data = crate::array::pool_try_take_uninit(n_out)?;
     if n_out > 0 {
         data.copy_from_slice(b.as_slice());
         let mut rhs = MatMut::from_row_major_slice_mut(&mut data, bn, bk);
@@ -500,7 +500,7 @@ pub fn eigh(a: &Array) -> Result<(Array, Array)> {
     let s_diag = evd.S();
     let dim = s_diag.dim();
     let col = s_diag.column_vector();
-    let mut w = crate::array::pool_take_uninit(dim);
+    let mut w = crate::array::pool_try_take_uninit(dim)?;
     for i in 0..dim {
         w[i] = col[i];
     }
@@ -553,7 +553,7 @@ pub fn cholesky_solve(a: &Array, b: &Array) -> Result<Array> {
     // Dest-pack like `solve`: copy RHS row-major and solve in place.
     let prefer_vec = b.rank() == 1 && bk == 1;
     let n_out = bn.saturating_mul(bk);
-    let mut data = crate::array::pool_take_uninit(n_out);
+    let mut data = crate::array::pool_try_take_uninit(n_out)?;
     if n_out > 0 {
         data.copy_from_slice(b.as_slice());
         let mut rhs = MatMut::from_row_major_slice_mut(&mut data, bn, bk);
@@ -615,7 +615,7 @@ pub fn svd(a: &Array) -> Result<(Array, Array, Array)> {
     let s_diag = svd.S();
     let n = s_diag.dim();
     let col = s_diag.column_vector();
-    let mut s = crate::array::pool_take_uninit(n);
+    let mut s = crate::array::pool_try_take_uninit(n)?;
     for i in 0..n {
         s[i] = col[i];
     }
@@ -1088,8 +1088,8 @@ pub fn eigvals(a: &Array) -> Result<(Array, Array)> {
     let vals = am
         .eigenvalues()
         .map_err(|e| Error::linalg(format!("eigvals failed: {e:?}")))?;
-    let mut re = crate::array::pool_take_uninit(n);
-    let mut im = crate::array::pool_take_uninit(n);
+    let mut re = crate::array::pool_try_take_uninit(n)?;
+    let mut im = crate::array::pool_try_take_uninit(n)?;
     for (i, z) in vals.iter().enumerate() {
         re[i] = z.re;
         im[i] = z.im;
@@ -1121,15 +1121,15 @@ pub fn eig(a: &Array) -> Result<(Array, Array, Array, Array)> {
         .map_err(|e| Error::linalg(format!("eig failed: {e:?}")))?;
     let u = evd.U(); // Complex matrix n×n
     let s = evd.S();
-    let mut wr = crate::array::pool_take_uninit(n);
-    let mut wi = crate::array::pool_take_uninit(n);
+    let mut wr = crate::array::pool_try_take_uninit(n)?;
+    let mut wi = crate::array::pool_try_take_uninit(n)?;
     let col = s.column_vector();
     for i in 0..n {
         wr[i] = col[i].re;
         wi[i] = col[i].im;
     }
-    let mut vre = crate::array::pool_take_uninit(n * n);
-    let mut vim = crate::array::pool_take_uninit(n * n);
+    let mut vre = crate::array::pool_try_take_uninit(n * n)?;
+    let mut vim = crate::array::pool_try_take_uninit(n * n)?;
     for i in 0..n {
         for j in 0..n {
             let z = u[(i, j)];

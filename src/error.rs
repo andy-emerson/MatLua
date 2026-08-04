@@ -24,6 +24,13 @@ pub enum Error {
     /// Dense linear algebra failure (e.g. Cholesky of a non-SPD matrix).
     #[error("linear algebra error: {0}")]
     Linalg(String),
+
+    /// The allocator refused a buffer request. There is **no MatLua-imposed
+    /// size ceiling** — the limit is whatever the OS/cgroup grants the host
+    /// process. Surfaces on the Lua face as a normal (pcall-able) error
+    /// instead of aborting the host.
+    #[error("allocation failure: {0}")]
+    Alloc(String),
 }
 
 impl Error {
@@ -45,6 +52,15 @@ impl Error {
     /// Build a [`Error::Linalg`].
     pub fn linalg(msg: impl Into<String>) -> Self {
         Self::Linalg(msg.into())
+    }
+
+    /// Build a [`Error::Alloc`] for a refused buffer of `len` elements of
+    /// `elem` bytes each.
+    pub fn alloc(len: usize, elem: usize) -> Self {
+        Self::Alloc(format!(
+            "cannot allocate {len} elements ({} bytes requested)",
+            len.saturating_mul(elem)
+        ))
     }
 }
 

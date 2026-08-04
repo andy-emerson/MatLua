@@ -27,7 +27,7 @@ fn with_rng<R>(f: impl FnOnce(&mut Xoshiro256StarStar) -> R) -> R {
 pub fn random(shape: impl Into<Vec<usize>>) -> Result<Array> {
     let shape = Shape::new(shape)?;
     let n = shape.numel();
-    let mut data = crate::array::pool_take_uninit(n);
+    let mut data = crate::array::pool_try_take_uninit(n)?;
     with_rng(|rng| {
         for x in &mut data {
             *x = rng.f64();
@@ -55,7 +55,7 @@ pub fn uniform(shape: impl Into<Vec<usize>>, low: f64, high: f64) -> Result<Arra
 pub fn randn(shape: impl Into<Vec<usize>>) -> Result<Array> {
     let shape = Shape::new(shape)?;
     let n = shape.numel();
-    let mut data = crate::array::pool_take_uninit(n);
+    let mut data = crate::array::pool_try_take_uninit(n)?;
     with_rng(|rng| {
         let mut i = 0;
         while i < n {
@@ -95,7 +95,7 @@ pub fn integers(shape: impl Into<Vec<usize>>, low: i64, high: i64) -> Result<Arr
     let shape = Shape::new(shape)?;
     let n = shape.numel();
     let span = (high as i128) - (low as i128);
-    let mut data = crate::array::pool_i64::take_uninit(n);
+    let mut data = crate::array::pool_i64::try_take_uninit(n)?;
     with_rng(|rng| {
         for x in &mut data {
             let u = rng.next_u64() as u128;
@@ -116,7 +116,7 @@ pub fn choice(a: &Array, k: usize) -> Result<Array> {
     }
     let n = a.len();
     let src = a.as_slice();
-    let mut data = crate::array::pool_take_uninit(k);
+    let mut data = crate::array::pool_try_take_uninit(k)?;
     with_rng(|rng| {
         for x in &mut data {
             let j = (rng.next_u64() as usize) % n;
@@ -136,7 +136,7 @@ pub fn choice_i64(a: &ArrayI64, k: usize) -> Result<ArrayI64> {
     }
     let n = a.len();
     let src = a.as_slice();
-    let mut data = crate::array::pool_i64::take_uninit(k);
+    let mut data = crate::array::pool_i64::try_take_uninit(k)?;
     with_rng(|rng| {
         for x in &mut data {
             let j = (rng.next_u64() as usize) % n;

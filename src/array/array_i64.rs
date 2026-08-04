@@ -223,19 +223,19 @@ impl ArrayI64 {
     /// `zeros` (see `f64` [`Array`] counterpart).
     pub fn zeros(shape: impl Into<Vec<usize>>) -> Result<Self> {
         let shape = Shape::new(shape)?;
-        Ok(Self::from_parts(shape.clone(), pool::take_zeroed(shape.numel())))
+        Ok(Self::from_parts(shape.clone(), pool::try_take_zeroed(shape.numel())?))
     }
 
     /// `ones` (see `f64` [`Array`] counterpart).
     pub fn ones(shape: impl Into<Vec<usize>>) -> Result<Self> {
         let shape = Shape::new(shape)?;
-        Ok(Self::from_parts(shape.clone(), pool::take_filled(shape.numel(), 1)))
+        Ok(Self::from_parts(shape.clone(), pool::try_take_filled(shape.numel(), 1)?))
     }
 
     /// `full` (see `f64` [`Array`] counterpart).
     pub fn full(shape: impl Into<Vec<usize>>, value: i64) -> Result<Self> {
         let shape = Shape::new(shape)?;
-        Ok(Self::from_parts(shape.clone(), pool::take_filled(shape.numel(), value)))
+        Ok(Self::from_parts(shape.clone(), pool::try_take_filled(shape.numel(), value)?))
     }
 
     /// Rank-1 range `[start, stop)` with step `1`.
@@ -262,7 +262,7 @@ impl ArrayI64 {
             ((span + st - 1) / st) as usize
         };
         // Exact length already computed; fill with ILP (wrapping step).
-        let mut data = pool::take_uninit(n);
+        let mut data = pool::try_take_uninit(n)?;
         let mut x = start;
         let mut i = 0usize;
         while i + 4 <= n {
@@ -324,7 +324,7 @@ impl ArrayI64 {
     /// `eye` (see `f64` [`Array`] counterpart).
     pub fn eye(n: usize) -> Result<Self> {
         let shape = Shape::matrix(n, n)?;
-        let mut data = pool::take_zeroed(shape.numel());
+        let mut data = pool::try_take_zeroed(shape.numel())?;
         for i in 0..n {
             data[i * n + i] = 1;
         }
@@ -429,7 +429,7 @@ impl ArrayI64 {
         }
         // Materialize by walking multi-indices
         let n = target.numel();
-        let mut data = pool::take_uninit(n);
+        let mut data = pool::try_take_uninit(n)?;
         let src = self.as_slice();
         let src_dims = self.dims();
         let tgt = target.dims();
@@ -470,7 +470,7 @@ impl ArrayI64 {
         F: FnOnce(&[i64], &[i64], &mut [i64]),
     {
         if self.shape.same_as(other.shape()) {
-            let mut data = pool::take_uninit(self.len());
+            let mut data = pool::try_take_uninit(self.len())?;
             f(self.as_slice(), other.as_slice(), &mut data);
             return Ok(Self::from_parts(self.shape.clone(), data));
         }
@@ -478,14 +478,14 @@ impl ArrayI64 {
         let out_shape = Shape::new(out_dims)?;
         let left = self.broadcast_to(out_shape.dims())?;
         let right = other.broadcast_to(out_shape.dims())?;
-        let mut data = pool::take_uninit(left.len());
+        let mut data = pool::try_take_uninit(left.len())?;
         f(left.as_slice(), right.as_slice(), &mut data);
         Ok(Self::from_parts(out_shape, data))
     }
 
     fn owned_binary_broadcast(&self, other: &ArrayI64, op: BroadcastOp) -> Result<ArrayI64> {
         if self.shape.same_as(other.shape()) {
-            let mut data = pool::take_uninit(self.len());
+            let mut data = pool::try_take_uninit(self.len())?;
             op.apply_same(self.as_slice(), other.as_slice(), &mut data);
             return Ok(Self::from_parts(self.shape.clone(), data));
         }
@@ -494,12 +494,12 @@ impl ArrayI64 {
             if (other.rank() == 1 && other.len() == n)
                 || (other.rank() == 2 && other.dims() == [1, n])
             {
-                let mut data = pool::take_uninit(m * n);
+                let mut data = pool::try_take_uninit(m * n)?;
                 op.apply_row(m, n, self.as_slice(), other.as_slice(), &mut data);
                 return Ok(Self::from_parts(self.shape.clone(), data));
             }
             if other.rank() == 2 && other.dims() == [m, 1] {
-                let mut data = pool::take_uninit(m * n);
+                let mut data = pool::try_take_uninit(m * n)?;
                 op.apply_col(m, n, self.as_slice(), other.as_slice(), &mut data);
                 return Ok(Self::from_parts(self.shape.clone(), data));
             }
@@ -684,12 +684,12 @@ impl ArrayI64 {
         let (m, n) = self.rank2_dims()?;
         match axis {
             0 => {
-                let mut out = pool::take_uninit(n);
+                let mut out = pool::try_take_uninit(n)?;
                 kernels::axis0_sum(m, n, self.as_slice(), &mut out);
                 Ok(Self::from_parts(Shape::from_len(n), out))
             }
             1 => {
-                let mut out = pool::take_uninit(m);
+                let mut out = pool::try_take_uninit(m)?;
                 kernels::axis1_sum(m, n, self.as_slice(), &mut out);
                 Ok(Self::from_parts(Shape::from_len(m), out))
             }
@@ -710,7 +710,7 @@ impl ArrayI64 {
         if denom == 0.0 {
             return Err(Error::Shape("mean_axis of empty dimension".into()));
         }
-        let mut data = super::pool::take_uninit(s.len());
+        let mut data = super::pool::try_take_uninit(s.len())?;
         for (i, &x) in s.as_slice().iter().enumerate() {
             data[i] = x as f64 / denom;
         }
@@ -725,12 +725,12 @@ impl ArrayI64 {
         }
         match axis {
             0 => {
-                let mut out = pool::take_uninit(n);
+                let mut out = pool::try_take_uninit(n)?;
                 kernels::axis0_min(m, n, self.as_slice(), &mut out);
                 Ok(Self::from_parts(Shape::from_len(n), out))
             }
             1 => {
-                let mut out = pool::take_uninit(m);
+                let mut out = pool::try_take_uninit(m)?;
                 kernels::axis1_min(m, n, self.as_slice(), &mut out);
                 Ok(Self::from_parts(Shape::from_len(m), out))
             }
@@ -746,12 +746,12 @@ impl ArrayI64 {
         }
         match axis {
             0 => {
-                let mut out = pool::take_uninit(n);
+                let mut out = pool::try_take_uninit(n)?;
                 kernels::axis0_max(m, n, self.as_slice(), &mut out);
                 Ok(Self::from_parts(Shape::from_len(n), out))
             }
             1 => {
-                let mut out = pool::take_uninit(m);
+                let mut out = pool::try_take_uninit(m)?;
                 kernels::axis1_max(m, n, self.as_slice(), &mut out);
                 Ok(Self::from_parts(Shape::from_len(m), out))
             }
@@ -767,7 +767,7 @@ impl ArrayI64 {
         let n = self.len();
         let mut idx = vec![0usize; n];
         kernels::argsort_indices(self.as_slice(), descending, &mut idx);
-        let mut data = pool::take_uninit(n);
+        let mut data = pool::try_take_uninit(n)?;
         for i in 0..n {
             data[i] = idx[i] as i64;
         }
@@ -783,7 +783,7 @@ impl ArrayI64 {
             return Err(Error::Shape("take indices must be rank-1".into()));
         }
         let n = indices.len();
-        let mut data = pool::take_uninit(n);
+        let mut data = pool::try_take_uninit(n)?;
         let src = self.as_slice();
         for (i, &ix) in indices.as_slice().iter().enumerate() {
             if ix < 0 || ix as usize >= self.len() {
@@ -920,7 +920,7 @@ impl ArrayI64 {
         if j >= n {
             return Err(Error::Index(format!("col {j} out of range for {n} cols")));
         }
-        let mut data = pool::take_uninit(m);
+        let mut data = pool::try_take_uninit(m)?;
         let src = self.as_slice();
         for i in 0..m {
             data[i] = src[i * n + j];
@@ -934,13 +934,13 @@ impl ArrayI64 {
         match self.rank() {
             1 => {
                 let n = self.len();
-                let mut data = pool::take_uninit(n);
+                let mut data = pool::try_take_uninit(n)?;
                 data.copy_from_slice(self.as_slice());
                 Ok(Self::from_parts(Shape::matrix(1, n)?, data))
             }
             2 => {
                 let (rows, cols) = (self.dims()[0], self.dims()[1]);
-                let mut data = pool::take_uninit(rows * cols);
+                let mut data = pool::try_take_uninit(rows * cols)?;
                 blocked_transpose_i64(self.as_slice(), rows, cols, &mut data);
                 Ok(Self::from_parts(Shape::matrix(cols, rows)?, data))
             }
@@ -955,7 +955,7 @@ impl ArrayI64 {
     pub fn diagonal(&self) -> Result<ArrayI64> {
         let (m, n) = self.rank2_dims()?;
         let k = m.min(n);
-        let mut data = pool::take_uninit(k);
+        let mut data = pool::try_take_uninit(k)?;
         let src = self.as_slice();
         for i in 0..k {
             data[i] = src[i * n + i];
@@ -973,7 +973,7 @@ impl ArrayI64 {
         match a.rank() {
             1 => {
                 let n = a.len();
-                let mut data = pool::take_zeroed(n * n);
+                let mut data = pool::try_take_zeroed(n * n)?;
                 for i in 0..n {
                     data[i * n + i] = a.as_slice()[i];
                 }
@@ -991,7 +991,7 @@ impl ArrayI64 {
         }
         let m = a.len();
         let n = b.len();
-        let mut data = pool::take_uninit(m * n);
+        let mut data = pool::try_take_uninit(m * n)?;
         let aa = a.as_slice();
         let bb = b.as_slice();
         for i in 0..m {
@@ -1019,7 +1019,7 @@ impl ArrayI64 {
     pub fn where_cond(cond: &ArrayI64, x: &ArrayI64, y: &ArrayI64) -> Result<ArrayI64> {
         cond.same_shape(x)?;
         cond.same_shape(y)?;
-        let mut data = pool::take_uninit(cond.len());
+        let mut data = pool::try_take_uninit(cond.len())?;
         kernels::where_slices(cond.as_slice(), x.as_slice(), y.as_slice(), &mut data);
         Ok(Self::from_parts(cond.shape.clone(), data))
     }
@@ -1082,7 +1082,7 @@ impl ArrayI64 {
         }
         let mut v: Vec<f64> = self.as_slice().iter().map(|&x| x as f64).collect();
         v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let mut data = super::pool::take_uninit(qs.len());
+        let mut data = super::pool::try_take_uninit(qs.len())?;
         for (i, &q) in qs.iter().enumerate() {
             data[i] = super::kernels::quantile_sorted(&v, q).unwrap();
         }
@@ -1095,7 +1095,7 @@ impl ArrayI64 {
         let src = self.as_slice();
         match axis {
             0 => {
-                let mut data = super::pool::take_uninit(n);
+                let mut data = super::pool::try_take_uninit(n)?;
                 let mut col = vec![0.0f64; m];
                 for j in 0..n {
                     for i in 0..m {
@@ -1108,7 +1108,7 @@ impl ArrayI64 {
                 Ok(Array::from_parts(Shape::from_len(n), data))
             }
             1 => {
-                let mut data = super::pool::take_uninit(m);
+                let mut data = super::pool::try_take_uninit(m)?;
                 for i in 0..m {
                     let row: Vec<f64> = src[i * n..(i + 1) * n].iter().map(|&x| x as f64).collect();
                     data[i] = super::kernels::median_slice(&row).ok_or_else(|| {
@@ -1130,7 +1130,7 @@ impl ArrayI64 {
         let src = self.as_slice();
         match axis {
             0 => {
-                let mut data = super::pool::take_uninit(n);
+                let mut data = super::pool::try_take_uninit(n)?;
                 let mut col = vec![0.0f64; m];
                 for j in 0..n {
                     for i in 0..m {
@@ -1144,7 +1144,7 @@ impl ArrayI64 {
                 Ok(Array::from_parts(Shape::from_len(n), data))
             }
             1 => {
-                let mut data = super::pool::take_uninit(m);
+                let mut data = super::pool::try_take_uninit(m)?;
                 for i in 0..m {
                     let mut row: Vec<f64> = src[i * n..(i + 1) * n].iter().map(|&x| x as f64).collect();
                     row.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -1185,7 +1185,7 @@ impl ArrayI64 {
         let mut out_dims = parts[0].dims().to_vec();
         out_dims[axis] = parts.iter().map(|p| p.dims()[axis]).sum();
         let shape = Shape::new(out_dims)?;
-        let mut data = pool::take_uninit(shape.numel());
+        let mut data = pool::try_take_uninit(shape.numel())?;
         if rank == 1 {
             let mut off = 0;
             for p in parts {
@@ -1237,14 +1237,14 @@ impl ArrayI64 {
         let k = parts.len();
         match axis {
             0 => {
-                let mut data = pool::take_uninit(k * n);
+                let mut data = pool::try_take_uninit(k * n)?;
                 for (i, p) in parts.iter().enumerate() {
                     data[i * n..(i + 1) * n].copy_from_slice(p.as_slice());
                 }
                 Ok(Self::from_parts(Shape::matrix(k, n)?, data))
             }
             1 => {
-                let mut data = pool::take_uninit(n * k);
+                let mut data = pool::try_take_uninit(n * k)?;
                 for i in 0..n {
                     for (j, p) in parts.iter().enumerate() {
                         data[i * k + j] = p.as_slice()[i];
@@ -1261,12 +1261,12 @@ impl ArrayI64 {
         let (m, n) = self.rank2_dims()?;
         match axis {
             0 => {
-                let mut out = pool::take_uninit(n);
+                let mut out = pool::try_take_uninit(n)?;
                 kernels::axis0_any(m, n, self.as_slice(), &mut out);
                 Ok(Self::from_parts(Shape::from_len(n), out))
             }
             1 => {
-                let mut out = pool::take_uninit(m);
+                let mut out = pool::try_take_uninit(m)?;
                 kernels::axis1_any(m, n, self.as_slice(), &mut out);
                 Ok(Self::from_parts(Shape::from_len(m), out))
             }
@@ -1279,12 +1279,12 @@ impl ArrayI64 {
         let (m, n) = self.rank2_dims()?;
         match axis {
             0 => {
-                let mut out = pool::take_uninit(n);
+                let mut out = pool::try_take_uninit(n)?;
                 kernels::axis0_all(m, n, self.as_slice(), &mut out);
                 Ok(Self::from_parts(Shape::from_len(n), out))
             }
             1 => {
-                let mut out = pool::take_uninit(m);
+                let mut out = pool::try_take_uninit(m)?;
                 kernels::axis1_all(m, n, self.as_slice(), &mut out);
                 Ok(Self::from_parts(Shape::from_len(m), out))
             }
@@ -1335,7 +1335,7 @@ impl ArrayI64 {
             )));
         }
         let means = self.mean_axis(axis)?;
-        let mut data = super::pool::take_uninit(len_out);
+        let mut data = super::pool::try_take_uninit(len_out)?;
         let src = self.as_slice();
         let mu = means.as_slice();
         match axis {
@@ -1367,7 +1367,7 @@ impl ArrayI64 {
     /// Std-dev along axis for rank-2 → rank-1 `f64` array.
     pub fn std_axis(&self, axis: usize, ddof: usize) -> Result<Array> {
         let v = self.var_axis(axis, ddof)?;
-        let mut data = super::pool::take_uninit(v.len());
+        let mut data = super::pool::try_take_uninit(v.len())?;
         for (i, &x) in v.as_slice().iter().enumerate() {
             data[i] = x.sqrt();
         }
@@ -1543,7 +1543,7 @@ impl ArrayI64 {
         }
         let te = test_elements.as_slice();
         let src = self.as_slice();
-        let mut data = pool::take_uninit(self.len());
+        let mut data = pool::try_take_uninit(self.len())?;
         if te.is_empty() {
             data.fill(0);
             return Ok(Self::from_parts(self.shape.clone(), data));
@@ -1625,7 +1625,7 @@ impl ArrayI64 {
         } else {
             (max_v as usize + 1).max(minlength)
         };
-        let mut data = pool::take_zeroed(n);
+        let mut data = pool::try_take_zeroed(n)?;
         for &x in self.as_slice() {
             let i = x as usize;
             data[i] = data[i].wrapping_add(1);
@@ -1669,7 +1669,7 @@ impl ArrayI64 {
                 return Err(Error::Shape("searchsorted requires non-decreasing array".into()));
             }
         }
-        let mut data = pool::take_uninit(values.len());
+        let mut data = pool::try_take_uninit(values.len())?;
         for (i, &v) in values.as_slice().iter().enumerate() {
             let r = if side_right {
                 a.partition_point(|&x| x <= v)
@@ -1715,7 +1715,7 @@ impl ArrayI64 {
     /// Negative exponents error.
     pub fn power(&self, exponents: &ArrayI64) -> Result<ArrayI64> {
         self.same_shape(exponents)?;
-        let mut data = pool::take_uninit(self.len());
+        let mut data = pool::try_take_uninit(self.len())?;
         for i in 0..self.len() {
             let e = exponents.as_slice()[i];
             if e < 0 {
@@ -1733,8 +1733,8 @@ impl ArrayI64 {
     /// Divisor 0 → quot 0, rem 0.
     pub fn divmod(&self, other: &ArrayI64) -> Result<(ArrayI64, ArrayI64)> {
         self.same_shape(other)?;
-        let mut q = pool::take_uninit(self.len());
-        let mut r = pool::take_uninit(self.len());
+        let mut q = pool::try_take_uninit(self.len())?;
+        let mut r = pool::try_take_uninit(self.len())?;
         let a = self.as_slice();
         let b = other.as_slice();
         for i in 0..a.len() {
@@ -1755,7 +1755,7 @@ impl ArrayI64 {
     /// Element-wise GCD (`0` if both zero; always non-negative result).
     pub fn gcd(&self, other: &ArrayI64) -> Result<ArrayI64> {
         self.same_shape(other)?;
-        let mut data = pool::take_uninit(self.len());
+        let mut data = pool::try_take_uninit(self.len())?;
         for i in 0..self.len() {
             data[i] = gcd_i64(self.as_slice()[i], other.as_slice()[i]);
         }
@@ -1765,7 +1765,7 @@ impl ArrayI64 {
     /// Element-wise LCM (wrapping); `0` if either arg is 0.
     pub fn lcm(&self, other: &ArrayI64) -> Result<ArrayI64> {
         self.same_shape(other)?;
-        let mut data = pool::take_uninit(self.len());
+        let mut data = pool::try_take_uninit(self.len())?;
         for i in 0..self.len() {
             data[i] = lcm_i64(self.as_slice()[i], other.as_slice()[i]);
         }

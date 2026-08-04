@@ -133,7 +133,10 @@ integer-valued inputs (not `int64@int64`).
 
 **Known limits (tracked M7.c–M12 / issues):** exact i64 GEMM runs ~6–9× NumPy f64
 BLAS (integer-valued) at ~73–88% of the measured machine ceiling — the rest is
-integer-multiply ISA physics (see tests/README Roofline); small-buffer pool min size; embed error boundary; dtypes
+integer-multiply ISA physics (see tests/README Roofline) — and range-safe
+integer data (intermediates ≤ 2⁵³) takes an exact f64-promote path at BLAS
+speed; refused allocations raise catchable errors, no size ceiling (DESIGN
+§3.27); small-buffer pool min size; embed error boundary; dtypes
 beyond f64/i64; `arrow-lite` cutover. Full in-place `out=` is
 [#21](https://github.com/andy-emerson/MatLua/issues/21) (partial `*_out` exists).
 Host→Lua views: `push_view_f64` / `push_view_i64` (M7.b).

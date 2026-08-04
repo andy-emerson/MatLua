@@ -27,7 +27,7 @@ pub(crate) mod isa;
 pub mod dtype;
 pub(crate) mod kernels;
 pub(crate) mod kernels_i64;
-mod pool;
+pub(crate) mod pool;
 pub(crate) mod pool_i64;
 mod ops;
 mod ops_i64;
@@ -46,6 +46,12 @@ pub use view_i64::{ArrayViewI64, ArrayViewMutI64};
 #[inline]
 pub(crate) fn pool_take_uninit(len: usize) -> Vec<f64> {
     pool::take_uninit(len)
+}
+
+/// Fallible [`pool_take_uninit`] (no size ceiling; refusal → [`crate::error::Error::Alloc`]).
+#[inline]
+pub(crate) fn pool_try_take_uninit(len: usize) -> crate::error::Result<Vec<f64>> {
+    pool::try_take_uninit(len)
 }
 
 /// Return a scratch buffer to the pool (see [`pool_take_uninit`]).

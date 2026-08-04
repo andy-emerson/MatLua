@@ -541,3 +541,26 @@ assert(C:get(1,1) == 19 and C:get(2,2) == 50)
     )
     .unwrap();
 }
+
+#[test]
+fn alloc_failure_is_catchable() {
+    // Allocation ruling 2026-08-04: an absurd request must surface as a
+    // normal Lua error a script can pcall — never abort the host process.
+    // No MatLua size ceiling is involved; the allocator refuses these.
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local ok, err = pcall(function() return ml.zeros(1e15) end)  -- 8 PB of f64
+assert(not ok)
+assert(tostring(err):find("allocation failure") ~= nil, tostring(err))
+local ok2, err2 = pcall(function() return ml.zeros_i64(1e15) end)
+assert(not ok2)
+assert(tostring(err2):find("allocation failure") ~= nil, tostring(err2))
+-- and the state is still usable afterwards
+local a = ml.array({1, 2, 3})
+assert(a:sum() == 6)
+"#,
+    )
+    .unwrap();
+}

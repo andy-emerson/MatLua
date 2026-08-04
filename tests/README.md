@@ -34,7 +34,15 @@ allocator.
 - **i64 matmul family** (`matmul` / `matmul_at` / `matmul_bt`): the NumPy
   reference is **float64 BLAS** on the same integer-valued inputs (not
   `int64@int64` — NumPy has no integer BLAS, so that fallback is not a
-  product bar). MatLua times are **exact wrapping i64**. See DESIGN §7.1.2.
+  product bar). MatLua results are **always exact**; the runtime picks
+  between two regimes on a derived bound (DESIGN §7.1.2, 2026-08-04 ruling):
+  - **Headline rows** use range-safe data (`k·max|A|·max|B| ≤ 2⁵³`, here
+    |v| ≤ 1000): MatLua takes the guarded **f64-promote** path — bit-identical
+    to the wrapping kernel — and the NumPy f64 reference is itself exact.
+  - **`*_wide` rows** use ramps whose intermediates exceed 2⁵³: MatLua runs
+    the exact wrapping **GEBP** kernel; the NumPy f64 reference silently
+    rounds there (its integer results are wrong), so that column is a
+    timing bar only.
 - **Machine roofline** (engineering yardstick): `i64_roofline` measures the
   running host's achievable wrapping i64 multiply-add throughput, so i64
   GEMM is also judged as **% of machine ceiling** — the BLAS ratio alone

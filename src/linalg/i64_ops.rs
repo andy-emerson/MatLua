@@ -656,7 +656,7 @@ pub fn matmul(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
     }
     let prefer_vec = b.rank() == 1 || (a.rank() == 1 && bn == 1);
     let n_out = am.saturating_mul(bn);
-    let mut data = pool_i64::take_zeroed(n_out);
+    let mut data = pool_i64::try_take_zeroed(n_out)?;
     let aa = a.as_slice();
     let bb = b.as_slice();
 
@@ -736,7 +736,7 @@ pub fn matmul_at(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
         )));
     }
     let prefer_vec = b.rank() == 1;
-    let mut data = pool_i64::take_zeroed(an.saturating_mul(bn));
+    let mut data = pool_i64::try_take_zeroed(an.saturating_mul(bn))?;
     let aa = a.as_slice();
     let bb = b.as_slice();
     if b.rank() == 1 {
@@ -774,7 +774,7 @@ pub fn matmul_bt(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
             "matmul_bt shape mismatch: a is ({am}, {an}), b is ({bm}, {bn}); need equal column counts"
         )));
     }
-    let mut data = pool_i64::take_zeroed(am.saturating_mul(bm));
+    let mut data = pool_i64::try_take_zeroed(am.saturating_mul(bm))?;
     let aa = a.as_slice();
     let bb = b.as_slice();
     // Full GEBP path; Bᵀ is absorbed by the pack layer.

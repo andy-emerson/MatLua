@@ -98,7 +98,7 @@ pub unsafe fn push_array_copy_f64(
             shape.numel()
         )));
     }
-    let mut owned = crate::array::pool_take_uninit(data.len());
+    let mut owned = crate::array::pool_try_take_uninit(data.len())?;
     owned.copy_from_slice(data);
     unsafe { push_array(L, Array::from_parts(shape, owned)) };
     Ok(())
@@ -118,7 +118,7 @@ pub unsafe fn push_array_copy_i64(
             shape.numel()
         )));
     }
-    let mut owned = crate::array::pool_i64::take_uninit(data.len());
+    let mut owned = crate::array::pool_i64::try_take_uninit(data.len())?;
     owned.copy_from_slice(data);
     unsafe { push_array_i64(L, ArrayI64::from_parts(shape, owned)) };
     Ok(())

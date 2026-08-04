@@ -53,6 +53,18 @@ def dense2(n: int) -> np.ndarray:
     return data.reshape(n, n)
 
 
+def dense_small(n: int) -> np.ndarray:
+    # Mirrors i64_surface dense_small: |values| <= 1000, range-safe at all
+    # bench sizes (k * max|A| * max|B| <= 4096e6 << 2^53).
+    i = np.arange(n * n, dtype=np.int64)
+    return ((i * np.int64(17) + 1) % 2001 - 1000).reshape(n, n)
+
+
+def dense2_small(n: int) -> np.ndarray:
+    i = np.arange(n * n, dtype=np.int64)
+    return ((i * np.int64(13) + 2) % 2001 - 1000).reshape(n, n)
+
+
 def vec_n(n: int) -> np.ndarray:
     i = np.arange(n, dtype=np.int64)
     return i * np.int64(3) + np.int64(1)
@@ -115,12 +127,20 @@ def main() -> None:
         emit("transpose", n, time_ms(it, wrm, lambda: a.T.copy()))
         emit("dot", n, time_ms(it, wrm, lambda: int(v @ v)))
         # BLAS reference: f64 with integer-valued entries (not int64@int64 fallback).
+        # Headline rows use range-safe data (|v| <= 1000: MatLua's guarded
+        # promote regime, and this f64 reference is itself exact there);
+        # *_wide rows use the wide ramps, where MatLua stays exact in wrapping
+        # i64 while this f64 reference silently rounds (timing bar only).
+        asf = dense_small(n).astype(np.float64, copy=False)
+        bsf = dense2_small(n).astype(np.float64, copy=False)
+        emit("matmul", n, time_ms(ith, wrmh, lambda: asf @ bsf))
+        emit("matmul_at", n, time_ms(ith, wrmh, lambda: asf.T @ bsf))
+        emit("matmul_bt", n, time_ms(ith, wrmh, lambda: asf @ bsf.T))
         af = a.astype(np.float64, copy=False)
         bf = b.astype(np.float64, copy=False)
-        emit("matmul", n, time_ms(ith, wrmh, lambda: af @ bf))
-        # Same f64-BLAS reference policy for the transposed products.
-        emit("matmul_at", n, time_ms(ith, wrmh, lambda: af.T @ bf))
-        emit("matmul_bt", n, time_ms(ith, wrmh, lambda: af @ bf.T))
+        emit("matmul_wide", n, time_ms(ith, wrmh, lambda: af @ bf))
+        emit("matmul_at_wide", n, time_ms(ith, wrmh, lambda: af.T @ bf))
+        emit("matmul_bt_wide", n, time_ms(ith, wrmh, lambda: af @ bf.T))
         emit("unique", n, time_ms(it, wrm, lambda: np.unique(v)))
         emit("isin", n, time_ms(it, wrm, lambda: np.isin(a, v)))
 

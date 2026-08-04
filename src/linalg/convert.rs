@@ -74,7 +74,7 @@ pub(crate) fn array_to_colmajor(a: &Array) -> Result<ColMajor> {
     if src.len() != rows.saturating_mul(cols) {
         return Err(Error::shape("internal layout length mismatch"));
     }
-    let mut buf = crate::array::pool_take_uninit(src.len());
+    let mut buf = crate::array::pool_try_take_uninit(src.len())?;
     // dst[j*rows + i] = src[i*cols + j] — the shared blocked transpose
     // produces exactly the column-major image.
     super::blocked_transpose(src, rows, cols, &mut buf);
@@ -96,7 +96,7 @@ pub(crate) fn matref_to_array(m: MatRef<'_, f64>, prefer_vector: bool) -> Result
     let nrows = m.nrows();
     let ncols = m.ncols();
     let n = nrows.saturating_mul(ncols);
-    let mut data = crate::array::pool_take_uninit(n);
+    let mut data = crate::array::pool_try_take_uninit(n)?;
     if n > 0 {
         const BS: usize = 32;
         let rs = m.row_stride();
