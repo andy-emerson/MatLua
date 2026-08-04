@@ -76,7 +76,8 @@ Discard log:
 |---|---|---|
 | 2026-08-03 (evening) | register-resident compute ~3× degraded across all kernels | hypervisor co-tenancy; no in-container load |
 | 2026-08-03 (later) | AVX-512 tile ~4× degraded, scalar normal | dynamic 512-bit downclocking (CPUID still reports the features) |
-| 2026-08-04 02:19 | gemm 76.5 ms (+30%), isa_tile_par 40.3 (−18%) — single failed gate attempt; passed on retry at 02:21 (46.0 / 67.1) and the refresh proceeded | transient co-tenant burst |
+| 2026-08-04 02:19 | gemm 76.5 ms (+30%), isa_tile_par 40.3 (−18%) — single failed gate attempt; passed on retry at 02:21 (46.0 / 67.1) | transient co-tenant burst |
+| 2026-08-04 ~02:50 | full refresh ran on the 02:21 pass but the **post-gate failed**: isa_tile_par 37.2 (−24%), gemm 71.0 ms (+20%) — host degraded mid-run; all three suites' cells discarded | co-tenant load ramping during the run; the pre/post gate pair caught it |
 
 ## Results
 
