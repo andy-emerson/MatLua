@@ -261,7 +261,7 @@ internally. Measurement: `tests/bench/compare_compose.py`.
 - **Casts:** `ArrayI64::to_f64` / `Array::to_i64` (truncate toward zero).
 - **Arrow:** `Int64Array` interchange (non-null).
 - **Lua face:** `*_i64` constructors above; methods include shared grammar + i64-unique (`unique`, `isin`, `bincount`, `searchsorted`, `sort`, bitwise, `rem`, `divmod`, `gcd`/`lcm`, …); `get`/`set` integers; `to_f64` / `dtype`.
-- **Also on i64 (Rust+Lua):** `where_cond`, `concatenate`/`stack`, `sign`/`clip`, `var`/`std` (as `f64`), `any`/`all` (+ axis), `slice`/`rows`/`row`/`col`, `broadcast_to`, compares (array and scalar).
+- **Also on i64 (Rust+Lua):** `where_cond`, `concatenate`/`stack`, `sign`/`clip`, `var`/`std` (+ `var_axis`/`std_axis`, as `f64`), `any`/`all` (+ axis), `slice`/`rows`/`row`/`col`, `broadcast_to`, compares (array and scalar).
 - **i64-unique (M7):** bitwise/rem/shift, `unique`/`isin`/`bincount`/`searchsorted`/`sort`, `divmod`/`gcd`/`lcm`, bit counts; **`ArrayViewI64` / `ArrayViewMutI64`** (Rust host buffers).
 - **Not M7 / later:** float-only ufuncs (`exp`/`log`/…), `cov`/`corrcoef`, nan* (as needed); performance (**M7.c**). Lua host views: entry in **M7.b**; richer face / linalg-on-views in **M8**.
 

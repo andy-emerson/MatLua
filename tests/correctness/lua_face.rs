@@ -191,6 +191,15 @@ assert(m:row(2):get(1) == 4)
 assert(m:col(1):get(2) == 4)
 local b = ml.broadcast_to(ml.array({1,2}), 2, 2)
 assert(b:shape()[1] == 2 and b:get(2,2) == 2)
+local bm = ml.array({1,2}):broadcast_to(2, 2)  -- method form, parity with i64
+assert(bm:shape()[1] == 2 and bm:get(2,2) == 2)
+assert(ml.array({1,2}):dtype() == "f64")
+-- i64 var_axis/std_axis: 1-based axis, f64 results (parity with f64 face)
+local mi = ml.array_i64({{1,2},{3,4}})
+local vi = mi:var_axis(1)          -- reduce down rows, ddof 0 → {1, 1}
+assert(math.abs(vi:get(1) - 1) < 1e-12 and math.abs(vi:get(2) - 1) < 1e-12)
+local si = mi:std_axis(2)          -- across columns → {0.5, 0.5}
+assert(math.abs(si:get(1) - 0.5) < 1e-12 and math.abs(si:get(2) - 0.5) < 1e-12)
 "#,
     )
     .unwrap();

@@ -568,6 +568,44 @@ pub unsafe extern "C" fn a_i64_std(L: *mut lua_State) -> c_int {
     unsafe { lua_pushnumber(L, v) };
     1
 }
+pub unsafe extern "C" fn a_i64_var_axis(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let axis = unsafe { luaL_checkinteger(L, 2) };
+    if axis < 1 {
+        return super::ud::lua_error_msg(L, "axis must be >= 1 (Lua face is 1-based)");
+    }
+    let ddof = if unsafe { lua_gettop(L) } >= 3 {
+        let d = unsafe { luaL_checkinteger(L, 3) };
+        if d < 0 {
+            return super::ud::lua_error_msg(L, "var_axis ddof must be >= 0");
+        }
+        d as usize
+    } else {
+        0
+    };
+    let out = lua_try!(L, a.array.var_axis((axis - 1) as usize, ddof));
+    unsafe { push_array(L, out) };
+    1
+}
+pub unsafe extern "C" fn a_i64_std_axis(L: *mut lua_State) -> c_int {
+    let a = unsafe { &*check_array_i64(L, 1) };
+    let axis = unsafe { luaL_checkinteger(L, 2) };
+    if axis < 1 {
+        return super::ud::lua_error_msg(L, "axis must be >= 1 (Lua face is 1-based)");
+    }
+    let ddof = if unsafe { lua_gettop(L) } >= 3 {
+        let d = unsafe { luaL_checkinteger(L, 3) };
+        if d < 0 {
+            return super::ud::lua_error_msg(L, "std_axis ddof must be >= 0");
+        }
+        d as usize
+    } else {
+        0
+    };
+    let out = lua_try!(L, a.array.std_axis((axis - 1) as usize, ddof));
+    unsafe { push_array(L, out) };
+    1
+}
 pub unsafe extern "C" fn a_i64_slice(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array_i64(L, 1) };
     let start = unsafe { luaL_checkinteger(L, 2) };
@@ -1038,7 +1076,7 @@ pub unsafe fn install_metatable(L: *mut lua_State) {
         luaL_newmetatable(L, ARRAY_I64_MT.as_ptr());
         lua_pushvalue(L, -1);
         lua_setfield(L, -2, c"__index".as_ptr());
-        let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 82] = [
+        let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 84] = [
             (c"__gc", a_i64_gc),
             (c"__len", a_i64_len),
             (c"__tostring", a_i64_tostring),
@@ -1070,6 +1108,8 @@ pub unsafe fn install_metatable(L: *mut lua_State) {
             (c"all", a_i64_all),
             (c"var", a_i64_var),
             (c"std", a_i64_std),
+            (c"var_axis", a_i64_var_axis),
+            (c"std_axis", a_i64_std_axis),
             (c"transpose", a_i64_transpose),
             (c"to_f64", a_i64_to_f64),
             (c"eq", a_i64_eq),

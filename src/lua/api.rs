@@ -1437,6 +1437,12 @@ pub unsafe extern "C" fn a_col(L: *mut lua_State) -> c_int {
     unsafe { push_array(L, c) };
     1
 }
+pub unsafe extern "C" fn a_dtype(L: *mut lua_State) -> c_int {
+    unsafe {
+        lua_pushstring(L, c"f64".as_ptr());
+    }
+    1
+}
 pub unsafe extern "C" fn l_broadcast_to(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
     let shape = lua_try!(L, unsafe { shape_from_args(L, 2) });
@@ -1581,9 +1587,11 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
     unsafe {
         if luaL_newmetatable(L, ARRAY_MT.as_ptr()) != 0 {
             lua_newtable(L);
-            let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 63] = [
+            let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 65] = [
             (c"shape", a_shape),
             (c"rank", a_rank),
+            (c"dtype", a_dtype),
+            (c"broadcast_to", l_broadcast_to),
             (c"get", a_get),
             (c"set", a_set),
             (c"sum", a_sum),
