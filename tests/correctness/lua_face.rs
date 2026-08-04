@@ -15,6 +15,9 @@ local b = ml.array({9, 8})
 local x = ml.solve(A, b)
 assert(math.abs(x:get(1) - 2) < 1e-9)
 assert(math.abs(x:get(2) - 3) < 1e-9)
+local xc = ml.cholesky_solve(A, b)
+assert(math.abs(xc:get(1) - 2) < 1e-9)
+assert(math.abs(xc:get(2) - 3) < 1e-9)
 local M = ml.array({{1, 2}, {3, 4}})
 local v = ml.array({1, 1})
 local y = ml.matmul(M, v)
@@ -188,6 +191,15 @@ assert(m:row(2):get(1) == 4)
 assert(m:col(1):get(2) == 4)
 local b = ml.broadcast_to(ml.array({1,2}), 2, 2)
 assert(b:shape()[1] == 2 and b:get(2,2) == 2)
+local bm = ml.array({1,2}):broadcast_to(2, 2)  -- method form, parity with i64
+assert(bm:shape()[1] == 2 and bm:get(2,2) == 2)
+assert(ml.array({1,2}):dtype() == "f64")
+-- i64 var_axis/std_axis: 1-based axis, f64 results (parity with f64 face)
+local mi = ml.array_i64({{1,2},{3,4}})
+local vi = mi:var_axis(1)          -- reduce down rows, ddof 0 → {1, 1}
+assert(math.abs(vi:get(1) - 1) < 1e-12 and math.abs(vi:get(2) - 1) < 1e-12)
+local si = mi:std_axis(2)          -- across columns → {0.5, 0.5}
+assert(math.abs(si:get(1) - 0.5) < 1e-12 and math.abs(si:get(2) - 0.5) < 1e-12)
 "#,
     )
     .unwrap();
@@ -200,7 +212,8 @@ fn m6_tier2_face() {
         r#"
 local ml = require "matlua"
 local m = ml.array({{1,2,3},{4,5,6}})
-local s = m:sum(0)
+-- Lua-face axes are 1-based: axis 1 reduces over rows (NumPy axis 0).
+local s = m:sum(1)
 assert(s:get(1) == 5 and s:get(3) == 9)
 local x = ml.array({{1,2,3},{2,4,6}})
 local c = ml.cov(x)
@@ -244,7 +257,8 @@ local f = a:to_f64()
 assert(type(f:sum()) == "number")
 local z = ml.zeros_i64(3)
 assert(z:sum() == 0)
-local s = a:sum(0)
+-- Lua-face axes are 1-based: axis 1 reduces over rows (NumPy axis 0).
+local s = a:sum(1)
 assert(s:get(1) == 5 and s:get(3) == 9)
 local idx = ml.array_i64({3,1,2}):argsort()
 assert(idx:get(1) == 2 and idx:get(2) == 3 and idx:get(3) == 1)
@@ -265,9 +279,9 @@ fn m7_i64_extended_face() {
 local ml = require "matlua"
 local a = ml.array_i64({1,2,3})
 local b = ml.array_i64({4,5,6})
-local c = ml.concatenate_i64(0, a, b)
+local c = ml.concatenate_i64(1, a, b)
 assert(#c == 6 and c:get(6) == 6)
-local s = ml.stack_i64(0, a, b)
+local s = ml.stack_i64(1, a, b)
 assert(s:rank() == 2 and s:get(2,3) == 6)
 local cond = ml.array_i64({1,0,1})
 local w = ml.where_i64(cond, a, b)
@@ -523,6 +537,29 @@ local N = ml.array_i64({{5,6},{7,8}})
 local C = ml.zeros_i64(2,2)
 ml.matmul_out(M, N, C)
 assert(C:get(1,1) == 19 and C:get(2,2) == 50)
+"#,
+    )
+    .unwrap();
+}
+
+#[test]
+fn alloc_failure_is_catchable() {
+    // Allocation ruling 2026-08-04: an absurd request must surface as a
+    // normal Lua error a script can pcall — never abort the host process.
+    // No MatLua size ceiling is involved; the allocator refuses these.
+    let lua = Lua::new().unwrap();
+    lua.do_string(
+        r#"
+local ml = require "matlua"
+local ok, err = pcall(function() return ml.zeros(1e15) end)  -- 8 PB of f64
+assert(not ok)
+assert(tostring(err):find("allocation failure") ~= nil, tostring(err))
+local ok2, err2 = pcall(function() return ml.zeros_i64(1e15) end)
+assert(not ok2)
+assert(tostring(err2):find("allocation failure") ~= nil, tostring(err2))
+-- and the state is still usable afterwards
+local a = ml.array({1, 2, 3})
+assert(a:sum() == 6)
 "#,
     )
     .unwrap();

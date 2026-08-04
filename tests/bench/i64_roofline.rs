@@ -166,24 +166,33 @@ fn emit(name: &str, gops: f64, detail: &str) {
 /// Run the tile kernel on every core at once (per-thread private buffers,
 /// allocated once outside the timed region); returns aggregate Gops.
 fn par_tile_gops(nthreads: usize, reps: u64, isa: bool) -> f64 {
+    // Per-thread buffers really are allocated outside the timed region now:
+    // a review found the previous version allocated and LCG-filled them
+    // inside the clock, biasing the calibration-gate baselines low.
+    let bufs: Vec<(Vec<i64>, Vec<i64>)> = (0..nthreads)
+        .map(|tid| {
+            (
+                fill_i64(KDEPTH * 4, 17 + tid as i64),
+                fill_i64(KDEPTH * 8, 19 + tid as i64),
+            )
+        })
+        .collect();
     let t = Instant::now();
     std::thread::scope(|s| {
-        for tid in 0..nthreads {
+        for (ap, bp) in &bufs {
             s.spawn(move || {
-                let ap = black_box(fill_i64(KDEPTH * 4, 17 + tid as i64));
-                let bp = black_box(fill_i64(KDEPTH * 8, 19 + tid as i64));
                 let mut out = [0i64; 32];
                 for _ in 0..reps {
                     #[cfg(target_arch = "x86_64")]
                     if isa {
                         // SAFETY: caller gates on avx512_ok().
                         unsafe {
-                            tile_4x8_i64_avx512(black_box(&ap), black_box(&bp), black_box(&mut out))
+                            tile_4x8_i64_avx512(black_box(ap), black_box(bp), black_box(&mut out))
                         };
                         continue;
                     }
                     let _ = isa;
-                    tile_4x8_i64(black_box(&ap), black_box(&bp), black_box(&mut out));
+                    tile_4x8_i64(black_box(ap), black_box(bp), black_box(&mut out));
                 }
             });
         }
@@ -282,8 +291,11 @@ fn main() {
     let n = 1024usize;
     let am = dense(n, 23);
     let bm = dense(n, 29);
+    // One untimed warm call (first-touch pages, rayon pool spin-up), then 5
+    // samples like every other row.
+    black_box(i64_ops::matmul(black_box(&am), black_box(&bm)).unwrap());
     let mut samples = Vec::new();
-    for _ in 0..3 {
+    for _ in 0..5 {
         let t = Instant::now();
         black_box(i64_ops::matmul(black_box(&am), black_box(&bm)).unwrap());
         samples.push(t.elapsed().as_secs_f64());

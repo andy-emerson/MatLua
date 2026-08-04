@@ -8,6 +8,8 @@ fn main() {
     let lua_src = "vendor/lua/src";
     println!("cargo:rerun-if-changed={lua_src}");
     println!("cargo:rerun-if-changed=build.rs");
+    // Without this, toggling APICHECK is silently ignored on incremental builds.
+    println!("cargo:rerun-if-env-changed=MATLUA_LUA_APICHECK");
 
     let sources = [
         "lapi.c",
@@ -51,8 +53,10 @@ fn main() {
     if std::env::var("MATLUA_LUA_APICHECK").is_ok() {
         build.define("LUA_USE_APICHECK", None);
     }
-    #[cfg(target_os = "linux")]
-    {
+    // Gate on the TARGET OS: #[cfg(target_os)] in a build script tests the
+    // HOST, which links the wrong configuration when cross-compiling.
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "linux" {
         build.define("LUA_USE_POSIX", None);
         build.define("LUA_USE_DLOPEN", None);
     }
@@ -61,7 +65,10 @@ fn main() {
     }
     build.compile("lua54");
 
-    println!("cargo:rustc-link-lib=m");
-    #[cfg(target_os = "linux")]
-    println!("cargo:rustc-link-lib=dl");
+    if target_os != "windows" {
+        println!("cargo:rustc-link-lib=m");
+    }
+    if target_os == "linux" {
+        println!("cargo:rustc-link-lib=dl");
+    }
 }

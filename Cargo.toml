@@ -78,3 +78,9 @@ required-features = ["lua"]
 name = "i64_roofline"
 path = "tests/bench/i64_roofline.rs"
 harness = false
+
+[[test]]
+name = "wide_matmul_exp"
+path = "tests/bench/wide_matmul_exp.rs"
+harness = false
+required-features = ["lua"]

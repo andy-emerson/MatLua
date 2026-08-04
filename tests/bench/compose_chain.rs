@@ -7,6 +7,7 @@
 //! ```
 
 use std::env;
+use std::hint::black_box;
 use std::time::Instant;
 
 use matlua::array::Array;
@@ -16,7 +17,13 @@ use matlua::lua::Lua;
 fn median(samples: &[f64]) -> f64 {
     let mut v = samples.to_vec();
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    v[v.len() / 2]
+    // True median: average the middle pair on even counts.
+    let m = v.len() / 2;
+    if v.len() % 2 == 0 && v.len() >= 2 {
+        (v[m - 1] + v[m]) / 2.0
+    } else {
+        v[m]
+    }
 }
 
 fn time_ms(iters: usize, warm: usize, mut body: impl FnMut()) -> f64 {
@@ -87,11 +94,11 @@ fn main() {
 
         // matmul_at vs transpose+matmul on XᵀX (square k×k result work dominates with tall m)
         let ms = time_ms(iters, warm, || {
-            let _ = matmul(&transpose(&x).unwrap(), &x).unwrap();
+            black_box(matmul(&transpose(&x).unwrap(), &x).unwrap());
         });
         emit("rust", "xtx_long", k, ms);
         let ms = time_ms(iters, warm, || {
-            let _ = matmul_at(&x, &x).unwrap();
+            black_box(matmul_at(&x, &x).unwrap());
         });
         emit("rust", "xtx_short", k, ms);
 
@@ -104,7 +111,7 @@ fn main() {
         });
         emit("rust", "normal_eq_long", k, ms);
         let ms = time_ms(iters, warm, || {
-            let _ = normal_eq(&x, &y).unwrap();
+            black_box(normal_eq(&x, &y).unwrap());
         });
         emit("rust", "normal_eq_short", k, ms);
     }

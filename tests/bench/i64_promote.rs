@@ -13,7 +13,14 @@ use matlua::lua::Lua;
 fn median_t(samples: &[f64]) -> f64 {
     let mut v = samples.to_vec();
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    v[v.len() / 2]
+    // True median: average the middle pair on even counts (v[len/2] alone
+    // returns the WORSE of 2 samples — one contention stall became the cell).
+    let m = v.len() / 2;
+    if v.len() % 2 == 0 && v.len() >= 2 {
+        (v[m - 1] + v[m]) / 2.0
+    } else {
+        v[m]
+    }
 }
 
 fn time_ms(iters: usize, warm: usize, mut body: impl FnMut()) -> f64 {
@@ -45,8 +52,6 @@ fn time_lua(lua: &Lua, setup: &str, body: &str, iters: usize, warm: usize) -> f6
         samples.push(t0.elapsed().as_secs_f64() * 1e3);
         let _ = lua.call_global("__bench_gc");
     }
-    // free setup globals
-    let _ = lua.do_string("A=nil;B=nil;V=nil;W=nil;S=nil;rhs=nil;T=nil;collectgarbage(\"collect\")");
     median_t(&samples)
 }
 
@@ -81,15 +86,18 @@ fn vec_n(n: usize) -> ArrayI64 {
 }
 
 fn budget(n: usize, heavy: bool) -> (usize, usize) {
+    // >=5 odd samples for heavy cells: a real median, robust to shared-host
+    // stalls (matches fair_all/i64_surface; the old (1,0) published single
+    // cold calls at n=4096).
     if heavy {
         if n >= 4096 {
-            (1, 0)
+            (5, 1)
         } else if n >= 1024 {
-            (2, 1)
+            (5, 1)
         } else if n >= 256 {
-            (4, 1)
+            (5, 2)
         } else {
-            (10, 2)
+            (11, 2)
         }
     } else if n >= 4096 {
         (5, 2)
@@ -104,21 +112,6 @@ fn budget(n: usize, heavy: bool) -> (usize, usize) {
 
 fn emit(face: &str, op: &str, n: usize, ms: f64) {
     println!("{face}\t{op}\t{n}\t{ms:.6}");
-}
-
-fn lua_build(n: usize) -> String {
-    format!(
-        r#"
-local n = {n}
-A = ml.arange_i64(0, n * n):reshape(n, n)
-V = ml.arange_i64(0, n)
-S = ml.full_i64(n, n, 1)
-for i = 1, n do
-  S:set(i, i, n + 1)
-end
-rhs = V
-"#
-    )
 }
 
 fn bench_rust(sizes: &[usize]) {
@@ -150,6 +143,9 @@ fn bench_rust(sizes: &[usize]) {
         emit("rust", "cholesky", n, time_ms(ith, wrmh, || {
             black_box(linalg::from_i64::cholesky(&s).unwrap());
         }));
+        emit("rust", "cholesky_solve", n, time_ms(ith, wrmh, || {
+            black_box(linalg::from_i64::cholesky_solve(&s, &v).unwrap());
+        }));
         emit("rust", "qr", n, time_ms(ith, wrmh, || {
             black_box(linalg::from_i64::qr(&a).unwrap());
         }));
@@ -162,18 +158,25 @@ fn bench_lua(sizes: &[usize]) {
     for &n in sizes {
         let (it, wrm) = budget(n, false);
         let (ith, wrmh) = budget(n, true);
-        let a_only = format!("A=ml.full_i64({n},{n},1); collectgarbage(\"collect\")");
-        let spd = format!(
-            "S=ml.full_i64({n},{n},1); for i=1,{n} do S:set(i,i,{n}+1) end; rhs=ml.arange_i64(0,{n}); collectgarbage(\"collect\")"
-        );
-        emit("lua", "mean", n, time_lua(&lua, &a_only, "return A:mean()", it, wrm));
-        emit("lua", "std", n, time_lua(&lua, &a_only, "return A:std()", it, wrm));
-        emit("lua", "median", n, time_lua(&lua, &a_only, "return A:median()", it, wrm));
-        emit("lua", "quantile", n, time_lua(&lua, &a_only, "return A:quantile(0.75)", it, wrm));
-        emit("lua", "norm", n, time_lua(&lua, &a_only, "return ml.norm(A)", it, wrm));
-        emit("lua", "solve", n, time_lua(&lua, &spd, "return ml.solve(S, rhs)", ith, wrmh));
-        emit("lua", "cholesky", n, time_lua(&lua, &spd, "return ml.cholesky(S)", ith, wrmh));
-        emit("lua", "qr", n, time_lua(&lua, &a_only, "return ml.qr(A)", ith, wrmh));
+        // Identical inputs by construction: globals are copies of the exact
+        // arrays the Rust face benches (previously the Lua face used constant
+        // matrices and a different SPD system).
+        lua.set_global_array_i64("A", &dense(n)).unwrap();
+        lua.set_global_array_i64("S", &spd_i64(n)).unwrap();
+        lua.set_global_array_i64("rhs", &vec_n(n)).unwrap();
+        lua.do_string("collectgarbage(\"collect\")").unwrap();
+        emit("lua", "mean", n, time_lua(&lua, "", "return A:mean()", it, wrm));
+        emit("lua", "std", n, time_lua(&lua, "", "return A:std()", it, wrm));
+        emit("lua", "median", n, time_lua(&lua, "", "return A:median()", it, wrm));
+        emit("lua", "quantile", n, time_lua(&lua, "", "return A:quantile(0.75)", it, wrm));
+        emit("lua", "norm", n, time_lua(&lua, "", "return ml.norm(A)", it, wrm));
+        emit("lua", "solve", n, time_lua(&lua, "", "return ml.solve(S, rhs)", ith, wrmh));
+        emit("lua", "cholesky", n, time_lua(&lua, "", "return ml.cholesky(S)", ith, wrmh));
+        emit("lua", "cholesky_solve", n, time_lua(&lua, "", "return ml.cholesky_solve(S, rhs)", ith, wrmh));
+        emit("lua", "qr", n, time_lua(&lua, "", "return ml.qr(A)", ith, wrmh));
+
+        // Free this size's globals before the next.
+        let _ = lua.do_string("A=nil;S=nil;rhs=nil;collectgarbage(\"collect\")");
     }
 }
 

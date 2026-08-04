@@ -317,6 +317,21 @@ pub unsafe extern "C" fn l_solve(L: *mut lua_State) -> c_int {
     1
 }
 
+pub unsafe extern "C" fn l_cholesky_solve(L: *mut lua_State) -> c_int {
+    if unsafe { is_i64(L, 1) && is_i64(L, 2) } {
+        let a = unsafe { &*check_array_i64(L, 1) };
+        let b = unsafe { &*check_array_i64(L, 2) };
+        let x = lua_try!(L, linalg::from_i64::cholesky_solve(&a.array, &b.array));
+        unsafe { push_array(L, x) };
+        return 1;
+    }
+    let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
+    let b = lua_try!(L, unsafe { arg_as_f64(L, 2) });
+    let x = lua_try!(L, linalg::cholesky_solve(&a, &b));
+    unsafe { push_array(L, x) };
+    1
+}
+
 pub unsafe extern "C" fn l_lstsq(L: *mut lua_State) -> c_int {
     if unsafe { is_i64(L, 1) && is_i64(L, 2) } {
         let a = unsafe { &*check_array_i64(L, 1) };
@@ -621,9 +636,14 @@ pub unsafe extern "C" fn a_compress(L: *mut lua_State) -> c_int {
 }
 
 pub unsafe extern "C" fn a_put(L: *mut lua_State) -> c_int {
-    let a = unsafe { &mut *check_array(L, 1) };
+    let pa = unsafe { check_array(L, 1) };
     let idx_ud = unsafe { check_array_i64(L, 2) };
-    let vals = unsafe { &*check_array(L, 3) };
+    let pv = unsafe { check_array(L, 3) };
+    if ptr::eq(pa, pv) {
+        return super::ud::lua_error_msg(L, "put: values must not alias the target");
+    }
+    let a = unsafe { &mut *pa };
+    let vals = unsafe { &*pv };
     // convert 1-based indices from Lua to 0-based
     let idx_arr = unsafe { &(*idx_ud).array };
     let mut z = idx_arr.as_slice().to_vec();
@@ -639,14 +659,23 @@ pub unsafe extern "C" fn a_put(L: *mut lua_State) -> c_int {
 }
 
 pub unsafe extern "C" fn a_put_mask(L: *mut lua_State) -> c_int {
-    let a = unsafe { &mut *check_array(L, 1) };
-    let mask = unsafe { &*check_array(L, 2) };
+    let pa = unsafe { check_array(L, 1) };
+    let pm = unsafe { check_array(L, 2) };
+    if ptr::eq(pa, pm) {
+        return super::ud::lua_error_msg(L, "put_mask: mask must not alias the target");
+    }
+    let a = unsafe { &mut *pa };
+    let mask = unsafe { &*pm };
     if unsafe { lua_type(L, 3) } == LUA_TNUMBER {
         let v = unsafe { luaL_checknumber(L, 3) };
         let vals = lua_try!(L, Array::full(vec![1], v));
         lua_try!(L, a.array.put_mask(&mask.array, &vals));
     } else {
-        let vals = unsafe { &*check_array(L, 3) };
+        let pv = unsafe { check_array(L, 3) };
+        if ptr::eq(pa, pv) {
+            return super::ud::lua_error_msg(L, "put_mask: values must not alias the target");
+        }
+        let vals = unsafe { &*pv };
         lua_try!(L, a.array.put_mask(&mask.array, &vals.array));
     }
     0
@@ -654,9 +683,14 @@ pub unsafe extern "C" fn a_put_mask(L: *mut lua_State) -> c_int {
 
 pub unsafe extern "C" fn a_take(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
-    // accept f64 or i64 indices; 1-based
+    // accept f64 or i64 indices; 1-based, rank-1 only (rebuilding the index
+    // array as flat would otherwise silently accept rank-2 indices the core
+    // is specified to reject).
     if unsafe { is_i64(L, 2) } {
         let idx = unsafe { &*check_array_i64(L, 2) };
+        if idx.array.rank() != 1 {
+            return super::ud::lua_error_msg(L, "take indices must be rank-1");
+        }
         let mut z = idx.array.as_slice().to_vec();
         for x in &mut z {
             if *x <= 0 {
@@ -670,8 +704,14 @@ pub unsafe extern "C" fn a_take(L: *mut lua_State) -> c_int {
         return 1;
     }
     let idx = unsafe { &*check_array(L, 2) };
+    if idx.array.rank() != 1 {
+        return super::ud::lua_error_msg(L, "take indices must be rank-1");
+    }
     let mut z = idx.array.as_slice().to_vec();
     for x in &mut z {
+        if *x < 1.0 {
+            return super::ud::lua_error_msg(L, "take indices must be >= 1");
+        }
         *x -= 1.0;
     }
     let idx0 = lua_try!(L, Array::from_shape_vec(vec![z.len()], z));
@@ -682,48 +722,85 @@ pub unsafe extern "C" fn a_take(L: *mut lua_State) -> c_int {
 
 
 pub unsafe extern "C" fn a_add_out(L: *mut lua_State) -> c_int {
-    let a = unsafe { &*check_array(L, 1) };
-    let b = unsafe { &*check_array(L, 2) };
-    let o = unsafe { &mut *check_array(L, 3) };
+    let pa = unsafe { check_array(L, 1) };
+    let pb = unsafe { check_array(L, 2) };
+    let po = unsafe { check_array(L, 3) };
+    // Aliasing guard: a & and &mut to one array is UB in the kernels.
+    if ptr::eq(pa, po) || ptr::eq(pb, po) {
+        return super::ud::lua_error_msg(L, "add_out: out must not alias an input");
+    }
+    let a = unsafe { &*pa };
+    let b = unsafe { &*pb };
+    let o = unsafe { &mut *po };
     lua_try!(L, a.array.add_out(&b.array, &mut o.array));
-    unsafe { lua_settop(L, 3) }; // leave out on stack... better push
     unsafe { lua_pushvalue(L, 3) };
     1
 }
 pub unsafe extern "C" fn a_sub_out(L: *mut lua_State) -> c_int {
-    let a = unsafe { &*check_array(L, 1) };
-    let b = unsafe { &*check_array(L, 2) };
-    let o = unsafe { &mut *check_array(L, 3) };
+    let pa = unsafe { check_array(L, 1) };
+    let pb = unsafe { check_array(L, 2) };
+    let po = unsafe { check_array(L, 3) };
+    // Aliasing guard: a & and &mut to one array is UB in the kernels.
+    if ptr::eq(pa, po) || ptr::eq(pb, po) {
+        return super::ud::lua_error_msg(L, "sub_out: out must not alias an input");
+    }
+    let a = unsafe { &*pa };
+    let b = unsafe { &*pb };
+    let o = unsafe { &mut *po };
     lua_try!(L, a.array.sub_out(&b.array, &mut o.array));
     unsafe { lua_pushvalue(L, 3) };
     1
 }
 pub unsafe extern "C" fn a_mul_out(L: *mut lua_State) -> c_int {
-    let a = unsafe { &*check_array(L, 1) };
-    let b = unsafe { &*check_array(L, 2) };
-    let o = unsafe { &mut *check_array(L, 3) };
+    let pa = unsafe { check_array(L, 1) };
+    let pb = unsafe { check_array(L, 2) };
+    let po = unsafe { check_array(L, 3) };
+    // Aliasing guard: a & and &mut to one array is UB in the kernels.
+    if ptr::eq(pa, po) || ptr::eq(pb, po) {
+        return super::ud::lua_error_msg(L, "mul_out: out must not alias an input");
+    }
+    let a = unsafe { &*pa };
+    let b = unsafe { &*pb };
+    let o = unsafe { &mut *po };
     lua_try!(L, a.array.mul_out(&b.array, &mut o.array));
     unsafe { lua_pushvalue(L, 3) };
     1
 }
 pub unsafe extern "C" fn a_div_out(L: *mut lua_State) -> c_int {
-    let a = unsafe { &*check_array(L, 1) };
-    let b = unsafe { &*check_array(L, 2) };
-    let o = unsafe { &mut *check_array(L, 3) };
+    let pa = unsafe { check_array(L, 1) };
+    let pb = unsafe { check_array(L, 2) };
+    let po = unsafe { check_array(L, 3) };
+    // Aliasing guard: a & and &mut to one array is UB in the kernels.
+    if ptr::eq(pa, po) || ptr::eq(pb, po) {
+        return super::ud::lua_error_msg(L, "div_out: out must not alias an input");
+    }
+    let a = unsafe { &*pa };
+    let b = unsafe { &*pb };
+    let o = unsafe { &mut *po };
     lua_try!(L, a.array.div_out(&b.array, &mut o.array));
     unsafe { lua_pushvalue(L, 3) };
     1
 }
 pub unsafe extern "C" fn a_neg_out(L: *mut lua_State) -> c_int {
-    let a = unsafe { &*check_array(L, 1) };
-    let o = unsafe { &mut *check_array(L, 2) };
+    let pa = unsafe { check_array(L, 1) };
+    let po = unsafe { check_array(L, 2) };
+    if ptr::eq(pa, po) {
+        return super::ud::lua_error_msg(L, "neg_out: out must not alias the input");
+    }
+    let a = unsafe { &*pa };
+    let o = unsafe { &mut *po };
     lua_try!(L, a.array.neg_out(&mut o.array));
     unsafe { lua_pushvalue(L, 2) };
     1
 }
 pub unsafe extern "C" fn a_abs_out(L: *mut lua_State) -> c_int {
-    let a = unsafe { &*check_array(L, 1) };
-    let o = unsafe { &mut *check_array(L, 2) };
+    let pa = unsafe { check_array(L, 1) };
+    let po = unsafe { check_array(L, 2) };
+    if ptr::eq(pa, po) {
+        return super::ud::lua_error_msg(L, "abs_out: out must not alias the input");
+    }
+    let a = unsafe { &*pa };
+    let o = unsafe { &mut *po };
     lua_try!(L, a.array.abs_out(&mut o.array));
     unsafe { lua_pushvalue(L, 2) };
     1
@@ -735,6 +812,11 @@ pub unsafe extern "C" fn l_matmul_out(L: *mut lua_State) -> c_int {
     let tb = unsafe { test_array_i64(L, 2) };
     let to = unsafe { test_array_i64(L, 3) };
     if !ta.is_null() && !tb.is_null() && !to.is_null() {
+        // matmul_out zeroes `out` before reading its inputs, so aliasing
+        // would silently produce an all-zero product.
+        if ptr::eq(ta, to) || ptr::eq(tb, to) {
+            return super::ud::lua_error_msg(L, "matmul_out: out must not alias an input");
+        }
         lua_try!(
             L,
             linalg::i64_ops::matmul_out(&(*ta).array, &(*tb).array, &mut (*to).array)
@@ -742,9 +824,12 @@ pub unsafe extern "C" fn l_matmul_out(L: *mut lua_State) -> c_int {
         unsafe { lua_pushvalue(L, 3) };
         return 1;
     }
+    // Validate `out` before promoting a/b: check_array longjmps on a bad
+    // argument, and owned promoted copies live at that point would leak.
+    let po = unsafe { check_array(L, 3) };
     let a = lua_try!(L, unsafe { arg_as_f64(L, 1) });
     let b = lua_try!(L, unsafe { arg_as_f64(L, 2) });
-    let o = unsafe { &mut *check_array(L, 3) };
+    let o = unsafe { &mut *po };
     lua_try!(L, linalg::matmul_out(&a, &b, &mut o.array));
     unsafe { lua_pushvalue(L, 3) };
     1
@@ -833,12 +918,14 @@ pub unsafe extern "C" fn a_set(L: *mut lua_State) -> c_int {
 
 pub unsafe extern "C" fn a_sum(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
-    if unsafe { lua_gettop(L) } >= 2 && unsafe { lua_isnumber(L, 2) } {
+    if unsafe { lua_gettop(L) } >= 2 && unsafe { lua_type(L, 2) } != LUA_TNIL {
+        // Lua face is 1-based, axes included; a non-numeric axis errors
+        // instead of silently taking the flat reduction.
         let axis = unsafe { luaL_checkinteger(L, 2) };
-        if axis < 0 {
-            return super::ud::lua_error_msg(L, "axis must be >= 0 (NumPy-shaped)");
+        if axis < 1 {
+            return super::ud::lua_error_msg(L, "axis must be >= 1 (Lua face is 1-based)");
         }
-        let out = lua_try!(L, a.array.sum_axis(axis as usize));
+        let out = lua_try!(L, a.array.sum_axis((axis - 1) as usize));
         unsafe { push_array(L, out) };
         return 1;
     }
@@ -848,12 +935,14 @@ pub unsafe extern "C" fn a_sum(L: *mut lua_State) -> c_int {
 
 pub unsafe extern "C" fn a_mean(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
-    if unsafe { lua_gettop(L) } >= 2 && unsafe { lua_isnumber(L, 2) } {
+    if unsafe { lua_gettop(L) } >= 2 && unsafe { lua_type(L, 2) } != LUA_TNIL {
+        // Lua face is 1-based, axes included; a non-numeric axis errors
+        // instead of silently taking the flat reduction.
         let axis = unsafe { luaL_checkinteger(L, 2) };
-        if axis < 0 {
-            return super::ud::lua_error_msg(L, "axis must be >= 0 (NumPy-shaped)");
+        if axis < 1 {
+            return super::ud::lua_error_msg(L, "axis must be >= 1 (Lua face is 1-based)");
         }
-        let out = lua_try!(L, a.array.mean_axis(axis as usize));
+        let out = lua_try!(L, a.array.mean_axis((axis - 1) as usize));
         unsafe { push_array(L, out) };
         return 1;
     }
@@ -864,12 +953,14 @@ pub unsafe extern "C" fn a_mean(L: *mut lua_State) -> c_int {
 
 pub unsafe extern "C" fn a_min(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
-    if unsafe { lua_gettop(L) } >= 2 && unsafe { lua_isnumber(L, 2) } {
+    if unsafe { lua_gettop(L) } >= 2 && unsafe { lua_type(L, 2) } != LUA_TNIL {
+        // Lua face is 1-based, axes included; a non-numeric axis errors
+        // instead of silently taking the flat reduction.
         let axis = unsafe { luaL_checkinteger(L, 2) };
-        if axis < 0 {
-            return super::ud::lua_error_msg(L, "axis must be >= 0 (NumPy-shaped)");
+        if axis < 1 {
+            return super::ud::lua_error_msg(L, "axis must be >= 1 (Lua face is 1-based)");
         }
-        let out = lua_try!(L, a.array.min_axis(axis as usize));
+        let out = lua_try!(L, a.array.min_axis((axis - 1) as usize));
         unsafe { push_array(L, out) };
         return 1;
     }
@@ -880,12 +971,14 @@ pub unsafe extern "C" fn a_min(L: *mut lua_State) -> c_int {
 
 pub unsafe extern "C" fn a_max(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
-    if unsafe { lua_gettop(L) } >= 2 && unsafe { lua_isnumber(L, 2) } {
+    if unsafe { lua_gettop(L) } >= 2 && unsafe { lua_type(L, 2) } != LUA_TNIL {
+        // Lua face is 1-based, axes included; a non-numeric axis errors
+        // instead of silently taking the flat reduction.
         let axis = unsafe { luaL_checkinteger(L, 2) };
-        if axis < 0 {
-            return super::ud::lua_error_msg(L, "axis must be >= 0 (NumPy-shaped)");
+        if axis < 1 {
+            return super::ud::lua_error_msg(L, "axis must be >= 1 (Lua face is 1-based)");
         }
-        let out = lua_try!(L, a.array.max_axis(axis as usize));
+        let out = lua_try!(L, a.array.max_axis((axis - 1) as usize));
         unsafe { push_array(L, out) };
         return 1;
     }
@@ -1092,10 +1185,9 @@ pub unsafe extern "C" fn a_argmax(L: *mut lua_State) -> c_int {
 }
 pub unsafe extern "C" fn a_var(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
-    // a:var([axis], [ddof]) — if first optional is axis (integer) and rank-2 path requested
-    // Conventions: var() | var(ddof) | var(axis, ddof) when axis is integer 0/1 and second present
-    // Simpler: var() flat ddof0; var(ddof) flat; var(axis, ddof) when two ints — but ddof alone conflicts.
-    // Use: optional ddof only for flat; for axis use var_axis via :var_axis(axis, ddof) method.
+    // a:var([ddof]) is flat-only; an axis reduction is the separate
+    // a:var_axis(axis, ddof) (1-based axis) — a single optional integer would
+    // be ambiguous between ddof and axis.
     let ddof = if unsafe { lua_gettop(L) } >= 2 {
         let d = unsafe { luaL_checkinteger(L, 2) };
         if d < 0 {
@@ -1136,8 +1228,8 @@ pub unsafe extern "C" fn l_where(L: *mut lua_State) -> c_int {
 
 pub unsafe extern "C" fn l_concatenate(L: *mut lua_State) -> c_int {
     let axis = unsafe { luaL_checkinteger(L, 1) };
-    if axis < 0 {
-        return super::ud::lua_error_msg(L, "concatenate axis must be >= 0");
+    if axis < 1 {
+        return super::ud::lua_error_msg(L, "concatenate axis must be >= 1 (Lua face is 1-based)");
     }
     let top = unsafe { lua_gettop(L) };
     if top < 3 {
@@ -1150,14 +1242,14 @@ pub unsafe extern "C" fn l_concatenate(L: *mut lua_State) -> c_int {
     }
     // Safety: arrays are on stack, alive for call
     let refs: Vec<&Array> = owned.iter().map(|p| unsafe { &**p }).collect();
-    let out = lua_try!(L, Array::concatenate(axis as usize, &refs));
+    let out = lua_try!(L, Array::concatenate((axis - 1) as usize, &refs));
     unsafe { push_array(L, out) };
     1
 }
 pub unsafe extern "C" fn l_stack(L: *mut lua_State) -> c_int {
     let axis = unsafe { luaL_checkinteger(L, 1) };
-    if axis < 0 {
-        return super::ud::lua_error_msg(L, "stack axis must be >= 0");
+    if axis < 1 {
+        return super::ud::lua_error_msg(L, "stack axis must be >= 1 (Lua face is 1-based)");
     }
     let top = unsafe { lua_gettop(L) };
     if top < 3 {
@@ -1169,7 +1261,7 @@ pub unsafe extern "C" fn l_stack(L: *mut lua_State) -> c_int {
         owned.push(&a.array as *const _);
     }
     let refs: Vec<&Array> = owned.iter().map(|p| unsafe { &**p }).collect();
-    let out = lua_try!(L, Array::stack(axis as usize, &refs));
+    let out = lua_try!(L, Array::stack((axis - 1) as usize, &refs));
     unsafe { push_array(L, out) };
     1
 }
@@ -1345,6 +1437,12 @@ pub unsafe extern "C" fn a_col(L: *mut lua_State) -> c_int {
     unsafe { push_array(L, c) };
     1
 }
+pub unsafe extern "C" fn a_dtype(L: *mut lua_State) -> c_int {
+    unsafe {
+        lua_pushstring(L, c"f64".as_ptr());
+    }
+    1
+}
 pub unsafe extern "C" fn l_broadcast_to(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
     let shape = lua_try!(L, unsafe { shape_from_args(L, 2) });
@@ -1357,8 +1455,8 @@ pub unsafe extern "C" fn l_broadcast_to(L: *mut lua_State) -> c_int {
 pub unsafe extern "C" fn a_var_axis(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
     let axis = unsafe { luaL_checkinteger(L, 2) };
-    if axis < 0 {
-        return super::ud::lua_error_msg(L, "axis must be >= 0 (NumPy-shaped)");
+    if axis < 1 {
+        return super::ud::lua_error_msg(L, "axis must be >= 1 (Lua face is 1-based)");
     }
     let ddof = if unsafe { lua_gettop(L) } >= 3 {
         let d = unsafe { luaL_checkinteger(L, 3) };
@@ -1369,15 +1467,15 @@ pub unsafe extern "C" fn a_var_axis(L: *mut lua_State) -> c_int {
     } else {
         0
     };
-    let out = lua_try!(L, a.array.var_axis(axis as usize, ddof));
+    let out = lua_try!(L, a.array.var_axis((axis - 1) as usize, ddof));
     unsafe { push_array(L, out) };
     1
 }
 pub unsafe extern "C" fn a_std_axis(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
     let axis = unsafe { luaL_checkinteger(L, 2) };
-    if axis < 0 {
-        return super::ud::lua_error_msg(L, "axis must be >= 0 (NumPy-shaped)");
+    if axis < 1 {
+        return super::ud::lua_error_msg(L, "axis must be >= 1 (Lua face is 1-based)");
     }
     let ddof = if unsafe { lua_gettop(L) } >= 3 {
         let d = unsafe { luaL_checkinteger(L, 3) };
@@ -1388,7 +1486,7 @@ pub unsafe extern "C" fn a_std_axis(L: *mut lua_State) -> c_int {
     } else {
         0
     };
-    let out = lua_try!(L, a.array.std_axis(axis as usize, ddof));
+    let out = lua_try!(L, a.array.std_axis((axis - 1) as usize, ddof));
     unsafe { push_array(L, out) };
     1
 }
@@ -1396,10 +1494,10 @@ pub unsafe extern "C" fn a_any(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
     if unsafe { lua_gettop(L) } >= 2 && unsafe { lua_isnumber(L, 2) } {
         let axis = unsafe { luaL_checkinteger(L, 2) };
-        if axis < 0 {
-            return super::ud::lua_error_msg(L, "axis must be >= 0 (NumPy-shaped)");
+        if axis < 1 {
+            return super::ud::lua_error_msg(L, "axis must be >= 1 (Lua face is 1-based)");
         }
-        let out = lua_try!(L, a.array.any_axis(axis as usize));
+        let out = lua_try!(L, a.array.any_axis((axis - 1) as usize));
         unsafe { push_array(L, out) };
         return 1;
     }
@@ -1410,10 +1508,10 @@ pub unsafe extern "C" fn a_all(L: *mut lua_State) -> c_int {
     let a = unsafe { &*check_array(L, 1) };
     if unsafe { lua_gettop(L) } >= 2 && unsafe { lua_isnumber(L, 2) } {
         let axis = unsafe { luaL_checkinteger(L, 2) };
-        if axis < 0 {
-            return super::ud::lua_error_msg(L, "axis must be >= 0 (NumPy-shaped)");
+        if axis < 1 {
+            return super::ud::lua_error_msg(L, "axis must be >= 1 (Lua face is 1-based)");
         }
-        let out = lua_try!(L, a.array.all_axis(axis as usize));
+        let out = lua_try!(L, a.array.all_axis((axis - 1) as usize));
         unsafe { push_array(L, out) };
         return 1;
     }
@@ -1489,9 +1587,11 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
     unsafe {
         if luaL_newmetatable(L, ARRAY_MT.as_ptr()) != 0 {
             lua_newtable(L);
-            let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 63] = [
+            let methods: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 65] = [
             (c"shape", a_shape),
             (c"rank", a_rank),
+            (c"dtype", a_dtype),
+            (c"broadcast_to", l_broadcast_to),
             (c"get", a_get),
             (c"set", a_set),
             (c"sum", a_sum),
@@ -1580,7 +1680,7 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
         lua_pop(L, 1);
 
         lua_newtable(L);
-        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 42] = [
+        let funcs: [(&std::ffi::CStr, unsafe extern "C" fn(*mut lua_State) -> c_int); 43] = [
             (c"zeros", l_zeros),
             (c"ones", l_ones),
             (c"full", l_full),
@@ -1600,6 +1700,7 @@ pub unsafe extern "C" fn luaopen_matlua(L: *mut lua_State) -> c_int {
             (c"matmul_bt", l_matmul_bt),
             (c"normal_eq", l_normal_eq),
             (c"solve", l_solve),
+            (c"cholesky_solve", l_cholesky_solve),
             (c"lstsq", l_lstsq),
             (c"eigh", l_eigh),
             (c"pinv", l_pinv),

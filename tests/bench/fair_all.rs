@@ -9,6 +9,7 @@
 //! ```
 
 use std::env;
+use std::hint::black_box;
 use std::time::Instant;
 
 use matlua::array::Array;
@@ -136,28 +137,28 @@ fn bench_rust(sizes: &[usize]) {
 
         let (it, wrm) = budget(n, false);
         emit("rust", "zeros", n, time_ms(it, wrm, || {
-            let _ = Array::zeros(vec![n, n]).unwrap();
+            black_box(Array::zeros(vec![n, n]).unwrap());
         }));
         emit("rust", "ones", n, time_ms(it, wrm, || {
-            let _ = Array::ones(vec![n, n]).unwrap();
+            black_box(Array::ones(vec![n, n]).unwrap());
         }));
         emit("rust", "full", n, time_ms(it, wrm, || {
-            let _ = Array::full(vec![n, n], 1.5).unwrap();
+            black_box(Array::full(vec![n, n], 1.5).unwrap());
         }));
         emit("rust", "eye", n, time_ms(it, wrm, || {
-            let _ = Array::eye(n).unwrap();
+            black_box(Array::eye(n).unwrap());
         }));
         emit("rust", "arange", n, time_ms(it, wrm, || {
-            let _ = Array::arange(0.0, n as f64).unwrap();
+            black_box(Array::arange(0.0, n as f64).unwrap());
         }));
         emit("rust", "copy", n, time_ms(it, wrm, || {
-            let _ = a.copy();
+            black_box(a.copy());
         }));
         // reshape n×n → (n/2)×(2n) when n even
         if n % 2 == 0 {
             let dims = vec![n / 2, n * 2];
             emit("rust", "reshape", n, time_ms(it, wrm, || {
-                let _ = a.reshape(dims.clone()).unwrap();
+                black_box(a.reshape(dims.clone()).unwrap());
             }));
         }
         emit("rust", "fill", n, {
@@ -167,57 +168,62 @@ fn bench_rust(sizes: &[usize]) {
             })
         });
         emit("rust", "elem_add", n, time_ms(it, wrm, || {
-            let _ = Array::add(&a, &b).unwrap();
+            black_box(Array::add(&a, &b).unwrap());
         }));
         emit("rust", "elem_sub", n, time_ms(it, wrm, || {
-            let _ = Array::sub(&a, &b).unwrap();
+            black_box(Array::sub(&a, &b).unwrap());
         }));
         emit("rust", "elem_mul", n, time_ms(it, wrm, || {
-            let _ = Array::mul(&a, &b).unwrap();
+            black_box(Array::mul(&a, &b).unwrap());
         }));
         emit("rust", "elem_div", n, time_ms(it, wrm, || {
-            let _ = Array::div(&a, &b).unwrap();
+            black_box(Array::div(&a, &b).unwrap());
         }));
         emit("rust", "elem_add_scalar", n, time_ms(it, wrm, || {
-            let _ = &a + 2.5;
+            black_box(&a + 2.5);
         }));
         emit("rust", "sum", n, time_ms(it, wrm, || {
-            let _ = a.sum();
+            black_box(a.sum());
         }));
         emit("rust", "mean", n, time_ms(it, wrm, || {
-            let _ = a.mean();
+            black_box(a.mean().unwrap());
         }));
         emit("rust", "min", n, time_ms(it, wrm, || {
-            let _ = a.min().unwrap();
+            black_box(a.min().unwrap());
         }));
         emit("rust", "max", n, time_ms(it, wrm, || {
-            let _ = a.max().unwrap();
+            black_box(a.max().unwrap());
         }));
         emit("rust", "transpose", n, time_ms(it, wrm, || {
-            let _ = linalg::transpose(&a).unwrap();
+            black_box(linalg::transpose(&a).unwrap());
         }));
         emit("rust", "dot", n, time_ms(it, wrm, || {
-            let _ = linalg::dot(&v, &w).unwrap();
+            black_box(linalg::dot(&v, &w).unwrap());
         }));
         emit("rust", "norm", n, time_ms(it, wrm, || {
-            let _ = linalg::norm(&a).unwrap();
+            black_box(linalg::norm(&a).unwrap());
         }));
 
         let (it, wrm) = budget(n, true);
         emit("rust", "matmul", n, time_ms(it, wrm, || {
-            let _ = linalg::matmul(&a, &b).unwrap();
+            black_box(linalg::matmul(&a, &b).unwrap());
         }));
         emit("rust", "solve", n, time_ms(it, wrm, || {
-            let _ = linalg::solve(&s, &rhs).unwrap();
+            black_box(linalg::solve(&s, &rhs).unwrap());
         }));
         emit("rust", "cholesky", n, time_ms(it, wrm, || {
-            let _ = linalg::cholesky(&s).unwrap();
+            black_box(linalg::cholesky(&s).unwrap());
+        }));
+        // NumPy has no cho_solve (that's SciPy); its reference column is
+        // np.linalg.solve on the same SPD system — what a NumPy user would call.
+        emit("rust", "cholesky_solve", n, time_ms(it, wrm, || {
+            black_box(linalg::cholesky_solve(&s, &rhs).unwrap());
         }));
         emit("rust", "qr", n, time_ms(it, wrm, || {
-            let _ = linalg::qr(&a).unwrap();
+            black_box(linalg::qr(&a).unwrap());
         }));
         emit("rust", "svd", n, time_ms(it, wrm, || {
-            let _ = linalg::svd(&a).unwrap();
+            black_box(linalg::svd(&a).unwrap());
         }));
     }
 }
@@ -238,30 +244,10 @@ fn time_lua(lua: &Lua, setup: &str, body: &str, iters: usize, warm: usize) -> f6
         samples.push(t0.elapsed().as_secs_f64() * 1e3);
         let _ = lua.call_global("__bench_gc");
     }
-    // free setup globals
-    let _ = lua.do_string("A=nil;B=nil;V=nil;W=nil;S=nil;rhs=nil;T=nil;collectgarbage(\"collect\")");
     median(&samples)
 }
 
 /// Build globals A,B,V,W,S,rhs with same numeric rules as Rust helpers.
-fn lua_build_inputs(n: usize) -> String {
-    // Bulk constructors only (no O(n²) :set loops) so n=4096 is feasible.
-    format!(
-        r#"
-local n = {n}
-A = ml.arange(0, n * n):reshape(n, n)
-B = ml.full(n, n, 1.5)
-V = ml.arange(0, n)
-W = ml.arange(1, n + 1)
-S = ml.full(n, n, 0.01)
-for i = 1, n do
-  S:set(i, i, n + 1)
-end
-rhs = V
-"#
-    )
-}
-
 fn bench_lua(sizes: &[usize]) {
     let lua = Lua::new().unwrap();
     lua.do_string(r#"ml = require "matlua""#).unwrap();
@@ -269,27 +255,26 @@ fn bench_lua(sizes: &[usize]) {
     for &n in sizes {
         let (it, wrm) = budget(n, false);
         let (ith, wrmh) = budget(n, true);
-        let ab = format!(
-            "A=ml.full({n},{n},1.0); B=ml.full({n},{n},1.5); collectgarbage(\"collect\")"
-        );
-        let a_only = format!("A=ml.full({n},{n},1.0); collectgarbage(\"collect\")");
-        let v_only = format!("V=ml.arange(0,{n}); collectgarbage(\"collect\")");
-        let vw = format!(
-            "V=ml.arange(0,{n}); W=ml.arange(1,{n}+1); collectgarbage(\"collect\")"
-        );
-        let spd = format!(
-            "S=ml.full({n},{n},0.01); for i=1,{n} do S:set(i,i,{n}+1) end; rhs=ml.arange(0,{n}); collectgarbage(\"collect\")"
-        );
-        let ab_mat = format!(
-            "A=ml.full({n},{n},1.0); B=ml.full({n},{n},1.5); collectgarbage(\"collect\")"
-        );
+
+        // Identical inputs by construction: the Lua globals are copies of the
+        // exact arrays the Rust face benches (a review found the faces
+        // previously measured different data — constant matrices on the Lua
+        // side made rank-deficient factorizations and trivially predictable
+        // reductions).
+        lua.set_global_array("A", &dense_n(n)).unwrap();
+        lua.set_global_array("B", &dense2_n(n)).unwrap();
+        lua.set_global_array("V", &vec_n(n)).unwrap();
+        lua.set_global_array("W", &vec2_n(n)).unwrap();
+        lua.set_global_array("S", &spd_n(n)).unwrap();
+        lua.set_global_array("rhs", &vec_n(n)).unwrap();
+        lua.do_string("T = A:copy(); collectgarbage(\"collect\")").unwrap();
 
         emit("lua", "zeros", n, time_lua(&lua, "", &format!("return ml.zeros({n},{n})"), it, wrm));
         emit("lua", "ones", n, time_lua(&lua, "", &format!("return ml.ones({n},{n})"), it, wrm));
         emit("lua", "full", n, time_lua(&lua, "", &format!("return ml.full({n},{n},1.5)"), it, wrm));
         emit("lua", "eye", n, time_lua(&lua, "", &format!("return ml.eye({n})"), it, wrm));
         emit("lua", "arange", n, time_lua(&lua, "", &format!("return ml.arange(0,{n})"), it, wrm));
-        emit("lua", "copy", n, time_lua(&lua, &a_only, "return A:copy()", it, wrm));
+        emit("lua", "copy", n, time_lua(&lua, "", "return A:copy()", it, wrm));
         if n % 2 == 0 {
             emit(
                 "lua",
@@ -297,35 +282,37 @@ fn bench_lua(sizes: &[usize]) {
                 n,
                 time_lua(
                     &lua,
-                    &a_only,
+                    "",
                     &format!("return A:reshape({hr},{wr})", hr = n / 2, wr = n * 2),
                     it,
                     wrm,
                 ),
             );
         }
-        emit("lua", "fill", n, time_lua(&lua, &(a_only.clone() + "\nT=A:copy()\n"), "T:fill(3.0)", it, wrm));
-        emit("lua", "elem_add", n, time_lua(&lua, &ab, "return A + B", it, wrm));
-        emit("lua", "elem_sub", n, time_lua(&lua, &ab, "return A - B", it, wrm));
-        emit("lua", "elem_mul", n, time_lua(&lua, &ab, "return A * B", it, wrm));
-        emit("lua", "elem_div", n, time_lua(&lua, &ab, "return A / B", it, wrm));
-        emit("lua", "elem_add_scalar", n, time_lua(&lua, &a_only, "return A + 2.5", it, wrm));
-        emit("lua", "sum", n, time_lua(&lua, &a_only, "return A:sum()", it, wrm));
-        emit("lua", "mean", n, time_lua(&lua, &a_only, "return A:mean()", it, wrm));
-        emit("lua", "min", n, time_lua(&lua, &a_only, "return A:min()", it, wrm));
-        emit("lua", "max", n, time_lua(&lua, &a_only, "return A:max()", it, wrm));
-        emit("lua", "transpose", n, time_lua(&lua, &a_only, "return A:transpose()", it, wrm));
-        emit("lua", "dot", n, time_lua(&lua, &vw, "return ml.dot(V, W)", it, wrm));
-        emit("lua", "norm", n, time_lua(&lua, &a_only, "return ml.norm(A)", it, wrm));
-        emit("lua", "matmul", n, time_lua(&lua, &ab_mat, "return ml.matmul(A, B)", ith, wrmh));
-        emit("lua", "solve", n, time_lua(&lua, &spd, "return ml.solve(S, rhs)", ith, wrmh));
-        emit("lua", "cholesky", n, time_lua(&lua, &spd, "return ml.cholesky(S)", ith, wrmh));
-        emit("lua", "qr", n, time_lua(&lua, &a_only, "return ml.qr(A)", ith, wrmh));
-        emit("lua", "svd", n, time_lua(&lua, &a_only, "return ml.svd(A)", ith, wrmh));
+        emit("lua", "fill", n, time_lua(&lua, "", "T:fill(3.0)", it, wrm));
+        emit("lua", "elem_add", n, time_lua(&lua, "", "return A + B", it, wrm));
+        emit("lua", "elem_sub", n, time_lua(&lua, "", "return A - B", it, wrm));
+        emit("lua", "elem_mul", n, time_lua(&lua, "", "return A * B", it, wrm));
+        emit("lua", "elem_div", n, time_lua(&lua, "", "return A / B", it, wrm));
+        emit("lua", "elem_add_scalar", n, time_lua(&lua, "", "return A + 2.5", it, wrm));
+        emit("lua", "sum", n, time_lua(&lua, "", "return A:sum()", it, wrm));
+        emit("lua", "mean", n, time_lua(&lua, "", "return A:mean()", it, wrm));
+        emit("lua", "min", n, time_lua(&lua, "", "return A:min()", it, wrm));
+        emit("lua", "max", n, time_lua(&lua, "", "return A:max()", it, wrm));
+        emit("lua", "transpose", n, time_lua(&lua, "", "return A:transpose()", it, wrm));
+        emit("lua", "dot", n, time_lua(&lua, "", "return ml.dot(V, W)", it, wrm));
+        emit("lua", "norm", n, time_lua(&lua, "", "return ml.norm(A)", it, wrm));
+        emit("lua", "matmul", n, time_lua(&lua, "", "return ml.matmul(A, B)", ith, wrmh));
+        emit("lua", "solve", n, time_lua(&lua, "", "return ml.solve(S, rhs)", ith, wrmh));
+        emit("lua", "cholesky", n, time_lua(&lua, "", "return ml.cholesky(S)", ith, wrmh));
+        emit("lua", "cholesky_solve", n, time_lua(&lua, "", "return ml.cholesky_solve(S, rhs)", ith, wrmh));
+        emit("lua", "qr", n, time_lua(&lua, "", "return ml.qr(A)", ith, wrmh));
+        emit("lua", "svd", n, time_lua(&lua, "", "return ml.svd(A)", ith, wrmh));
+
+        // Free this size's globals before the next.
+        let _ = lua.do_string("A=nil;B=nil;V=nil;W=nil;S=nil;rhs=nil;T=nil;collectgarbage(\"collect\")");
     }
-
 }
-
 
 fn main() {
     let args: Vec<String> = env::args().collect();

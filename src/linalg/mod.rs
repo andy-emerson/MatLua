@@ -23,7 +23,7 @@ pub mod from_i64;
 
 use faer::linalg::matmul::matmul as faer_matmul;
 use faer::linalg::solvers::{Solve, SolveLstsq};
-use faer::{get_global_parallelism, Accum, MatMut, MatRef, Par, Side};
+use faer::{get_global_parallelism, Accum, MatMut, Par, Side};
 
 use crate::array::kernels;
 use crate::array::{Array, Shape};
@@ -74,7 +74,7 @@ pub fn transpose(a: &Array) -> Result<Array> {
         1 => {
             // Column (n,) → row matrix (1, n).
             let n = a.len();
-            let mut data = crate::array::pool_take_uninit(n);
+            let mut data = crate::array::pool_try_take_uninit(n)?;
             data.copy_from_slice(a.as_slice());
             Ok(Array::from_parts(Shape::matrix(1, n)?, data))
         }
@@ -82,7 +82,7 @@ pub fn transpose(a: &Array) -> Result<Array> {
             let rows = a.dims()[0];
             let cols = a.dims()[1];
             let src = a.as_slice();
-            let mut data = crate::array::pool_take_uninit(rows.saturating_mul(cols));
+            let mut data = crate::array::pool_try_take_uninit(rows.saturating_mul(cols))?;
             blocked_transpose(src, rows, cols, &mut data);
             Ok(Array::from_parts(Shape::matrix(cols, rows)?, data))
         }
@@ -152,7 +152,7 @@ pub fn matmul(a: &Array, b: &Array) -> Result<Array> {
     let prefer_vec = b.rank() == 1 || (a.rank() == 1 && bn == 1);
 
     let n_out = am.saturating_mul(bn);
-    let mut data = crate::array::pool_take_uninit(n_out);
+    let mut data = crate::array::pool_try_take_uninit(n_out)?;
     if n_out > 0 {
         let mut dst = MatMut::from_row_major_slice_mut(&mut data, am, bn);
         faer_matmul(
@@ -234,7 +234,7 @@ pub fn matmul_at(a: &Array, b: &Array) -> Result<Array> {
     let rhs = array_as_mat_ref(b)?;
     let prefer_vec = b.rank() == 1;
     let n_out = an.saturating_mul(bn);
-    let mut data = crate::array::pool_take_uninit(n_out);
+    let mut data = crate::array::pool_try_take_uninit(n_out)?;
     if n_out > 0 {
         let mut dst = MatMut::from_row_major_slice_mut(&mut data, an, bn);
         faer_matmul(
@@ -286,7 +286,7 @@ pub fn matmul_bt(a: &Array, b: &Array) -> Result<Array> {
     let rhs = array_as_mat_ref(b)?.transpose();
     let prefer_vec = a.rank() == 1;
     let n_out = am.saturating_mul(bm);
-    let mut data = crate::array::pool_take_uninit(n_out);
+    let mut data = crate::array::pool_try_take_uninit(n_out)?;
     if n_out > 0 {
         let mut dst = MatMut::from_row_major_slice_mut(&mut data, am, bm);
         faer_matmul(
@@ -414,27 +414,28 @@ pub fn solve(a: &Array, b: &Array) -> Result<Array> {
     // unchanged. Agrees with faer to machine epsilon on well-conditioned
     // systems (same pivoting strategy).
     if n <= 192 && bk == 1 && n > 0 {
-        let mut lu = crate::array::pool_take_uninit(n * n);
+        let mut lu = crate::array::pool_try_take_uninit(n * n)?;
         lu.copy_from_slice(a.as_slice());
-        let mut x = crate::array::pool_take_uninit(n);
+        let mut x = crate::array::pool_try_take_uninit(n)?;
         x.copy_from_slice(b.as_slice());
         if lu_solve_unblocked(n, &mut lu, &mut x) {
             crate::array::pool_recycle(lu);
             let prefer_vec = b.rank() == 1;
             return matmul_result(x, n, 1, prefer_vec);
         }
+        // Exact zero pivot: return both scratch buffers and take the faer path.
         crate::array::pool_recycle(lu);
-        // exact zero pivot → faer path below
+        crate::array::pool_recycle(x);
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let lu = am.partial_piv_lu();
     // Dest-pack: copy RHS into owned row-major buffer and solve in place
     // (avoids faer-owned Mat + second pack-out).
     let prefer_vec = b.rank() == 1 && bk == 1;
     let n_out = bn.saturating_mul(bk);
-    let mut data = crate::array::pool_take_uninit(n_out);
+    let mut data = crate::array::pool_try_take_uninit(n_out)?;
     if n_out > 0 {
         data.copy_from_slice(b.as_slice());
         let mut rhs = MatMut::from_row_major_slice_mut(&mut data, bn, bk);
@@ -468,9 +469,9 @@ pub fn lstsq(a: &Array, b: &Array) -> Result<Array> {
             "lstsq rhs rows {bm} != matrix rows {m}"
         )));
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let bm_ref = array_as_mat_ref(b)?;
     let qr = am.col_piv_qr();
     let x = qr.solve_lstsq(bm_ref);
@@ -489,9 +490,9 @@ pub fn eigh(a: &Array) -> Result<(Array, Array)> {
     if n != m {
         return Err(Error::shape("eigh requires a square matrix"));
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let evd = am
         .self_adjoint_eigen(Side::Lower)
         .map_err(|e| Error::linalg(format!("eigh failed: {e:?}")))?;
@@ -499,7 +500,7 @@ pub fn eigh(a: &Array) -> Result<(Array, Array)> {
     let s_diag = evd.S();
     let dim = s_diag.dim();
     let col = s_diag.column_vector();
-    let mut w = crate::array::pool_take_uninit(dim);
+    let mut w = crate::array::pool_try_take_uninit(dim)?;
     for i in 0..dim {
         w[i] = col[i];
     }
@@ -515,14 +516,50 @@ pub fn pinv(a: &Array) -> Result<Array> {
     if a.rank() != 2 {
         return Err(Error::shape("pinv requires a rank-2 matrix"));
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let svd = am
         .svd()
         .map_err(|e| Error::linalg(format!("pinv svd failed: {e:?}")))?;
     let p = svd.pseudoinverse();
     mat_to_array(&p, false)
+}
+
+/// Solve `a x = b` for symmetric positive-definite `a` via Cholesky (`LLᵀ`).
+///
+/// Uses the lower triangle of `a`. About half the flops of the LU [`solve`]
+/// on SPD systems; errors with [`Error::Linalg`] when `a` is not positive
+/// definite. `b` may be rank-1 `(n,)` or rank-2 `(n, k)`; the result matches
+/// `b`'s rank convention. (Added for TallyDB-class hosts: factor-only
+/// [`cholesky`] existed, but their windows need the solve.)
+pub fn cholesky_solve(a: &Array, b: &Array) -> Result<Array> {
+    let (n, m) = array_as_matrix_dims(a)?;
+    if a.rank() != 2 || n != m {
+        return Err(Error::shape("cholesky_solve requires a square rank-2 matrix"));
+    }
+    let (bn, bk) = array_as_matrix_dims(b)?;
+    if bn != n {
+        return Err(Error::shape(format!(
+            "cholesky_solve rhs rows {bn} != matrix order {n}"
+        )));
+    }
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
+    let llt = am
+        .llt(Side::Lower)
+        .map_err(|e| Error::linalg(format!("cholesky_solve: not positive definite: {e:?}")))?;
+    // Dest-pack like `solve`: copy RHS row-major and solve in place.
+    let prefer_vec = b.rank() == 1 && bk == 1;
+    let n_out = bn.saturating_mul(bk);
+    let mut data = crate::array::pool_try_take_uninit(n_out)?;
+    if n_out > 0 {
+        data.copy_from_slice(b.as_slice());
+        let mut rhs = MatMut::from_row_major_slice_mut(&mut data, bn, bk);
+        llt.solve_in_place(&mut rhs);
+    }
+    matmul_result(data, bn, bk, prefer_vec)
 }
 
 /// Cholesky factor `L` of a symmetric positive-definite matrix (`A = L Lᵀ`).
@@ -536,9 +573,9 @@ pub fn cholesky(a: &Array) -> Result<Array> {
     if a.rank() != 2 {
         return Err(Error::shape("cholesky requires a rank-2 matrix"));
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let llt = am
         .llt(Side::Lower)
         .map_err(|e| Error::linalg(format!("cholesky failed: {e:?}")))?;
@@ -552,9 +589,9 @@ pub fn qr(a: &Array) -> Result<(Array, Array)> {
     if a.rank() != 2 {
         return Err(Error::shape("qr requires a rank-2 matrix"));
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let qr = am.qr();
     let q = qr.compute_thin_Q();
     let r = qr.thin_R().to_owned();
@@ -567,9 +604,9 @@ pub fn svd(a: &Array) -> Result<(Array, Array, Array)> {
     if a.rank() != 2 {
         return Err(Error::shape("svd requires a rank-2 matrix"));
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let svd = am
         .thin_svd()
         .map_err(|e| Error::linalg(format!("svd failed: {e:?}")))?;
@@ -578,7 +615,7 @@ pub fn svd(a: &Array) -> Result<(Array, Array, Array)> {
     let s_diag = svd.S();
     let n = s_diag.dim();
     let col = s_diag.column_vector();
-    let mut s = crate::array::pool_take_uninit(n);
+    let mut s = crate::array::pool_try_take_uninit(n)?;
     for i in 0..n {
         s[i] = col[i];
     }
@@ -601,6 +638,41 @@ pub fn eye(n: usize) -> Result<Array> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cholesky_solve_matches_lu_solve_on_spd() {
+        let n = 24usize;
+        // Diagonally dominant symmetric => SPD.
+        let mut d = vec![0.0f64; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let v = 0.1 * (((i * 7 + j * 3) % 11) as f64) / 11.0;
+                d[i * n + j] = if i == j { v + n as f64 } else { v };
+            }
+        }
+        // symmetrize
+        for i in 0..n {
+            for j in 0..i {
+                let m = 0.5 * (d[i * n + j] + d[j * n + i]);
+                d[i * n + j] = m;
+                d[j * n + i] = m;
+            }
+        }
+        let a = Array::from_shape_slice(vec![n, n], &d).unwrap();
+        let b: Vec<f64> = (0..n).map(|i| (i % 5) as f64).collect();
+        let bv = Array::from_shape_slice(vec![n], &b).unwrap();
+        let x_chol = cholesky_solve(&a, &bv).unwrap();
+        let x_lu = solve(&a, &bv).unwrap();
+        assert_eq!(x_chol.rank(), 1);
+        for i in 0..n {
+            assert!((x_chol.as_slice()[i] - x_lu.as_slice()[i]).abs() < 1e-9);
+        }
+        // Non-SPD input must error, not return garbage.
+        let mut nd = d.clone();
+        nd[0] = -100.0;
+        let bad = Array::from_shape_slice(vec![n, n], &nd).unwrap();
+        assert!(cholesky_solve(&bad, &bv).is_err());
+    }
 
     #[test]
     fn small_solve_path_matches_faer_path() {
@@ -898,9 +970,9 @@ pub fn slogdet(a: &Array) -> Result<(f64, f64)> {
     if n == 0 {
         return Ok((1.0, 0.0)); // det of 0×0 is 1 by convention
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let lu = am.partial_piv_lu();
     let u = lu.U();
     let p = lu.P();
@@ -947,9 +1019,9 @@ fn singular_values_vec(a: &Array) -> Result<Vec<f64>> {
     if a.rank() != 2 {
         return Err(Error::shape("expected rank-2 matrix"));
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let s = am
         .singular_values()
         .map_err(|e| Error::linalg(format!("singular_values failed: {e:?}")))?;
@@ -1010,14 +1082,14 @@ pub fn eigvals(a: &Array) -> Result<(Array, Array)> {
     if n != m {
         return Err(Error::shape("eigvals requires a square matrix"));
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let vals = am
         .eigenvalues()
         .map_err(|e| Error::linalg(format!("eigvals failed: {e:?}")))?;
-    let mut re = crate::array::pool_take_uninit(n);
-    let mut im = crate::array::pool_take_uninit(n);
+    let mut re = crate::array::pool_try_take_uninit(n)?;
+    let mut im = crate::array::pool_try_take_uninit(n)?;
     for (i, z) in vals.iter().enumerate() {
         re[i] = z.re;
         im[i] = z.im;
@@ -1041,23 +1113,23 @@ pub fn eig(a: &Array) -> Result<(Array, Array, Array, Array)> {
     if n != m {
         return Err(Error::shape("eig requires a square matrix"));
     }
-    // Factorization input: column-major copy (see `array_to_colmajor`).
-    let (a_cm, cm_r, cm_c) = array_to_colmajor(a)?;
-    let am = MatRef::from_column_major_slice(&a_cm, cm_r, cm_c);
+    // Factorization input: column-major copy (see `ColMajor`).
+    let a_cm = array_to_colmajor(a)?;
+    let am = a_cm.view();
     let evd = am
         .eigen()
         .map_err(|e| Error::linalg(format!("eig failed: {e:?}")))?;
     let u = evd.U(); // Complex matrix n×n
     let s = evd.S();
-    let mut wr = crate::array::pool_take_uninit(n);
-    let mut wi = crate::array::pool_take_uninit(n);
+    let mut wr = crate::array::pool_try_take_uninit(n)?;
+    let mut wi = crate::array::pool_try_take_uninit(n)?;
     let col = s.column_vector();
     for i in 0..n {
         wr[i] = col[i].re;
         wi[i] = col[i].im;
     }
-    let mut vre = crate::array::pool_take_uninit(n * n);
-    let mut vim = crate::array::pool_take_uninit(n * n);
+    let mut vre = crate::array::pool_try_take_uninit(n * n)?;
+    let mut vim = crate::array::pool_try_take_uninit(n * n)?;
     for i in 0..n {
         for j in 0..n {
             let z = u[(i, j)];

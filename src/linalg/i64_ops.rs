@@ -7,7 +7,15 @@
 //!
 //! Goto/BLIS GEBP over wrapping `i64` (constants per DESIGN §3.26 — see the
 //! derivation at their definitions below):
-//! - **Not** f64 promote + faer: breaks exactness past 2⁵³ and wrapping semantics.
+//! - **Three kernel tiers**, all bit-identical, picked per product by one
+//!   O(elements) range scan (`gemm_tier`), fastest silicon first:
+//!   1. `k·max|A|·max|B| ≤ 2⁵³` → **f64 promote** to faer's GEMM (FMA units;
+//!      every intermediate exactly representable). *Unguarded* promote stays
+//!      rejected: past 2⁵³ f64 rounds (2⁵³ + 1 has no f64 representation).
+//!   2. inputs fit **i32** → i32-pack GEBP with 32×32→64 widening products —
+//!      exact for **any** k (no magnitude bound), ~2× the i64 tile speed per
+//!      thread under AVX-512 (bake-off winner, 2026-08-04).
+//!   3. otherwise → the exact wrapping **i64 GEBP** below.
 //! - NumPy `int64 @ int64` has **no BLAS backend** (OpenBLAS/MKL are float); the
 //!   fair reference is f64 BLAS on integer-valued data (DESIGN §7.1.2), plus the
 //!   machine roofline from `tests/bench/i64_roofline.rs`.
@@ -23,8 +31,10 @@
 //! - Strassen over rings is valid but was slower than this base kernel through
 //!   n=4096 on measured hosts; kept off until the cubic kernel is stronger.
 
-use crate::array::{pool_i64, ArrayI64, Shape};
+use crate::array::{pool_i64, pool_recycle, pool_take_uninit, ArrayI64, Shape};
 use crate::error::{Error, Result};
+use faer::linalg::matmul::matmul as faer_matmul;
+use faer::{Accum, MatMut, MatRef};
 
 /// Interpret rank-1 as column vector `(n, 1)`; rank-2 as matrix.
 fn as_matrix_dims(a: &ArrayI64) -> Result<(usize, usize)> {
@@ -230,9 +240,14 @@ macro_rules! flat_tile_body {
             let ap = &a[p * MR_..p * MR_ + MR_];
             let bp = &b[p * NR_..p * NR_ + NR_];
             for i in 0..MR_ {
-                let ai = ap[i];
+                // `as i64` is a no-op for i64 packs and the exact widening
+                // (sign-extending) conversion for i32 packs — one body serves
+                // both element types, and on i32 the 32→64 product is a
+                // cheaper instruction than the 64-bit lane multiply.
+                let ai = ap[i] as i64;
                 for j in 0..NR_ {
-                    acc[i * NR_ + j] = acc[i * NR_ + j].wrapping_add(ai.wrapping_mul(bp[j]));
+                    acc[i * NR_ + j] =
+                        acc[i * NR_ + j].wrapping_add(ai.wrapping_mul(bp[j] as i64));
                 }
             }
         }
@@ -555,33 +570,443 @@ fn gemm_tiny(m: usize, k: usize, n: usize, a: Op, b: Op, data: &mut [i64]) {
     }
 }
 
+// --- i32-pack tier (Human ruling 2026-08-04: bake-off winner) ----------------
+//
+// When every input fits in i32, each 32×32→64 widening product is exact and
+// wrapping i64 accumulation is exact mod 2⁶⁴ for ANY k — unlike the f64
+// promote there is no magnitude bound. Bake-off vs the i64 GEBP on this
+// class of host (tests/bench/wide_matmul_exp.rs, 2026-08-04): ~2× faster
+// per thread under AVX-512 codegen (the 64-bit lane multiply is a multi-µop
+// instruction; the 32→64 widening multiply is not), and i32 packs halve the
+// pack bytes, so KC doubles at the same L1 footprint. Strassen over the
+// wrapping ring was the other exact candidate and lost: 592 ms vs 504 ms at
+// n=2048, 5.5 s vs 3.7 s at n=4096 (leaf = this GEBP at 1024) — the O(n²)
+// add passes and quadrant traffic swamp the 7/8 multiply saving; it stays
+// rejected, now with numbers.
+//
+// Same Goto structure and 4×8 tile as the i64 path; only the pack element
+// type and KC differ. Pack buffers are plain Vecs (the pools are typed
+// i64/f64; a 256 KB pack alloc amortizes over the MC×KC×NC work it feeds).
+
+const PORTABLE_I32: GemmParams = GemmParams {
+    mc: 128,
+    nc: 1024,
+    kc: 512, // i32 packs are half the bytes of i64 — same 16 KB B micro-panel
+    mr: 4,
+    nr: 8,
+    avx512: false,
+};
+
+#[cfg(target_arch = "x86_64")]
+const AVX512_I32: GemmParams = GemmParams {
+    mc: 128,
+    nc: 1024,
+    kc: 512,
+    mr: 4,
+    nr: 8,
+    avx512: true,
+};
+
+#[inline]
+fn gemm_params_i32() -> GemmParams {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if crate::array::isa::avx512_fast() {
+            AVX512_I32
+        } else {
+            PORTABLE_I32
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        PORTABLE_I32
+    }
+}
+
+/// [`pack_a_mr`] writing an i32 pack (caller guarantees values fit i32).
+#[inline]
+fn pack_a_mr_i32(a: Op, mr_max: usize, i0: usize, m: usize, k0: usize, k: usize, buf: &mut [i32]) {
+    let (aa, ld) = (a.data, a.ld);
+    let mut off = 0;
+    let mut ir = 0;
+    while ir < m {
+        let mr = (m - ir).min(mr_max);
+        if a.trans {
+            for p in 0..k {
+                let src = &aa[(k0 + p) * ld + (i0 + ir)..(k0 + p) * ld + (i0 + ir) + mr];
+                for (d, &s) in buf[off + p * mr..off + p * mr + mr].iter_mut().zip(src) {
+                    *d = s as i32;
+                }
+            }
+        } else {
+            for i in 0..mr {
+                let src = &aa[(i0 + ir + i) * ld + k0..(i0 + ir + i) * ld + k0 + k];
+                for p in 0..k {
+                    buf[off + p * mr + i] = src[p] as i32;
+                }
+            }
+        }
+        off += k * mr;
+        ir += mr;
+    }
+}
+
+/// [`pack_b_nr`] writing an i32 pack (caller guarantees values fit i32).
+#[inline]
+fn pack_b_nr_i32(b: Op, nr_max: usize, k0: usize, k: usize, j0: usize, n: usize, buf: &mut [i32]) {
+    let (bb, ld) = (b.data, b.ld);
+    let mut off = 0;
+    let mut jr = 0;
+    while jr < n {
+        let nr = (n - jr).min(nr_max);
+        if b.trans {
+            for jj in 0..nr {
+                let src = &bb[(j0 + jr + jj) * ld + k0..(j0 + jr + jj) * ld + k0 + k];
+                for p in 0..k {
+                    buf[off + p * nr + jj] = src[p] as i32;
+                }
+            }
+        } else {
+            for p in 0..k {
+                let src = &bb[(k0 + p) * ld + (j0 + jr)..(k0 + p) * ld + (j0 + jr) + nr];
+                for (d, &s) in buf[off + p * nr..off + p * nr + nr].iter_mut().zip(src) {
+                    *d = s as i32;
+                }
+            }
+        }
+        off += k * nr;
+        jr += nr;
+    }
+}
+
+/// Portable 4×8 micro-kernel over i32 packs (widening products).
+#[inline]
+fn micro_tile_4x8_i32(
+    k: usize,
+    a: &[i32],
+    b: &[i32],
+    c: &mut [i64],
+    ldc: usize,
+    i0: usize,
+    j0: usize,
+) {
+    flat_tile_body!(4, 8, k, a, b, c, ldc, i0, j0);
+}
+
+/// AVX-512 twin of [`micro_tile_4x8_i32`].
+///
+/// # Safety
+/// Caller must have verified avx512f+dq+bw+vl at runtime ([`gemm_params_i32`]
+/// only sets `avx512` after detection via `isa::avx512_fast`).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512dq,avx512bw,avx512vl")]
+unsafe fn micro_tile_avx512_i32(
+    k: usize,
+    a: &[i32],
+    b: &[i32],
+    c: &mut [i64],
+    ldc: usize,
+    i0: usize,
+    j0: usize,
+) {
+    flat_tile_body!(4, 8, k, a, b, c, ldc, i0, j0);
+}
+
+/// Remainder micro-kernel over i32 packs.
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn micro_edge_i32(
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[i32],
+    b: &[i32],
+    c: &mut [i64],
+    ldc: usize,
+    i0: usize,
+    j0: usize,
+    b_nr: usize,
+) {
+    for ii in 0..m {
+        for jj in 0..n {
+            let mut s = c[(i0 + ii) * ldc + (j0 + jj)];
+            for p in 0..k {
+                s = s.wrapping_add((a[p * m + ii] as i64).wrapping_mul(b[p * b_nr + jj] as i64));
+            }
+            c[(i0 + ii) * ldc + (j0 + jj)] = s;
+        }
+    }
+}
+
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn run_full_tile_i32(
+    p: GemmParams,
+    k: usize,
+    a: &[i32],
+    b: &[i32],
+    c: &mut [i64],
+    ldc: usize,
+    i0: usize,
+    j0: usize,
+) {
+    #[cfg(target_arch = "x86_64")]
+    if p.avx512 {
+        // SAFETY: gemm_params_i32() sets `avx512` only after runtime
+        // detection of avx512f+dq+bw+vl on this CPU.
+        unsafe { micro_tile_avx512_i32(k, a, b, c, ldc, i0, j0) };
+        return;
+    }
+    let _ = p;
+    micro_tile_4x8_i32(k, a, b, c, ldc, i0, j0);
+}
+
+/// [`gemm_row_band`] over i32 packs.
+#[allow(clippy::too_many_arguments)]
+fn gemm_row_band_i32(
+    p: GemmParams,
+    a: Op,
+    ldc: usize,
+    b_pack: &[i32],
+    i0: usize,
+    mb: usize,
+    k0: usize,
+    kb: usize,
+    j0: usize,
+    nb: usize,
+    c_band: &mut [i64],
+) {
+    debug_assert_eq!(c_band.len(), mb * ldc);
+    let mut a_pack = vec![0i32; mb * kb];
+    pack_a_mr_i32(a, p.mr, i0, mb, k0, kb, &mut a_pack);
+
+    let mut jr = 0;
+    let mut b_off = 0;
+    while jr < nb {
+        let nr = (nb - jr).min(p.nr);
+        let mut ir = 0;
+        let mut a_off = 0;
+        while ir < mb {
+            let mr = (mb - ir).min(p.mr);
+            if mr == p.mr && nr == p.nr {
+                run_full_tile_i32(
+                    p,
+                    kb,
+                    &a_pack[a_off..a_off + kb * mr],
+                    &b_pack[b_off..b_off + kb * nr],
+                    c_band,
+                    ldc,
+                    ir,
+                    j0 + jr,
+                );
+            } else {
+                micro_edge_i32(
+                    mr,
+                    nr,
+                    kb,
+                    &a_pack[a_off..a_off + kb * mr],
+                    &b_pack[b_off..b_off + kb * nr],
+                    c_band,
+                    ldc,
+                    ir,
+                    j0 + jr,
+                    nr,
+                );
+            }
+            a_off += kb * mr;
+            ir += mr;
+        }
+        b_off += kb * nr;
+        jr += nr;
+    }
+}
+
+/// [`gemm_blocked`] over i32 packs — same Goto order, band parallelism, and
+/// tiny fallback (the tiny path runs the i64 loops on the original data;
+/// exactness is unaffected, packing is what the i32 tier accelerates).
+fn gemm_blocked_i32(m: usize, k: usize, n: usize, a: Op, b: Op, data: &mut [i64]) {
+    gemm_blocked_i32_with(gemm_params_i32(), m, k, n, a, b, data);
+}
+
+fn gemm_blocked_i32_with(
+    p: GemmParams,
+    m: usize,
+    k: usize,
+    n: usize,
+    a: Op,
+    b: Op,
+    data: &mut [i64],
+) {
+    let flops = (m as u64).saturating_mul(k as u64).saturating_mul(n as u64);
+    if flops < (48u64 * 48 * 48) {
+        gemm_tiny(m, k, n, a, b, data);
+        return;
+    }
+
+    let nthreads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .max(1);
+    let n_bands = m.div_ceil(p.mc);
+    let want_par = nthreads >= 2 && n_bands >= 2;
+
+    let mut b_pack = vec![0i32; p.kc * p.nc.min(n)];
+
+    let mut j0 = 0;
+    while j0 < n {
+        let nb = (n - j0).min(p.nc);
+        let mut k0 = 0;
+        while k0 < k {
+            let kb = (k - k0).min(p.kc);
+            pack_b_nr_i32(b, p.nr, k0, kb, j0, nb, &mut b_pack[..kb * nb]);
+
+            if want_par {
+                use rayon::prelude::*;
+                let mut bands = Vec::with_capacity(n_bands);
+                let mut i0 = 0;
+                let mut rest: &mut [i64] = &mut data[..];
+                while i0 < m {
+                    let mb = (m - i0).min(p.mc);
+                    let (chunk, tail) = rest.split_at_mut(mb * n);
+                    bands.push((i0, mb, chunk));
+                    rest = tail;
+                    i0 += mb;
+                }
+                let bp = &b_pack;
+                bands.into_par_iter().for_each(|(i0, mb, c_band)| {
+                    gemm_row_band_i32(p, a, n, bp, i0, mb, k0, kb, j0, nb, c_band);
+                });
+            } else {
+                let mut i0 = 0;
+                while i0 < m {
+                    let mb = (m - i0).min(p.mc);
+                    gemm_row_band_i32(
+                        p,
+                        a,
+                        n,
+                        &b_pack,
+                        i0,
+                        mb,
+                        k0,
+                        kb,
+                        j0,
+                        nb,
+                        &mut data[i0 * n..(i0 + mb) * n],
+                    );
+                    i0 += mb;
+                }
+            }
+            k0 += kb;
+        }
+        j0 += nb;
+    }
+}
+
 /// Dispatch matrix GEMM (packed GEBP / tiny / parallel bands), untransposed.
-/// Strassen was measured through n=4096 on this class of host and never beat
-/// GEBP (S/G ≥ 1.0); removed to keep the path simple (WASM-friendly GEBP only).
+/// Rejected alternative (DESIGN §7.1.2): Strassen over rings was measured
+/// through n=4096 and never beat this GEBP path, so only the cubic kernel
+/// ships — which also keeps the path WASM-friendly.
 fn gemm_dispatch(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: &mut [i64]) {
     let a = Op { data: aa, ld: an, trans: false };
     let b = Op { data: bb, ld: bn, trans: false };
     gemm_blocked(am, an, bn, a, b, data);
 }
 
-/// Force GEBP (no Strassen) — for crossover measurement only.
-#[doc(hidden)]
-pub fn matmul_gebp_only(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
-    let (am, an) = as_matrix_dims(a)?;
-    let (bm, bn) = as_matrix_dims(b)?;
-    if an != bm {
-        return Err(Error::shape(format!(
-            "matmul shape mismatch: ({am}, {an}) vs ({bm}, {bn})"
-        )));
+// --- Guarded f64-promote fast path (Human ruling 2026-08-04) -----------------
+//
+// f64 integer arithmetic is exact while every value stays within ±2⁵³ (53-bit
+// mantissa). In C = A·B each product is bounded by max|A|·max|B| and each
+// partial sum by k·max|A|·max|B|, so when
+//
+//     k · max|A| · max|B| ≤ 2⁵³            (Derived — DESIGN §3.26)
+//
+// promoting to f64, running faer's GEMM, and truncating back is bit-identical
+// to the wrapping-i64 kernel (below 2⁵³ no wrap can occur either, and inputs
+// within the bound convert exactly). Outside the bound f64 rounds — 2⁵³ + 1
+// has no f64 representation — so those products keep the exact wrapping GEBP.
+// The guard scan is O(mk + kn) against O(mkn) multiply work.
+
+fn max_abs(s: &[i64]) -> u128 {
+    s.iter().map(|v| v.unsigned_abs()).max().unwrap_or(0) as u128
+}
+
+/// Kernel tier for one product, picked from one O(elements) scan per operand.
+/// All three tiers return **bit-identical** results; they differ only in
+/// which multiplier silicon they can use (fastest first):
+/// - `Promote`: every intermediate ≤ 2⁵³ → f64 FMA units via faer GEMM.
+/// - `I32`: inputs fit i32 → 32×32→64 widening products, exact for any k
+///   (bake-off winner for this regime, 2026-08-04 — see the i32-pack tier
+///   section below).
+/// - `I64`: everything else → exact wrapping GEBP.
+enum GemmTier {
+    Promote,
+    I32,
+    I64,
+}
+
+fn gemm_tier(k: usize, aa: &[i64], bb: &[i64]) -> GemmTier {
+    let amax = max_abs(aa);
+    let bmax = max_abs(bb);
+    // Saturation can only fail the promote test, never falsely pass it.
+    if amax.saturating_mul(bmax).saturating_mul(k as u128) <= 1u128 << 53 {
+        GemmTier::Promote
+    } else if amax <= i32::MAX as u128 && bmax <= i32::MAX as u128 {
+        GemmTier::I32
+    } else {
+        GemmTier::I64
     }
-    let prefer_vec = b.rank() == 1 || (a.rank() == 1 && bn == 1);
-    let mut data = pool_i64::take_zeroed(am.saturating_mul(bn));
-    if b.rank() == 1 {
-        // fall back to matmul path
-        return matmul(a, b);
+}
+
+/// f64 GEMM for the range-safe promoted path. `m`, `k`, `n` are the effective
+/// dims after transposition; `a` / `b` carry the storage layout via [`Op`]
+/// (full contiguous matrices only: `ld` equals the stored column count).
+fn gemm_promoted(m: usize, k: usize, n: usize, a: Op, b: Op, data: &mut [i64]) {
+    debug_assert_eq!(data.len(), m * n);
+    debug_assert_eq!(a.ld, if a.trans { m } else { k });
+    debug_assert_eq!(b.ld, if b.trans { k } else { n });
+    if data.is_empty() {
+        return;
     }
-    gemm_dispatch(am, an, bn, a.as_slice(), b.as_slice(), &mut data);
-    matmul_result(data, am, bn, prefer_vec)
+    if k == 0 {
+        data.fill(0);
+        return;
+    }
+    let mut af = pool_take_uninit(a.data.len());
+    for (d, &s) in af.iter_mut().zip(a.data) {
+        *d = s as f64;
+    }
+    let mut bf = pool_take_uninit(b.data.len());
+    for (d, &s) in bf.iter_mut().zip(b.data) {
+        *d = s as f64;
+    }
+    let mut cf = pool_take_uninit(m * n);
+    {
+        let lhs = if a.trans {
+            MatRef::from_row_major_slice(&af, k, m).transpose()
+        } else {
+            MatRef::from_row_major_slice(&af, m, k)
+        };
+        let rhs = if b.trans {
+            MatRef::from_row_major_slice(&bf, n, k).transpose()
+        } else {
+            MatRef::from_row_major_slice(&bf, k, n)
+        };
+        let mut dst = MatMut::from_row_major_slice_mut(&mut cf, m, n);
+        faer_matmul(
+            &mut dst,
+            Accum::Replace,
+            lhs,
+            rhs,
+            1.0,
+            super::matmul_par(m, n, k),
+        );
+    }
+    for (d, &s) in data.iter_mut().zip(cf.iter()) {
+        *d = s as i64; // exact: every value is an integer within ±2⁵³
+    }
+    pool_recycle(af);
+    pool_recycle(bf);
+    pool_recycle(cf);
 }
 
 /// Matrix product `a @ b` with wrapping `i64` accumulation.
@@ -595,7 +1020,7 @@ pub fn matmul(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
     }
     let prefer_vec = b.rank() == 1 || (a.rank() == 1 && bn == 1);
     let n_out = am.saturating_mul(bn);
-    let mut data = pool_i64::take_zeroed(n_out);
+    let mut data = pool_i64::try_take_zeroed(n_out)?;
     let aa = a.as_slice();
     let bb = b.as_slice();
 
@@ -618,7 +1043,13 @@ pub fn matmul(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
             data[i] = s;
         }
     } else {
-        gemm_dispatch(am, an, bn, aa, bb, &mut data);
+        let a_op = Op { data: aa, ld: an, trans: false };
+        let b_op = Op { data: bb, ld: bn, trans: false };
+        match gemm_tier(an, aa, bb) {
+            GemmTier::Promote => gemm_promoted(am, an, bn, a_op, b_op, &mut data),
+            GemmTier::I32 => gemm_blocked_i32(am, an, bn, a_op, b_op, &mut data),
+            GemmTier::I64 => gemm_dispatch(am, an, bn, aa, bb, &mut data),
+        }
     }
     matmul_result(data, am, bn, prefer_vec)
 }
@@ -652,7 +1083,13 @@ pub fn matmul_out(a: &ArrayI64, b: &ArrayI64, out: &mut ArrayI64) -> Result<()> 
             data[i] = s;
         }
     } else {
-        gemm_dispatch(am, an, bn, aa, bb, data);
+        let a_op = Op { data: aa, ld: an, trans: false };
+        let b_op = Op { data: bb, ld: bn, trans: false };
+        match gemm_tier(an, aa, bb) {
+            GemmTier::Promote => gemm_promoted(am, an, bn, a_op, b_op, data),
+            GemmTier::I32 => gemm_blocked_i32(am, an, bn, a_op, b_op, data),
+            GemmTier::I64 => gemm_dispatch(am, an, bn, aa, bb, data),
+        }
     }
     Ok(())
 }
@@ -667,7 +1104,7 @@ pub fn matmul_at(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
         )));
     }
     let prefer_vec = b.rank() == 1;
-    let mut data = pool_i64::take_zeroed(an.saturating_mul(bn));
+    let mut data = pool_i64::try_take_zeroed(an.saturating_mul(bn))?;
     let aa = a.as_slice();
     let bb = b.as_slice();
     if b.rank() == 1 {
@@ -687,7 +1124,11 @@ pub fn matmul_at(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
         // Full GEBP path; transposition is absorbed by the pack layer.
         let a_op = Op { data: aa, ld: an, trans: true };
         let b_op = Op { data: bb, ld: bn, trans: false };
-        gemm_blocked(an, am, bn, a_op, b_op, &mut data);
+        match gemm_tier(am, aa, bb) {
+            GemmTier::Promote => gemm_promoted(an, am, bn, a_op, b_op, &mut data),
+            GemmTier::I32 => gemm_blocked_i32(an, am, bn, a_op, b_op, &mut data),
+            GemmTier::I64 => gemm_blocked(an, am, bn, a_op, b_op, &mut data),
+        }
     }
     matmul_result(data, an, bn, prefer_vec)
 }
@@ -701,13 +1142,17 @@ pub fn matmul_bt(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
             "matmul_bt shape mismatch: a is ({am}, {an}), b is ({bm}, {bn}); need equal column counts"
         )));
     }
-    let mut data = pool_i64::take_zeroed(am.saturating_mul(bm));
+    let mut data = pool_i64::try_take_zeroed(am.saturating_mul(bm))?;
     let aa = a.as_slice();
     let bb = b.as_slice();
     // Full GEBP path; Bᵀ is absorbed by the pack layer.
     let a_op = Op { data: aa, ld: an, trans: false };
     let b_op = Op { data: bb, ld: bn, trans: true };
-    gemm_blocked(am, an, bm, a_op, b_op, &mut data);
+    match gemm_tier(an, aa, bb) {
+        GemmTier::Promote => gemm_promoted(am, an, bm, a_op, b_op, &mut data),
+        GemmTier::I32 => gemm_blocked_i32(am, an, bm, a_op, b_op, &mut data),
+        GemmTier::I64 => gemm_blocked(am, an, bm, a_op, b_op, &mut data),
+    }
     Ok(ArrayI64::from_parts(Shape::matrix(am, bm)?, data))
 }
 
@@ -891,6 +1336,166 @@ mod tests {
             gemm_blocked_with(AVX512, m, k, n, a, b, &mut c);
             assert_eq!(c, r, "AVX512 profile mismatch");
         }
+    }
+
+    #[test]
+    fn promoted_path_matches_naive() {
+        // Small-magnitude signed values keep k·max|A|·max|B| well under 2^53,
+        // so all three matrix entry points take the f64-promote path; results
+        // must equal the wrapping reference bit for bit.
+        let (m, k, n) = (33usize, 57usize, 29usize);
+        let da: Vec<i64> = (0..m * k).map(|i| (i as i64 % 2003) - 1001).collect();
+        let db: Vec<i64> = (0..k * n).map(|i| (i as i64 % 1777) - 888).collect();
+        assert!(matches!(gemm_tier(k, &da, &db), GemmTier::Promote));
+
+        let a = ArrayI64::from_shape_slice(vec![m, k], &da).unwrap();
+        let b = ArrayI64::from_shape_slice(vec![k, n], &db).unwrap();
+        assert_eq!(matmul(&a, &b).unwrap().as_slice(), naive_matmul(m, k, n, &da, &db));
+
+        // aᵀ@b: store aᵀ's source as (k, m) and compare against naive on the
+        // materialized transpose.
+        let at_src = ArrayI64::from_shape_slice(vec![k, m], &da[..k * m]).unwrap();
+        let mut at_mat = vec![0i64; m * k];
+        for r in 0..k {
+            for c in 0..m {
+                at_mat[c * k + r] = da[r * m + c];
+            }
+        }
+        assert_eq!(
+            matmul_at(&at_src, &b).unwrap().as_slice(),
+            naive_matmul(m, k, n, &at_mat, &db)
+        );
+
+        // a@bᵀ: b stored (n, k).
+        let bt_src = ArrayI64::from_shape_slice(vec![n, k], &db[..n * k]).unwrap();
+        let mut bt_mat = vec![0i64; k * n];
+        for r in 0..n {
+            for c in 0..k {
+                bt_mat[c * n + r] = db[r * k + c];
+            }
+        }
+        assert_eq!(
+            matmul_bt(&a, &bt_src).unwrap().as_slice(),
+            naive_matmul(m, k, n, &da, &bt_mat)
+        );
+    }
+
+    #[test]
+    fn promote_guard_rejects_unrepresentable_values() {
+        // 2^53 + 1 has no f64 representation: an unguarded promote would
+        // return 2^53. The guard must route this to the exact wrapping kernel.
+        let big = (1i64 << 53) + 1;
+        let a = ArrayI64::from_shape_slice(vec![1, 2], &[1, 1]).unwrap();
+        let b = ArrayI64::from_shape_slice(vec![2, 1], &[big, 0]).unwrap();
+        assert!(!matches!(
+            gemm_tier(2, a.as_slice(), b.as_slice()),
+            GemmTier::Promote
+        ));
+        let c = matmul(&a, &b).unwrap();
+        assert_eq!(c.as_slice(), &[big]);
+
+        // Just inside the bound: k·max|A|·max|B| = 2·2^25·2^26 = 2^52 ≤ 2^53
+        // → promoted, and exact.
+        let a = ArrayI64::from_shape_slice(vec![1, 2], &[1 << 25, 1 << 25]).unwrap();
+        let b = ArrayI64::from_shape_slice(vec![2, 1], &[1 << 26, 1 << 26]).unwrap();
+        assert!(matches!(
+            gemm_tier(2, a.as_slice(), b.as_slice()),
+            GemmTier::Promote
+        ));
+        let c = matmul(&a, &b).unwrap();
+        assert_eq!(c.as_slice(), &[1i64 << 52]);
+    }
+
+    #[test]
+    fn i32_tier_matches_naive() {
+        // Values ~1e9: far beyond the 2^53 promote bound at these k, inside
+        // i32 → the I32 tier runs. Rectangular with edge tiles (m, n not
+        // multiples of MR/NR). All three entry points vs the wrapping
+        // reference, both blocking profiles.
+        let (m, k, n) = (67usize, 131usize, 45usize);
+        let gen = |len: usize, mul: i64, add: i64| -> Vec<i64> {
+            (0..len as i64)
+                .map(|i| i.wrapping_mul(mul).wrapping_add(add).rem_euclid(2_000_000_001) - 1_000_000_000)
+                .collect()
+        };
+        let da = gen(m * k, 48271, 11);
+        let db = gen(k * n, 69621, 7);
+        assert!(matches!(gemm_tier(k, &da, &db), GemmTier::I32));
+        let r = naive_matmul(m, k, n, &da, &db);
+
+        let a = ArrayI64::from_shape_slice(vec![m, k], &da).unwrap();
+        let b = ArrayI64::from_shape_slice(vec![k, n], &db).unwrap();
+        assert_eq!(matmul(&a, &b).unwrap().as_slice(), r);
+
+        // Explicit profiles (dispatch would pin the suite to this host's pick).
+        let a_op = Op { data: &da, ld: k, trans: false };
+        let b_op = Op { data: &db, ld: n, trans: false };
+        let mut c = vec![0i64; m * n];
+        gemm_blocked_i32_with(PORTABLE_I32, m, k, n, a_op, b_op, &mut c);
+        assert_eq!(c, r, "I32 PORTABLE profile mismatch");
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx512f")
+            && std::arch::is_x86_feature_detected!("avx512dq")
+            && std::arch::is_x86_feature_detected!("avx512bw")
+            && std::arch::is_x86_feature_detected!("avx512vl")
+        {
+            let mut c = vec![0i64; m * n];
+            gemm_blocked_i32_with(AVX512_I32, m, k, n, a_op, b_op, &mut c);
+            assert_eq!(c, r, "I32 AVX512 profile mismatch");
+        }
+
+        // Transposed entries through the public face: aᵀ@b and a@bᵀ.
+        let at_src = ArrayI64::from_shape_slice(vec![k, m], &da[..k * m]).unwrap();
+        let mut at_mat = vec![0i64; m * k];
+        for r_ in 0..k {
+            for c_ in 0..m {
+                at_mat[c_ * k + r_] = da[r_ * m + c_];
+            }
+        }
+        assert_eq!(
+            matmul_at(&at_src, &b).unwrap().as_slice(),
+            naive_matmul(m, k, n, &at_mat, &db)
+        );
+        let bt_src = ArrayI64::from_shape_slice(vec![n, k], &db[..n * k]).unwrap();
+        let mut bt_mat = vec![0i64; k * n];
+        for r_ in 0..n {
+            for c_ in 0..k {
+                bt_mat[c_ * n + r_] = db[r_ * k + c_];
+            }
+        }
+        assert_eq!(
+            matmul_bt(&a, &bt_src).unwrap().as_slice(),
+            naive_matmul(m, k, n, &da, &bt_mat)
+        );
+    }
+
+    #[test]
+    fn tier_boundaries() {
+        // i32::MAX fits the I32 tier; one past it must fall to I64. Both
+        // exact through the public face.
+        let big32 = i32::MAX as i64;
+        let a = ArrayI64::from_shape_slice(vec![1, 2], &[big32, big32]).unwrap();
+        let b = ArrayI64::from_shape_slice(vec![2, 1], &[big32, 1]).unwrap();
+        assert!(matches!(
+            gemm_tier(2, a.as_slice(), b.as_slice()),
+            GemmTier::I32
+        ));
+        assert_eq!(
+            matmul(&a, &b).unwrap().as_slice(),
+            &[big32.wrapping_mul(big32).wrapping_add(big32)]
+        );
+
+        let over = big32 + 1;
+        let a = ArrayI64::from_shape_slice(vec![1, 2], &[over, over]).unwrap();
+        let b = ArrayI64::from_shape_slice(vec![2, 1], &[over, 1]).unwrap();
+        assert!(matches!(
+            gemm_tier(2, a.as_slice(), b.as_slice()),
+            GemmTier::I64
+        ));
+        assert_eq!(
+            matmul(&a, &b).unwrap().as_slice(),
+            &[over.wrapping_mul(over).wrapping_add(over)]
+        );
     }
 
     /// Reference ijk matmul (wrapping), for exactness checks of the packed path.

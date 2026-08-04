@@ -7,7 +7,6 @@ TSV lines: face \\t op \\t n \\t ms
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
@@ -68,7 +67,7 @@ def fmt_ratio_range(ratios: list[float]) -> str:
     return f"{lo:.2f}x–{hi:.2f}x"
 
 
-def build_summary(data: dict, rust_legacy: bool = False) -> str:
+def build_summary(data: dict) -> str:
     """User-POV summary: Lua vs NumPy per op (see module docstring)."""
     ops = sorted({op for (face, op, n) in data if face == "lua"})
     rows = []
@@ -126,7 +125,6 @@ def build_f64(data: dict) -> tuple[str, str]:
 
 def build_i64(data: dict) -> tuple[str, str]:
     # faces: numpy, rust, lua (rust/lua from i64_surface; accept legacy face "i64" as rust)
-    faces_r = ("rust", "i64")
     keys = sorted(
         {
             (op, n)
@@ -249,21 +247,8 @@ integer-valued data (see Yardsticks); MatLua times are exact wrapping i64.
             _, post = rest.split(end, 1)
             readme = pre + start + "\n\n" + body + "\n" + end + post
         else:
-            m = re.search(r"## Latest fair results.*", readme, re.S)
-            if m:
-                head = readme[: m.start()]
-                readme = (
-                    head
-                    + "## Latest results\n\n"
-                    + start
-                    + "\n\n"
-                    + body
-                    + "\n"
-                    + end
-                    + "\n"
-                )
-            else:
-                readme = readme.rstrip() + "\n\n" + start + "\n\n" + body + "\n" + end + "\n"
+            # No markers: append a fresh block at the end.
+            readme = readme.rstrip() + "\n\n" + start + "\n\n" + body + "\n" + end + "\n"
         args.write_readme.write_text(readme)
         print(f"updated {args.write_readme}", file=sys.stderr)
 
