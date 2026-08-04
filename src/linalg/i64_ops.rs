@@ -7,7 +7,12 @@
 //!
 //! Goto/BLIS GEBP over wrapping `i64` (constants per DESIGN §3.26 — see the
 //! derivation at their definitions below):
-//! - **Not** f64 promote + faer: breaks exactness past 2⁵³ and wrapping semantics.
+//! - **Guarded f64 promote:** when `k·max|A|·max|B| ≤ 2⁵³` every intermediate
+//!   of the product is exactly representable in f64, so the matrix paths
+//!   promote to faer's f64 GEMM and truncate back — bit-identical to the
+//!   wrapping kernel, at BLAS speed (see `promote_bound_ok`). *Unguarded*
+//!   promote stays rejected: past 2⁵³ f64 rounds (2⁵³ + 1 has no f64
+//!   representation) and wrapping semantics break.
 //! - NumPy `int64 @ int64` has **no BLAS backend** (OpenBLAS/MKL are float); the
 //!   fair reference is f64 BLAS on integer-valued data (DESIGN §7.1.2), plus the
 //!   machine roofline from `tests/bench/i64_roofline.rs`.
@@ -23,8 +28,10 @@
 //! - Strassen over rings is valid but was slower than this base kernel through
 //!   n=4096 on measured hosts; kept off until the cubic kernel is stronger.
 
-use crate::array::{pool_i64, ArrayI64, Shape};
+use crate::array::{pool_i64, pool_recycle, pool_take_uninit, ArrayI64, Shape};
 use crate::error::{Error, Result};
+use faer::linalg::matmul::matmul as faer_matmul;
+use faer::{Accum, MatMut, MatRef};
 
 /// Interpret rank-1 as column vector `(n, 1)`; rank-2 as matrix.
 fn as_matrix_dims(a: &ArrayI64) -> Result<(usize, usize)> {
@@ -565,6 +572,79 @@ fn gemm_dispatch(am: usize, an: usize, bn: usize, aa: &[i64], bb: &[i64], data: 
     gemm_blocked(am, an, bn, a, b, data);
 }
 
+// --- Guarded f64-promote fast path (Human ruling 2026-08-04) -----------------
+//
+// f64 integer arithmetic is exact while every value stays within ±2⁵³ (53-bit
+// mantissa). In C = A·B each product is bounded by max|A|·max|B| and each
+// partial sum by k·max|A|·max|B|, so when
+//
+//     k · max|A| · max|B| ≤ 2⁵³            (Derived — DESIGN §3.26)
+//
+// promoting to f64, running faer's GEMM, and truncating back is bit-identical
+// to the wrapping-i64 kernel (below 2⁵³ no wrap can occur either, and inputs
+// within the bound convert exactly). Outside the bound f64 rounds — 2⁵³ + 1
+// has no f64 representation — so those products keep the exact wrapping GEBP.
+// The guard scan is O(mk + kn) against O(mkn) multiply work.
+
+fn promote_bound_ok(k: usize, aa: &[i64], bb: &[i64]) -> bool {
+    let amax = aa.iter().map(|v| v.unsigned_abs()).max().unwrap_or(0) as u128;
+    let bmax = bb.iter().map(|v| v.unsigned_abs()).max().unwrap_or(0) as u128;
+    // Saturation can only fail the test, never falsely pass it.
+    amax.saturating_mul(bmax).saturating_mul(k as u128) <= 1u128 << 53
+}
+
+/// f64 GEMM for the range-safe promoted path. `m`, `k`, `n` are the effective
+/// dims after transposition; `a` / `b` carry the storage layout via [`Op`]
+/// (full contiguous matrices only: `ld` equals the stored column count).
+fn gemm_promoted(m: usize, k: usize, n: usize, a: Op, b: Op, data: &mut [i64]) {
+    debug_assert_eq!(data.len(), m * n);
+    debug_assert_eq!(a.ld, if a.trans { m } else { k });
+    debug_assert_eq!(b.ld, if b.trans { k } else { n });
+    if data.is_empty() {
+        return;
+    }
+    if k == 0 {
+        data.fill(0);
+        return;
+    }
+    let mut af = pool_take_uninit(a.data.len());
+    for (d, &s) in af.iter_mut().zip(a.data) {
+        *d = s as f64;
+    }
+    let mut bf = pool_take_uninit(b.data.len());
+    for (d, &s) in bf.iter_mut().zip(b.data) {
+        *d = s as f64;
+    }
+    let mut cf = pool_take_uninit(m * n);
+    {
+        let lhs = if a.trans {
+            MatRef::from_row_major_slice(&af, k, m).transpose()
+        } else {
+            MatRef::from_row_major_slice(&af, m, k)
+        };
+        let rhs = if b.trans {
+            MatRef::from_row_major_slice(&bf, n, k).transpose()
+        } else {
+            MatRef::from_row_major_slice(&bf, k, n)
+        };
+        let mut dst = MatMut::from_row_major_slice_mut(&mut cf, m, n);
+        faer_matmul(
+            &mut dst,
+            Accum::Replace,
+            lhs,
+            rhs,
+            1.0,
+            super::matmul_par(m, n, k),
+        );
+    }
+    for (d, &s) in data.iter_mut().zip(cf.iter()) {
+        *d = s as i64; // exact: every value is an integer within ±2⁵³
+    }
+    pool_recycle(af);
+    pool_recycle(bf);
+    pool_recycle(cf);
+}
+
 /// Matrix product `a @ b` with wrapping `i64` accumulation.
 pub fn matmul(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
     let (am, an) = as_matrix_dims(a)?;
@@ -598,6 +678,10 @@ pub fn matmul(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
             }
             data[i] = s;
         }
+    } else if promote_bound_ok(an, aa, bb) {
+        let a_op = Op { data: aa, ld: an, trans: false };
+        let b_op = Op { data: bb, ld: bn, trans: false };
+        gemm_promoted(am, an, bn, a_op, b_op, &mut data);
     } else {
         gemm_dispatch(am, an, bn, aa, bb, &mut data);
     }
@@ -632,6 +716,10 @@ pub fn matmul_out(a: &ArrayI64, b: &ArrayI64, out: &mut ArrayI64) -> Result<()> 
             }
             data[i] = s;
         }
+    } else if promote_bound_ok(an, aa, bb) {
+        let a_op = Op { data: aa, ld: an, trans: false };
+        let b_op = Op { data: bb, ld: bn, trans: false };
+        gemm_promoted(am, an, bn, a_op, b_op, data);
     } else {
         gemm_dispatch(am, an, bn, aa, bb, data);
     }
@@ -668,7 +756,11 @@ pub fn matmul_at(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
         // Full GEBP path; transposition is absorbed by the pack layer.
         let a_op = Op { data: aa, ld: an, trans: true };
         let b_op = Op { data: bb, ld: bn, trans: false };
-        gemm_blocked(an, am, bn, a_op, b_op, &mut data);
+        if promote_bound_ok(am, aa, bb) {
+            gemm_promoted(an, am, bn, a_op, b_op, &mut data);
+        } else {
+            gemm_blocked(an, am, bn, a_op, b_op, &mut data);
+        }
     }
     matmul_result(data, an, bn, prefer_vec)
 }
@@ -688,7 +780,11 @@ pub fn matmul_bt(a: &ArrayI64, b: &ArrayI64) -> Result<ArrayI64> {
     // Full GEBP path; Bᵀ is absorbed by the pack layer.
     let a_op = Op { data: aa, ld: an, trans: false };
     let b_op = Op { data: bb, ld: bn, trans: true };
-    gemm_blocked(am, an, bm, a_op, b_op, &mut data);
+    if promote_bound_ok(an, aa, bb) {
+        gemm_promoted(am, an, bm, a_op, b_op, &mut data);
+    } else {
+        gemm_blocked(am, an, bm, a_op, b_op, &mut data);
+    }
     Ok(ArrayI64::from_parts(Shape::matrix(am, bm)?, data))
 }
 
@@ -872,6 +968,68 @@ mod tests {
             gemm_blocked_with(AVX512, m, k, n, a, b, &mut c);
             assert_eq!(c, r, "AVX512 profile mismatch");
         }
+    }
+
+    #[test]
+    fn promoted_path_matches_naive() {
+        // Small-magnitude signed values keep k·max|A|·max|B| well under 2^53,
+        // so all three matrix entry points take the f64-promote path; results
+        // must equal the wrapping reference bit for bit.
+        let (m, k, n) = (33usize, 57usize, 29usize);
+        let da: Vec<i64> = (0..m * k).map(|i| (i as i64 % 2003) - 1001).collect();
+        let db: Vec<i64> = (0..k * n).map(|i| (i as i64 % 1777) - 888).collect();
+        assert!(promote_bound_ok(k, &da, &db));
+
+        let a = ArrayI64::from_shape_slice(vec![m, k], &da).unwrap();
+        let b = ArrayI64::from_shape_slice(vec![k, n], &db).unwrap();
+        assert_eq!(matmul(&a, &b).unwrap().as_slice(), naive_matmul(m, k, n, &da, &db));
+
+        // aᵀ@b: store aᵀ's source as (k, m) and compare against naive on the
+        // materialized transpose.
+        let at_src = ArrayI64::from_shape_slice(vec![k, m], &da[..k * m]).unwrap();
+        let mut at_mat = vec![0i64; m * k];
+        for r in 0..k {
+            for c in 0..m {
+                at_mat[c * k + r] = da[r * m + c];
+            }
+        }
+        assert_eq!(
+            matmul_at(&at_src, &b).unwrap().as_slice(),
+            naive_matmul(m, k, n, &at_mat, &db)
+        );
+
+        // a@bᵀ: b stored (n, k).
+        let bt_src = ArrayI64::from_shape_slice(vec![n, k], &db[..n * k]).unwrap();
+        let mut bt_mat = vec![0i64; k * n];
+        for r in 0..n {
+            for c in 0..k {
+                bt_mat[c * n + r] = db[r * k + c];
+            }
+        }
+        assert_eq!(
+            matmul_bt(&a, &bt_src).unwrap().as_slice(),
+            naive_matmul(m, k, n, &da, &bt_mat)
+        );
+    }
+
+    #[test]
+    fn promote_guard_rejects_unrepresentable_values() {
+        // 2^53 + 1 has no f64 representation: an unguarded promote would
+        // return 2^53. The guard must route this to the exact wrapping kernel.
+        let big = (1i64 << 53) + 1;
+        let a = ArrayI64::from_shape_slice(vec![1, 2], &[1, 1]).unwrap();
+        let b = ArrayI64::from_shape_slice(vec![2, 1], &[big, 0]).unwrap();
+        assert!(!promote_bound_ok(2, a.as_slice(), b.as_slice()));
+        let c = matmul(&a, &b).unwrap();
+        assert_eq!(c.as_slice(), &[big]);
+
+        // Just inside the bound: k·max|A|·max|B| = 2·2^25·2^26 = 2^52 ≤ 2^53
+        // → promoted, and exact.
+        let a = ArrayI64::from_shape_slice(vec![1, 2], &[1 << 25, 1 << 25]).unwrap();
+        let b = ArrayI64::from_shape_slice(vec![2, 1], &[1 << 26, 1 << 26]).unwrap();
+        assert!(promote_bound_ok(2, a.as_slice(), b.as_slice()));
+        let c = matmul(&a, &b).unwrap();
+        assert_eq!(c.as_slice(), &[1i64 << 52]);
     }
 
     /// Reference ijk matmul (wrapping), for exactness checks of the packed path.
