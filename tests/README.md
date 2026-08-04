@@ -61,14 +61,22 @@ identical inputs, and the attribution is retracted.)
 **Calibration gate:** before publishing a refresh, run `i64_roofline` and
 compare the register-resident tile ceilings against the Roofline section's
 recorded values for the host. If they deviate beyond noise (±20%), the
-session is unfit: cells would be honestly measured but incomparable — to the
-recorded roofline, to other sessions, and often to each other within the
-run. Discard the run and refresh later; do not publish it. (Two full
-refreshes have been discarded under this rule, both 2026-08-03: one when the
-container measured ~3× degraded on pure register-resident compute —
-hypervisor co-tenancy, no in-container load — and one when 512-bit
-downclocking cut only the AVX-512 tile while scalar throughput stayed
-normal.)
+session is unfit: cells would be honestly measured but unrepresentative —
+the observed degradation is not a uniform slowdown (512-bit throughput has
+dropped ~4× while scalar stayed normal), so even within-run ratios skew.
+**Discarded runs are documented, not hidden** (Human ruling 2026-08-04):
+every discard is logged below with its gate readings and suspected cause,
+so the measurement problem stays visible and fixable instead of silently
+forgotten. Do not publish the cells themselves — they describe the wrong
+machine.
+
+Discard log:
+
+| Date (UTC) | Gate reading vs baseline (isa_tile_par 49.2 Gops / gemm 59.0 ms) | Suspected cause |
+|---|---|---|
+| 2026-08-03 (evening) | register-resident compute ~3× degraded across all kernels | hypervisor co-tenancy; no in-container load |
+| 2026-08-03 (later) | AVX-512 tile ~4× degraded, scalar normal | dynamic 512-bit downclocking (CPUID still reports the features) |
+| 2026-08-04 02:19 | gemm 76.5 ms (+30%), isa_tile_par 40.3 (−18%) — single failed gate attempt; passed on retry at 02:21 (46.0 / 67.1) and the refresh proceeded | transient co-tenant burst |
 
 ## Results
 

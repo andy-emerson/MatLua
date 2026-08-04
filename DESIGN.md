@@ -498,7 +498,7 @@ explicit boundaries (zero-copy views in, owned results out).
 | **M11** | **CI + embed hygiene** — letter **§7** (APICHECK, ASan) + no `DLOPEN` embed profile, Miri-clean `take_uninit` | **Planned** |
 | **M12** | **Arrow C Data Interface + `arrow-lite`** — letter **§3**; cutover when shared lite v0.1 ships | **Gated** |
 
-**Priority:** Close **M7.c** (Human rulings, §7.1.2) → embed **M8–M11** → **M12**. Further dtypes (`f32`, complex, …) after this arc unless a new need appears.
+**Priority:** Close **M7.c** (Human rulings, §7.1.2) → embed **M8–M11** → **M12**. Further dtypes: **`i32` and `f32` promoted to active candidates** (Human, 2026-08-04) — pressure from the i32×i32 widening-multiply kernel work, which is exact under wrapping semantics with no magnitude bound and may serve other i64 problems; complex and the rest stay post-arc unless a need appears.
 
 **Also tracked:** GitHub **#21** full `out=` surface (beyond M7.b partial) — **deferred past M7.c** (partial `*_out` stays); TallyDB engine cutover (other repo).
 
